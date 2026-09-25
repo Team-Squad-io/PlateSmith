@@ -2,20 +2,30 @@
 ## Title: PlateSmith
 ## Notes: Clear, lightweight nameplates with quest markers and threat differential.
 ## Author: TeamSquadIO
-## Version: 0.1.0-alpha.1
+## Version: 0.1.0-alpha.2
 ## Category: Combat
 ## SavedVariables: PlateSmithDB
 ## IconTexture: Interface\AddOns\PlateSmith\Media\PlateSmithIcon
 
-Diagnostics.lua
-Core.lua
-ThreatService.lua
-DiagnosticUI.lua
-ProfileSchema.lua
-PlateSmith.lua
-Blueprint.lua
-BlueprintShare.lua
-EditorComponents.lua
-Options.lua
-StudioFrame.lua
-ThreatConsole.lua
+Diagnostics\Diagnostics.lua
+Core\Core.lua
+Threat\ThreatService.lua
+Diagnostics\DiagnosticUI.lua
+Diagnostics\DiagnosticProbes.lua
+Core\ProfileSchema.lua
+Core\PlateSettings.lua
+Nameplates\PlateAuras.lua
+Nameplates\PlateFactory.lua
+Nameplates\PlateIdentity.lua
+Nameplates\PlateSmith.lua
+Core\Blueprint.lua
+Core\BlueprintShare.lua
+Studio\EditorComponents.lua
+Studio\EditorBlueprint.lua
+Studio\Options.lua
+Studio\StudioPreview.lua
+Studio\SettingsPanel.lua
+Studio\StudioChrome.lua
+Studio\StudioInspector.lua
+Studio\StudioFrame.lua
+Threat\ThreatConsole.lua

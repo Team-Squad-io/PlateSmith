@@ -2,7 +2,7 @@ local addonName, PS = ...
 
 PS = PS or {}
 _G.PlateSmith = PS
-PS.RUNTIME_BUILD = "0.1.0-alpha.1"
+PS.RUNTIME_BUILD = "0.1.0-alpha.2"
 
 local pendingMessages = {}
 local registrationHistory = {}

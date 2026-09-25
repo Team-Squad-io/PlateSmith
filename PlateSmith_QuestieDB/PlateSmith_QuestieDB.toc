@@ -2,7 +2,7 @@
 ## Title: PlateSmith |cffffffffQuestieDB|r
 ## Notes: Optional quest objective and possible item-drop markers for PlateSmith.
 ## Author: TeamSquadIO
-## Version: 0.1.0-alpha.1
+## Version: 0.1.0-alpha.2
 ## Category: Combat
 ## Group: PlateSmith
 ## Dependencies: PlateSmith, QuestieDB
