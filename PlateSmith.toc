@@ -1,0 +1,21 @@
+## Interface: 120100, 16001
+## Title: PlateSmith
+## Notes: Clear, lightweight nameplates with quest markers and threat differential.
+## Author: TeamSquadIO
+## Version: 0.1.0-alpha.1
+## Category: Combat
+## SavedVariables: PlateSmithDB
+## IconTexture: Interface\AddOns\PlateSmith\Media\PlateSmithIcon
+
+Diagnostics.lua
+Core.lua
+ThreatService.lua
+DiagnosticUI.lua
+ProfileSchema.lua
+PlateSmith.lua
+Blueprint.lua
+BlueprintShare.lua
+EditorComponents.lua
+Options.lua
+StudioFrame.lua
+ThreatConsole.lua

@@ -1,0 +1,3 @@
+package-as: PlateSmith
+move-folders:
+  PlateSmith/PlateSmith_QuestieDB: PlateSmith_QuestieDB

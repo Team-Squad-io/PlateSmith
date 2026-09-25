@@ -1,0 +1,12 @@
+## Interface: 16001
+## Title: PlateSmith |cffffffffQuestieDB|r
+## Notes: Optional quest objective and possible item-drop markers for PlateSmith.
+## Author: TeamSquadIO
+## Version: 0.1.0-alpha.1
+## Category: Combat
+## Group: PlateSmith
+## Dependencies: PlateSmith, QuestieDB
+## SavedVariables: PlateSmithQuestieDBDB
+## IconTexture: Interface\AddOns\PlateSmith\Media\PlateSmithIcon
+
+QuestieDB.lua
