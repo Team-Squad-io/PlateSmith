@@ -2,30 +2,77 @@
 ## Title: PlateSmith
 ## Notes: Clear, lightweight nameplates with quest markers and threat differential.
 ## Author: TeamSquadIO
-## Version: 0.1.0-alpha.2
+## Version: 1.0.0
 ## Category: Combat
-## SavedVariables: PlateSmithDB
+## SavedVariables: PlateSmithDB, PlateSmithDiagnosticsDB
+## SavedVariablesPerCharacter: PlateSmithCharacterDB
 ## IconTexture: Interface\AddOns\PlateSmith\Media\PlateSmithIcon
+## OptionalDeps: LibSharedMedia-3.0
+## AddonCompartmentFunc: PlateSmith_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: PlateSmith_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: PlateSmith_OnAddonCompartmentLeave
+## X-Curse-Project-ID: 1709718
+## X-License: All Rights Reserved
 
-Diagnostics\Diagnostics.lua
-Core\Core.lua
-Threat\ThreatService.lua
-Diagnostics\DiagnosticUI.lua
-Diagnostics\DiagnosticProbes.lua
-Core\ProfileSchema.lua
-Core\PlateSettings.lua
-Nameplates\PlateAuras.lua
-Nameplates\PlateFactory.lua
-Nameplates\PlateIdentity.lua
-Nameplates\PlateSmith.lua
+Core\Bootstrap.lua
+Core\Chat.lua
+Core\Secret.lua
+Core\Format.lua
+Core\Template.lua
+Core\Table.lua
+Core\Locale.lua
+Core\Json.lua
+Core\Ticker.lua
+Core\Modules.lua
+Core\Restrictions.lua
+UI\Window.lua
+UI\Controls.lua
+UI\Layout.lua
+UI\Menu.lua
+Threat\Service.lua
+Diagnostics\History.lua
+Diagnostics\Summary.lua
+Diagnostics\Performance.lua
+Diagnostics\Window.lua
+Diagnostics\Probes.lua
+Core\Media.lua
+Core\Schema.lua
+Core\Profiles.lua
+Core\Settings.lua
+Nameplates\Auras.lua
+Nameplates\Factory.lua
+Nameplates\Identity.lua
+Nameplates\ThreatText.lua
+Nameplates\NamePolicy.lua
+Nameplates\RaidMarker.lua
+Nameplates\Styles.lua
+Nameplates\TemplateReaders.lua
+Nameplates\Placement.lua
+Nameplates\Values.lua
+Nameplates\Lifecycle.lua
 Core\Blueprint.lua
-Core\BlueprintShare.lua
-Studio\EditorComponents.lua
-Studio\EditorBlueprint.lua
-Studio\Options.lua
-Studio\StudioPreview.lua
-Studio\SettingsPanel.lua
-Studio\StudioChrome.lua
-Studio\StudioInspector.lua
-Studio\StudioFrame.lua
-Threat\ThreatConsole.lua
+Core\ShareCode.lua
+Core\ProfilePresets.lua
+Studio\Components.lua
+Studio\Layout.lua
+Studio\Editor.lua
+Studio\BlueprintWindow.lua
+Studio\Preview.lua
+Settings\SaveBar.lua
+Settings\Panel.lua
+Settings\ProfilesPage.lua
+Settings\ThreatPage.lua
+Studio\Kit.lua
+Studio\KitAtlas.lua
+Studio\Theme.lua
+Studio\Chrome.lua
+Studio\Inspector.lua
+Studio\Frame.lua
+Threat\Kit.lua
+Threat\KitAtlas.lua
+Threat\Geometry.lua
+Threat\Themes.lua
+Threat\Meter.lua
+Threat\Sample.lua
+Threat\Console.lua
+Core\Commands.lua

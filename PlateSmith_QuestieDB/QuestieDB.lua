@@ -1,6 +1,6 @@
-local _, Addon = ...
 local PS = _G.PlateSmith
 if not PS then return end
+local L = PS.L
 
 local MAX_QUESTS = 100
 local MAX_OBJECTIVES = 64
@@ -20,17 +20,8 @@ local module = {
     cache = {},
     stats = { generation = 0, quests = 0, objectives = 0, npcs = 0 },
 }
-Addon.Module = module
 
-local function IsReadable(value)
-    if type(issecretvalue) ~= "function" then return true end
-    local ok, secret = pcall(issecretvalue, value)
-    return ok and not secret
-end
-
-local function ReadNumber(value)
-    return IsReadable(value) and type(value) == "number" and value or nil
-end
+local IsReadable, ReadNumber = PS.Secret.IsReadable, PS.Secret.Number
 
 local function CopyDefaults()
     local saved = type(PlateSmithQuestieDBDB) == "table" and PlateSmithQuestieDBDB or {}
@@ -49,6 +40,7 @@ local function NpcIDForUnit(unit)
 
     local unitType, npcID
     if type(strsplit) == "function" then
+        local _
         unitType, _, _, _, _, npcID = strsplit("-", guid)
     else
         unitType, npcID = guid:match("^([^-]+)%-[^-]*%-[^-]*%-[^-]*%-[^-]*%-(%d+)")
@@ -73,6 +65,26 @@ local function ReadQuestObjectives(questID)
     if type(api) ~= "function" then return nil end
     local ok, objectives = pcall(api, questID)
     return ok and IsReadable(objectives) and type(objectives) == "table" and objectives or nil
+end
+
+-- QuestieDB rows are static for the session, so only the quest log's progress
+-- needs re-reading on each rebuild. A failed read is not cached and is retried.
+local databaseObjectives, databaseDrops = {}, {}
+
+local function DatabaseObjectives(questID)
+    local cached = databaseObjectives[questID]
+    if cached ~= nil then return true, cached end
+    local ok, objectives = pcall(module.lib.Quest.objectives, questID)
+    if ok then databaseObjectives[questID] = type(objectives) == "table" and objectives or false end
+    return ok, objectives
+end
+
+local function DatabaseDrops(itemID)
+    local cached = databaseDrops[itemID]
+    if cached ~= nil then return true, cached end
+    local ok, drops = pcall(module.lib.Item.npcDrops, itemID)
+    if ok then databaseDrops[itemID] = type(drops) == "table" and drops or false end
+    return ok, drops
 end
 
 local function ClearCache(message, suppressRefresh)
@@ -118,12 +130,12 @@ local function RebuildCache(suppressRefresh)
             local questID = ReadNumber(info.questID)
             if questID and questID > 0 then
                 local nativeObjectives = ReadQuestObjectives(questID)
-                local databaseOK, databaseObjectives = pcall(module.lib.Quest.objectives, questID)
+                local databaseOK, questObjectives = DatabaseObjectives(questID)
                 if not databaseOK then
                     module.lastError = "QuestieDB quest read failed for " .. tostring(questID)
-                    databaseObjectives = nil
+                    questObjectives = nil
                 end
-                if nativeObjectives and type(databaseObjectives) == "table" then
+                if nativeObjectives and type(questObjectives) == "table" then
                     quests = quests + 1
                     local typeOrdinals = { monster = 0, item = 0 }
                     for objectiveIndex = 1, math.min(MAX_OBJECTIVES, #nativeObjectives) do
@@ -135,7 +147,7 @@ local function RebuildCache(suppressRefresh)
                             local unfinished = IsReadable(objective.finished) and objective.finished == false
                             if unfinished then
                                 objectiveCount = objectiveCount + 1
-                                local databaseType = objectiveType == "monster" and databaseObjectives[1] or databaseObjectives[3]
+                                local databaseType = objectiveType == "monster" and questObjectives[1] or questObjectives[3]
                                 local row = type(databaseType) == "table" and databaseType[typeOrdinals[objectiveType]] or nil
                                 local entityID = type(row) == "table" and ReadNumber(row[1]) or nil
                                 if entityID and objectiveType == "monster" and module.db.directObjectives then
@@ -147,7 +159,7 @@ local function RebuildCache(suppressRefresh)
                                     }
                                     if AddReason(nextCache, entityID, reason) then npcCount = npcCount + 1 end
                                 elseif entityID and objectiveType == "item" and module.db.possibleItemDrops then
-                                    local dropsOK, drops = pcall(module.lib.Item.npcDrops, entityID)
+                                    local dropsOK, drops = DatabaseDrops(entityID)
                                     if not dropsOK then
                                         module.lastError = "QuestieDB item read failed for " .. tostring(entityID)
                                         drops = nil
@@ -177,44 +189,41 @@ local function RebuildCache(suppressRefresh)
     end
 
     module.cache = nextCache
-    local readError = module.lastError
     module.stats = {
         generation = module.stats.generation + 1,
         quests = quests,
         objectives = objectiveCount,
         npcs = npcCount,
     }
-    module.lastError = readError
     module:RefreshPanel()
     if not suppressRefresh and type(PS.RefreshQuestMarkers) == "function" then PS.RefreshQuestMarkers() end
     return true
 end
 
 local function StatusText()
-    if module.lastError then return "Unavailable: " .. module.lastError end
+    if module.lastError then return string.format(L["Unavailable: %s"], module.lastError) end
     local stats = module.stats
-    return string.format("Ready: %d active quests, %d incomplete objectives, %d marked NPCs.",
+    return string.format(L["Ready: %d active quests, %d incomplete objectives, %d marked NPCs."],
         stats.quests, stats.objectives, stats.npcs)
 end
 
 function module:RefreshPanel()
     if not self.statusText then return end
     self.statusText:SetText(StatusText())
-    if self.enableCheckbox then self.enableCheckbox:SetChecked(self.db and self.db.enabled) end
-    if self.directCheckbox then self.directCheckbox:SetChecked(self.db and self.db.directObjectives) end
-    if self.dropCheckbox then self.dropCheckbox:SetChecked(self.db and self.db.possibleItemDrops) end
+    for _, checkbox in ipairs(self.checkboxes or {}) do checkbox:Refresh() end
 end
 
 local function CreateCheckbox(parent, label, y, field)
-    local checkbox = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-    checkbox:SetPoint("TOPLEFT", 20, y)
-    local text = checkbox:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    text:SetPoint("LEFT", checkbox, "RIGHT", 4, 0)
-    text:SetText(label)
-    checkbox:SetScript("OnClick", function(instance)
-        module.db[field] = instance:GetChecked() and true or false
-        RebuildCache()
-    end)
+    local checkbox = PS.UI.Controls.Checkbox(parent, {
+        label = label, x = 20, y = y,
+        get = function() return module.db and module.db[field] end,
+        set = function(value)
+            module.db[field] = value
+            if module.enabled then RebuildCache() end
+        end,
+    })
+    module.checkboxes = module.checkboxes or {}
+    module.checkboxes[#module.checkboxes + 1] = checkbox
     return checkbox
 end
 
@@ -223,23 +232,24 @@ function module:CreateSettings()
     local panel = CreateFrame("Frame")
     local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
     title:SetPoint("TOPLEFT", 20, -20)
-    title:SetText("PlateSmith · QuestieDB")
+    title:SetText(L["QuestieDB"])
     local description = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
     description:SetPoint("TOPLEFT", 20, -52)
     description:SetWidth(600)
     description:SetJustifyH("LEFT")
-    description:SetText("Adds optional database-backed markers without putting QuestieDB work in the nameplate update loop.")
+    description:SetText(L["Quest markers from QuestieDB's database, for mobs the game does not mark itself. "
+        .. "This page comes from the optional PlateSmith_QuestieDB companion and appears only while QuestieDB is installed."])
 
-    self.enableCheckbox = CreateCheckbox(panel, "Enable QuestieDB markers", -92, "enabled")
-    self.directCheckbox = CreateCheckbox(panel, "Supplement direct creature objectives", -124, "directObjectives")
-    self.dropCheckbox = CreateCheckbox(panel, "Show possible item-drop mobs", -156, "possibleItemDrops")
+    CreateCheckbox(panel, L["Enable QuestieDB markers"], -92, "enabled")
+    CreateCheckbox(panel, L["Supplement direct creature objectives"], -124, "directObjectives")
+    CreateCheckbox(panel, L["Show possible item-drop mobs"], -156, "possibleItemDrops")
     self.statusText = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     self.statusText:SetPoint("TOPLEFT", 24, -208)
     self.statusText:SetWidth(590)
     self.statusText:SetJustifyH("LEFT")
     panel:SetScript("OnShow", function() module:RefreshPanel() end)
     self.panel = panel
-    PS.RegisterModuleSettings("questiedb", "Modules · QuestieDB", panel)
+    PS.RegisterModuleSettings("questiedb", L["QuestieDB"], panel)
     self:RefreshPanel()
 end
 
@@ -277,7 +287,6 @@ function module:OnInitialize()
         end,
     })
     if not provider then error(providerError) end
-    self.provider = provider
     self:CreateSettings()
 end
 
@@ -288,20 +297,14 @@ end
 
 function module:OnDisable()
     self.enabled = false
-    self.cache = {}
-    if type(PS.RefreshQuestMarkers) == "function" then PS.RefreshQuestMarkers() end
+    ClearCache(nil)
 end
 
 function module:OnQuestLogChanged(event)
     if self.enabled then RebuildCache(event ~= nil) end
 end
 
-function module:GetStatus()
-    return StatusText()
-end
-
 local registered, registrationError = PS:RegisterModule("platesmith.questiedb", module)
 if not registered then
-    local handler = type(geterrorhandler) == "function" and geterrorhandler() or nil
-    if handler then handler("PlateSmith QuestieDB: " .. tostring(registrationError)) end
+    PS.Chat.ReportError("QuestieDB", registrationError)
 end

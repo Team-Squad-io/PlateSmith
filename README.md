@@ -1,23 +1,56 @@
 # PlateSmith
 
-PlateSmith is a nameplate addon for WoW Forever. The aim is simple: show what matters—names, quests, auras, and threat—without turning every mob into a dashboard. Blueprint Studio lets you move the pieces around instead of settling for a fixed layout.
+Design your own nameplates for WoW Forever, see threat at a glance, and share your setup with one
+code. PlateSmith shows what matters (names, quests, auras and threat) without turning every mob
+into a dashboard.
 
-This is the first public alpha. There are still rough edges, especially where the game limits what addons can read or change in combat.
+## Features
 
-## What you can change
+- **Blueprint Studio** (`/ps`): a live preview of the plate, a tree of every part and an inspector
+  for whatever you click. Drag parts to place them, pin them to each other, stack them, style
+  them, and add rules that recolour, blend, fade or hide a part when something is true.
+- **Preset profiles** to start from: PlateSmith, Classic, Sleek, Bold, Tank, Healer, Minimal and
+  Dungeon. Each creates a new profile you can edit.
+- **Nameplates** for enemies, friendly players and friendly NPCs, in the world and in dungeons:
+  cast bar with icon, spell and time left; buff and debuff rows you can shape; level, elite and
+  rare marks, raid marks, TAGGED, guild, target of target and quest icons.
+- **Threat** on every plate (your threat %, the gap to the next player, raw threat), coloured by
+  state, and up to five **threat windows** (a threat meter or a tank list) that can attach to any
+  side of Blizzard's damage meter.
+- **Profiles and Blueprints**: named profiles with Save and Revert, and share codes (`!PSB3!`) to
+  export and import a whole setup.
 
-- Move, scale, or hide individual parts of enemy and friendly nameplates in Blueprint Studio.
-- Choose names-only or full friendly plates, with separate layouts for players and NPCs.
-- Show quest markers, raid icons, target highlighting, and threat details when the client provides them.
-- Place buff and debuff rows, and share layouts with Blueprint export/import codes.
-
-`PlateSmith_QuestieDB` is an optional companion included with the release. If you already use QuestieDB, it can add quest-objective and possible item-drop markers. PlateSmith works without it.
+`PlateSmith_QuestieDB` is an optional companion included with the release. With QuestieDB
+installed, it adds quest-objective and quest-item drop markers. PlateSmith works without it.
 
 ## Getting started
 
-Once published, install PlateSmith through CurseForge. For a manual install, extract a packaged release into `Interface/AddOns` so you have `PlateSmith/PlateSmith.toc`. To use the companion manually, put `PlateSmith_QuestieDB` beside it and install QuestieDB. Type `/platesmith` in game to open the settings and Blueprint Studio.
+Install PlateSmith through CurseForge. For a manual install, extract a packaged release into
+`Interface/AddOns` so you have `PlateSmith/PlateSmith.toc`; to use the companion, put
+`PlateSmith_QuestieDB` beside it and install QuestieDB.
 
-This alpha is being tested on WoW Forever. If something looks wrong, a screenshot and the report from `/platesmith diagnose` are especially helpful.
+In game:
+
+| Command | What it does |
+|---|---|
+| `/ps` | Open Blueprint Studio |
+| `/ps config` | Open Settings (Threat and Profiles) |
+| `/ps console` | Show or hide the threat windows |
+| `/ps diagnose` | Open a report to copy into a bug report |
+
+## Known limits
+
+- The game hides some values in combat and in instances. PlateSmith never guesses: a hidden value
+  isn't shown, and a rule that depends on it doesn't apply.
+- While aura details are hidden, the debuff row is the game's own aura frame, placed by
+  PlateSmith but not restyled.
+- Clicking a threat window row spotlights the plate; addons can't target mobs from a click.
+- English only for now.
+
+## Reporting a problem
+
+Run `/ps diagnose`, copy the report, and post it with a screenshot and what you were doing. See
+[CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ## Permissions
 
