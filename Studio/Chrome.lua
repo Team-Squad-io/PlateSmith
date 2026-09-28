@@ -612,6 +612,9 @@ end
 -- are the panels built by the inspector (their keys), in the order shown.
 local SETTINGS_CATEGORIES = {
     { key = "plate", label = L["Behaviour & display"], summary = L["Shared settings for the active profile."] },
+    -- Hidden from the list until it is ready (SetSettingsCategory still opens it by key).
+    { key = "stacking", hidden = true, label = L["Stacking & distance"],
+        summary = L["How Blizzard stacks, spaces, scales and fades plates, and which draws on top."] },
     { key = "auras", label = L["Aura defaults"], summary = L["Which buffs and debuffs the plates show."] },
     { key = "relations", label = L["Relationships"], summary = L["How friendly players are marked outdoors."] },
     { key = "studio", label = L["Studio"], summary = L["Studio's size and accessibility. Personal; never needs Save."] },
@@ -622,7 +625,9 @@ local DUNGEON_CATEGORY = { key = "dungeonFriendly", label = L["Dungeon friendlie
 
 function Options:SettingsCategoryList()
     local list = {}
-    for _, category in ipairs(SETTINGS_CATEGORIES) do list[#list + 1] = category end
+    for _, category in ipairs(SETTINGS_CATEGORIES) do
+        if not category.hidden then list[#list + 1] = category end
+    end
     if self.editorContext == "dungeon" then table.insert(list, 2, DUNGEON_CATEGORY) end
     return list
 end
@@ -631,6 +636,9 @@ function Options:SetSettingsCategory(key)
     local found
     for _, category in ipairs(self:SettingsCategoryList()) do
         if category.key == key then found = category end
+    end
+    for _, category in ipairs(SETTINGS_CATEGORIES) do
+        if not found and category.key == key then found = category end
     end
     found = found or SETTINGS_CATEGORIES[1]
     self.editorSettingsCategory = found.key
@@ -647,10 +655,13 @@ function Options:LayoutEditorSettingsPanels()
     content:SetWidth(width)
     local current = self.editorSettingsCategory or "plate"
     local settingsOpen = self.editorWorkspacePage == "settings"
+    -- The shown page is laid out at the page's width (its sections in one or two columns).
     for _, panel in ipairs(self.editorSettingsPanels or {}) do
         panel:ClearAllPoints()
         panel:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
-        panel:SetShown(settingsOpen and panel.settingsKey == current)
+        local shown = settingsOpen and panel.settingsKey == current
+        panel:SetShown(shown)
+        if shown and panel.Relayout then panel:Relayout(width) end
     end
     local page = pages[current]
     content:SetHeight(math.max(1, page and page:GetHeight() or 1))

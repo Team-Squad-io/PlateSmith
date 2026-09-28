@@ -2,6 +2,38 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.0.3
+
+### Fixed
+
+- Without QuestieDB installed, the optional PlateSmith QuestieDB companion no longer reports "failure to
+  load: missing"; it now stays quietly off until QuestieDB is there.
+
+### New
+
+- When another nameplate addon is running, PlateSmith says so once per session in a small window
+  (never in combat or during a loading screen). It explains that PlateSmith is running as a light
+  overlay (quest markers and threat) on that addon's plates, and offers **Keep overlay**,
+  **Disable <addon> and reload** (asks first), and **Don't show again** for that set of addons.
+  With two or more nameplate addons running it warns that they overlap each other.
+- PlateSmith now also recognises NeatPlates, Platynator, nPlates, and ElvUI or Tukui while their
+  nameplates are on, and draws only its overlay on their plates in `mode auto`.
+- `/ps diagnose` flags two or more nameplate addons running at once as a problem, and notes when
+  PlateSmith is running as an overlay on another addon's plates. It also lists PlateSmith's modules
+  and the add-ons they rely on, so it says why QuestieDB markers are off (disabled or not installed).
+- Your target's plate now draws on top where plates overlap, so its name and bars are never hidden
+  under a neighbour's.
+- Blueprint Studio's Settings pages are laid out like the rest of PlateSmith's settings: folding
+  sections in two columns when Studio is wide enough (one when it is narrow), each row a label, its
+  control and its help underneath. Section folds are remembered.
+- **Behaviour & display** is grouped into Plates, Names, Target, Text, Quests and **Show on plates**.
+  The font field is as wide as the column and shows a long font name in full on hover.
+- **Show on plates** (quest markers, tagged indicator, threat details, elite and rare marks) and the
+  tree's eyes stay in step: unticking one shows its part's eye off, and showing the part by its eye
+  ticks it again. While a switch is off, that part's inspector says so, with a **Turn on** link,
+  and its controls are dimmed until it is back on.
+- **Aura defaults**, **Relationships**, **Studio** and **Help** use the same sections; Help's text
+  wraps to its column.
 ## 1.0.2
 
 ### Changed

@@ -736,7 +736,7 @@ function PS.CreateVisualEditor()
     local categories = Panel(editor, "dark", base + 3)
     Options.editorSettingsCategoriesPanel = categories
     Options.editorSettingsCategoryRows = {}
-    for index = 1, 6 do
+    for index = 1, 7 do
         local row = CreateStudioButton(categories, "", 282, 44, "category")
         row:SetScript("OnClick", function(instance)
             if instance.categoryKey then Options:SetSettingsCategory(instance.categoryKey) end
@@ -796,48 +796,6 @@ function PS.CreateVisualEditor()
     Options.editorFooterLayout = footerLayout
     Options.editorStudioFooterButtons = { resetLayout, import, export }
     Options.editorSettingsFooterButtons = { resetAll }
-
-    -- Studio size lives on Settings' Studio page: personal, never saved.
-    local studioPage = Options.editorStudioPage
-    local smaller = CreateStudioButton(studioPage, "-", 34, 32)
-    smaller:SetPoint("TOPLEFT", studioPage, "TOPLEFT", 0, -34)
-    smaller:SetScript("OnClick", function() Options:SetStudioScale(Options:GetStudioScale() - 0.05) end)
-    local sizeText = studioPage:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    sizeText:SetFont(LABEL_FONT, 16)
-    sizeText:SetPoint("LEFT", smaller, "RIGHT", 10, 0)
-    sizeText:SetWidth(52)
-    local larger = CreateStudioButton(studioPage, "+", 34, 32)
-    larger:SetPoint("LEFT", sizeText, "RIGHT", 10, 0)
-    larger:SetScript("OnClick", function() Options:SetStudioScale(Options:GetStudioScale() + 0.05) end)
-    Options.editorStudioSmaller, Options.editorStudioLarger, Options.editorStudioScaleText = smaller, larger, sizeText
-    PS.UI.Controls.AttachTooltip(smaller, L["Studio size"], { L["Make Blueprint Studio smaller."] })
-    PS.UI.Controls.AttachTooltip(larger, L["Studio size"], { L["Make Blueprint Studio larger."] })
-    -- Accessibility: personal, applied at once.
-    local accessibility = studioPage:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    accessibility:SetFont(LABEL_FONT, 16)
-    accessibility:SetPoint("TOPLEFT", studioPage, "TOPLEFT", 0, -90)
-    accessibility:SetText(L["Accessibility"])
-    Options.editorAccessCheckboxes = {}
-    for index, spec in ipairs({
-        { "colourBlind", L["Colour-blind friendly"],
-            L["Threat colours in the preview use blue and orange; Studio's lines are thicker."] },
-        { "highContrast", L["High contrast"],
-            L["A dark inspector with white text, brighter lines and larger handles, and the plain dark preview."] },
-    }) do
-        local box = KitCheckbox(studioPage, spec[2], function(instance)
-            Options:SetStudioAccess(spec[1], instance:GetChecked() and true or false)
-        end)
-        box:SetPoint("TOPLEFT", studioPage, "TOPLEFT", -2, -112 - (index - 1) * 58)
-        local help = studioPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        help:SetFont(LABEL_FONT, 13)
-        help:SetTextColor(0.78, 0.76, 0.72)
-        help:SetPoint("TOPLEFT", box, "BOTTOMLEFT", 32, 2)
-        help:SetWidth(620)
-        help:SetJustifyH("LEFT")
-        help:SetText(spec[3])
-        box:SetChecked(Options:StudioAccess()[spec[1]])
-        Options.editorAccessCheckboxes[spec[1]] = box
-    end
 
     Options.editorResetButton = resetAll
     Options.resetLayoutButton = resetLayout

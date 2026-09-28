@@ -119,7 +119,8 @@ end
 local TICK_BUDGET_MS, FRAME_BUDGET_MS, MAX_PROBLEMS = 1, 2, 6
 Summary.tickBudgetMs, Summary.frameBudgetMs, Summary.maxProblems = TICK_BUDGET_MS, FRAME_BUDGET_MS, MAX_PROBLEMS
 -- Report paths a named check below already explains; the generic walk skips them.
-local EXPLAINED = { "^questProviders", "^protectedAction", "^dungeonFriendlyOverlay", "^target%.debuffs%.nativeContainerError" }
+local EXPLAINED = { "^questProviders", "^protectedAction", "^dungeonFriendlyOverlay", "^target%.debuffs%.nativeContainerError",
+    "^conflicts", "^addons", "^modules" }
 
 local function Field(value, ...)
     for index = 1, select("#", ...) do
@@ -209,7 +210,16 @@ local function QuestText(report)
         end
     end
     if #parts > 0 then return table.concat(parts, ", ") end
-    return Field(report, "api", "quest") == true and L["native only"] or L["no quest API"]
+    local base = Field(report, "api", "quest") == true and L["native only"] or L["no quest API"]
+    -- Why the QuestieDB companion adds nothing: it or QuestieDB is disabled or not installed.
+    local addons = type(report.addons) == "table" and report.addons or nil
+    local companion, questie = addons and addons.PlateSmith_QuestieDB, addons and addons.QuestieDB
+    if companion == "loaded" and questie ~= "loaded" then
+        return string.format(L["%s (QuestieDB %s)"], base, Text(questie or "missing"))
+    elseif companion and companion ~= "loaded" then
+        return string.format(L["%s (QuestieDB companion %s)"], base, Text(companion))
+    end
+    return base
 end
 
 local function PerformanceText(performance)
@@ -270,6 +280,14 @@ local function TargetText(target)
     return string.format(L["Target: %s %s · %s · %s"], side, who, layout, highlightText)
 end
 
+-- The other nameplate addons the report found: their names as one list, and how many.
+local function ConflictNames(report)
+    local addons = Field(report, "conflicts", "addons")
+    if type(addons) ~= "table" or #addons == 0 then return nil, 0 end
+    local join = PS.Conflicts and PS.Conflicts.JoinNames
+    return join and join(addons) or table.concat(addons, ", "), #addons
+end
+
 -- Plain-language problems, most specific first. extras: historyErrors, lastError, entry.
 function Summary.Problems(report, extras)
     report, extras = type(report) == "table" and report or {}, extras or {}
@@ -282,6 +300,11 @@ function Summary.Problems(report, extras)
     if type(studio) == "string" and type(active) == "string" and studio ~= "" and studio ~= "none"
         and studio ~= "nil" and studio ~= active then
         Add(string.format(L["Studio is editing profile \"%s\", but the plates use \"%s\"."], studio, active))
+    end
+    local conflictNames, conflictCount = ConflictNames(report)
+    if conflictCount >= 2 then
+        Add(string.format(L["%d other nameplate addons are loaded (%s); they overlap each other. Keep only one."],
+            conflictCount, conflictNames))
     end
     local blocked = Field(report, "protectedAction", "last")
     if blocked then Add(string.format(L["The client blocked a PlateSmith action (taint): %s"], OneLine(blocked, 120))) end
@@ -373,6 +396,11 @@ function Summary.Short(report, extras)
     end
     lines[#lines + 1] = string.format(L["Profile: %s · friendly: %s · mode: %s"], activeProfile,
         Text(Field(report, "settings", "friendly")), Text(Field(report, "settings", "mode")))
+    local conflictNames = ConflictNames(report)
+    if conflictNames and Field(report, "conflicts", "plates") == "overlay" then
+        lines[#lines + 1] = string.format(L["Overlay: PlateSmith adds quest markers and threat to the plates of %s."],
+            conflictNames)
+    end
     lines[#lines + 1] = string.format(L["Restrictions: %s · Quest: %s"], RestrictionText(report.restrictions),
         QuestText(report))
     lines[#lines + 1] = PerformanceText(report.performance)

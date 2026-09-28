@@ -13,12 +13,8 @@ local NormalizeCharacterSettings = S.NormalizeCharacterSettings
 local IsReadable, HasValue, SameUnit = Secret.IsReadable, Secret.HasValue, Secret.SameUnit
 local ApplyThreatText, ThreatColour = ThreatText.Apply, ThreatText.StateColour
 
-local externalAddons = {
-    "Kui_Nameplates",
-    "Plater",
-    "TidyPlates",
-    "TidyPlates_ThreatPlates",
-}
+-- Another nameplate addon draws the plates when one runs (mode auto); Conflicts keeps the list.
+local ExternalProvider = assert(PS.Conflicts, "PlateSmith Conflicts missing").Provider
 
 local active = {}
 local activeCasts = {}
@@ -162,19 +158,6 @@ local function RegionVisibleState(region)
     if not ok then return "error" end
     if not IsReadable(visible) then return "protected" end
     return visible == true
-end
-
-local function AddonLoaded(name)
-    if C_AddOns and C_AddOns.IsAddOnLoaded then
-        return C_AddOns.IsAddOnLoaded(name)
-    end
-    return type(IsAddOnLoaded) == "function" and IsAddOnLoaded(name)
-end
-
-local function ExternalProvider()
-    for _, name in ipairs(externalAddons) do
-        if AddonLoaded(name) then return name end
-    end
 end
 
 local function OwnsAppearance()
@@ -820,6 +803,7 @@ local function UpdateTarget(data)
     local style = showHighlight and db.targetHighlightStyle or "off"
     local changed = data.targeted ~= targeted
     data.targeted = targeted
+    if changed then PS.Stacking.PlateTargeted(data, targeted) end
     -- The state pass keeps an eye on the highlighted plate (StateTick).
     if targeted then rounds.targetPlate = data elseif rounds.targetPlate == data then rounds.targetPlate = nil end
     if data.targetGlowStyle ~= style then
@@ -1318,6 +1302,7 @@ local function AddPlate(unit)
         if db.threat then PS.ThreatService:RequestRefresh(unit) end
     end
     ApplyLayout(data)
+    PS.Stacking.PlateAdded(data)
 end
 
 -- Plate adds are spread over frames: once this frame's adds (with their flush) have cost
@@ -1469,6 +1454,7 @@ local function RemovePlate(unit)
     end
     data.layoutTransforms = nil
     ClearDirty(data)
+    PS.Stacking.PlateRemoved(data)
     data.unit, data.targetUnit = nil, nil
     active[unit] = nil
     if spotlightUnit == unit then
@@ -1623,6 +1609,8 @@ local platesReleased = false
 -- relayoutOnly: nothing in the settings changed (a zone change), so plates keep what was prepared
 -- for their layouts and the profile is not marked changed.
 local function RefreshAllNow(relayoutOnly)
+    -- Stacking sizes plates from their layouts, so every refresh may change them.
+    PS.Stacking.Invalidate()
     if not relayoutOnly then
         PS.Profiles.MarkChanged()
         settingsRevision = settingsRevision + 1
@@ -1778,6 +1766,9 @@ function changes.UnitKinds()
         end
     end
 end
+
+-- The target and focus plates are raised over the rest (Stacking), their parts levelled again.
+PS.Stacking.Attach({ active = active, ApplyDrawOrder = Styles.ApplyDrawOrder })
 
 local PlateSettings = assert(PS._CreatePlateSettings,
     "PlateSmith PlateSettings missing")({
@@ -2209,6 +2200,7 @@ local function HandleEvent(event, unit)
         end
     elseif event == "PLAYER_FOCUS_CHANGED" or event == "UPDATE_MOUSEOVER_UNIT" then
         pending.raidFallback = true
+        if event == "PLAYER_FOCUS_CHANGED" then PS.Stacking.FocusChanged() end
     elseif event == "PLAYER_ENTERING_WORLD" then
         RaidMarker.InvalidateCandidates()
         NamePolicy.ZoneChanged()

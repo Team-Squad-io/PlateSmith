@@ -95,6 +95,39 @@ function NamePolicy.FlushPending()
     end
 end
 
+-- A set of CVars another owner manages (Stacking), under one cvarRestore key: each CVar's
+-- original is captured once, before its first write, and put back by RestoreGroup. A CVar the
+-- client does not have is never written.
+function NamePolicy.WriteCaptured(group, name, value, immediate)
+    local current = NamePolicy.Read(name)
+    if current == nil then return false end
+    local restores = RestoreTable()
+    local record = type(restores[group]) == "table" and restores[group] or {}
+    restores[group] = record
+    if record[name] == nil then record[name] = current end
+    return NamePolicy.Write(name, value, immediate)
+end
+
+-- The originals captured under group (name -> value), or nil when there are none.
+function NamePolicy.CapturedGroup(group)
+    local record = Captured(group)
+    if type(record) ~= "table" or next(record) == nil then return nil end
+    return record
+end
+
+-- Puts back one captured CVar of group (name), or all of them (name nil), and forgets them.
+function NamePolicy.RestoreGroup(group, name, immediate)
+    local record = Captured(group)
+    if type(record) ~= "table" then return end
+    for key, value in pairs(record) do
+        if name == nil or key == name then
+            NamePolicy.Write(key, value, immediate)
+            record[key] = nil
+        end
+    end
+    if next(record) == nil then ClearRestore(group) end
+end
+
 local function RestoreRestrictedNames(clear)
     local restore = Captured("restrictedFriendlyNames")
     if type(restore) == "table" and restore.name and restore.value ~= nil then

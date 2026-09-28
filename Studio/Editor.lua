@@ -531,21 +531,35 @@ function Options:IsEditorPartShown(key, settings)
     return not (switch and settings and settings[switch] == false)
 end
 
--- Shows or hides key in this layout; showing it also turns its switch on.
+-- The profile-wide switch key's plates also follow (Settings' Show on plates and Aura defaults), if any.
+function Options:EditorPartSwitch(key) return PART_SWITCHES[key] end
+
+-- Shows or hides key in this layout; showing it also turns its switch on. Returns whether it did.
 local function WritePartVisibility(self, key, visible)
     PS.SetComponentVisibility(key, visible, self.editorProfile, self:CurrentEditorVariant())
     local switch = PART_SWITCHES[key]
     local settings = PS.GetSettings()
-    if visible and switch and settings and settings[switch] == false then PS.SetOption(switch, true) end
+    if visible and switch and settings and settings[switch] == false then
+        PS.SetOption(switch, true)
+        return true
+    end
+    return false
+end
+
+-- After an eye: a switch it turned on is ticked in Settings too (every control refreshes), else
+-- the layout, preview and tree follow.
+local function AfterPartVisibility(self, switched)
+    if switched then self:Refresh(true) else self:ReloadEditorLayout() end
 end
 
 function Options:SetEditorGroupVisibility(groupKey, visible)
+    local switched = false
     for _, key in ipairs(editorOrder) do
         if self:IsEditorUnder(key, groupKey) and self:IsEditorComponentRelevant(key) then
-            WritePartVisibility(self, key, visible)
+            switched = WritePartVisibility(self, key, visible) or switched
         end
     end
-    self:ReloadEditorLayout()
+    AfterPartVisibility(self, switched)
 end
 
 -- Whether this plate type can take another value, and the free slot it would use.
@@ -1587,9 +1601,8 @@ end
 function Options:SetEditorComponentVisibility(key, visible)
     if not self:IsEditorComponentRelevant(key) then return false end
     if not (self.editorLayout and self.editorLayout[key]) then return false end
-    WritePartVisibility(self, key, visible and true or false)
     -- The refresh redraws the tree and the inspector; clicking another part's eye selects it.
-    self:ReloadEditorLayout()
+    AfterPartVisibility(self, WritePartVisibility(self, key, visible and true or false))
     if self.selectedComponent ~= key then self:SelectEditorComponent(key) end
     return true
 end

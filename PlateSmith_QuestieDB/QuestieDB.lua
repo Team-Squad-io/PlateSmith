@@ -1,5 +1,8 @@
 local PS = _G.PlateSmith
 if not PS then return end
+-- QuestieDB is optional: the companion ships with PlateSmith for everyone, so without it (or its
+-- library) it stays silent instead of failing to load.
+if type(_G.LibQuestieDB) ~= "table" then return end
 local L = PS.L
 
 local MAX_QUESTS = 100

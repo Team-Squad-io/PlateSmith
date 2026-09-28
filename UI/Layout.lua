@@ -9,7 +9,8 @@ local Controls = assert(PS.UI and PS.UI.Controls, "PlateSmith Controls missing")
 -- token gap between neighbours, like CSS block flow: an item's flowBefore (or the one above's
 -- flowAfter, else the flow's gap) is the space between them, a hidden item takes no space, and
 -- a plain group passes its first and last items' gaps out, as CSS margins do. Inside a row
--- everything is centred on the row's middle line.
+-- everything is centred on the row's middle line. Columns (kit.Columns) deal a flow's sections
+-- into side by side columns when the panel is wide enough.
 --
 -- Items take their flow's width (anchored at both sides), and whatever ends at a row's right end
 -- (a value, a slider, a dropdown, help) is anchored to that end, so a column laid out at WIDTH
@@ -77,6 +78,18 @@ Layout.PALETTES = {
         card = { fill = { 0.14, 0.14, 0.14, 1 }, edge = { 0.6, 0.6, 0.6, 1 } },
         segment = { edge = { 0.8, 0.8, 0.8, 1 }, fill = { 0.08, 0.08, 0.08, 1 }, hover = { 0.22, 0.22, 0.22, 1 },
             chosen = { 0.89, 0.75, 0.13, 1 }, text = { 1, 1, 1 }, chosenText = { 0, 0, 0 }, off = { 0.5, 0.5, 0.5 } },
+    },
+    -- Studio's dark panels (its Settings workspace): the warm light labels and gold titles of its
+    -- tree and header, help a dimmer grey that still reads on the dark fill.
+    studio = {
+        ink = { label = { 0.87, 0.85, 0.81 }, value = { 0.95, 0.93, 0.88 }, muted = { 0.72, 0.70, 0.66 },
+            title = { 0.89, 0.75, 0.13 }, sub = { 0.80, 0.70, 0.45 }, error = { 1, 0.45, 0.38 }, ok = { 0.55, 0.9, 0.5 },
+            hint = { 0.55, 0.53, 0.5 } },
+        shadow = 1,
+        divider = { 0.55, 0.45, 0.28, 0.7 },
+        card = { fill = { 0, 0, 0, 0.3 }, edge = { 0.55, 0.45, 0.28, 0.7 } },
+        segment = { edge = { 0.55, 0.45, 0.28, 1 }, fill = { 0.06, 0.05, 0.04, 1 }, hover = { 0.17, 0.14, 0.1, 1 },
+            chosen = { 0.55, 0.42, 0.05, 1 }, text = { 0.87, 0.85, 0.81 }, chosenText = { 1, 1, 1 }, off = { 0.45, 0.43, 0.4 } },
     },
     -- Blizzard's own dark options panels: its standard font colours (highlight white labels,
     -- normal gold titles, grey help).
@@ -257,6 +270,112 @@ function Layout.New(config)
             local height = K.LayoutFlow(self, 0)
             self:SetHeight(math.max(1, height))
             return height
+        end
+        return frame
+    end
+
+    -- The height a flow of these measured items takes (heights[i] for items[i]), gaps as LayoutFlow.
+    local function StackHeight(items, heights, first, last, gap)
+        local height = 0
+        for index = first, last do
+            if index > first then
+                height = height + (Margin(items[index], "flowBefore") or Margin(items[index - 1], "flowAfter") or gap)
+            end
+            height = height + heights[index]
+        end
+        return height
+    end
+
+    -- Columns: a flow whose shown items (sections) are dealt into side by side columns, as many as
+    -- fit at options.minColumnWidth (default 360) with options.gap (default PAD_X * 2) between
+    -- them, at most options.maxColumns (default 2). Items keep their order, down the first column
+    -- and on into the next, split where the tallest column is shortest; each stretches to its
+    -- column's width. Measure() lays it out at its width, so a page laid out again after a resize
+    -- (or a section folding) reflows. Add items with kit.Add as to any flow. options.firstRule = false
+    -- drops the divider above each column's first section (when the page's heading has its own).
+    function K.Columns(parent, options)
+        options = options or {}
+        local minimum, gap = options.minColumnWidth or 360, options.gap or K.PAD_X * 2
+        local most = math.max(1, options.maxColumns or 2)
+        local frame = K.Flow(CreateFrame("Frame", nil, parent), options.rowGap)
+        frame:SetSize(K.WIDTH, 1)
+        frame.columns = {}
+        for index = 1, most do
+            local column = K.Flow(CreateFrame("Frame", nil, frame), options.rowGap)
+            column:SetSize(K.WIDTH, 1)
+            frame.columns[index] = column
+        end
+        -- How many columns fit in width.
+        function frame:ColumnCount(width)
+            width = width or self.kitWidth or K.WIDTH
+            return math.max(1, math.min(most, math.floor((width + gap) / (minimum + gap))))
+        end
+        function frame:Measure()
+            local width = self.kitWidth or K.WIDTH
+            local count = self:ColumnCount(width)
+            local each = math.floor((width - gap * (count - 1)) / count)
+            local shown, heights = {}, {}
+            for _, item in ipairs(self.flowItems) do
+                local member = item.frame
+                local visible = item.visible == nil or item.visible() and true or false
+                if visible then
+                    SetItemWidth(member, each)
+                    local height = member.Measure and member:Measure() or member:GetHeight()
+                    if member.flowItems and height <= 0 then visible = false end
+                    if visible then
+                        shown[#shown + 1], heights[#heights + 1] = member, height
+                    end
+                end
+                if not visible then member:Hide() end
+            end
+            -- The order-keeping split with the shortest tallest column (best[c][i]: items 1..i in c
+            -- columns; cut[c][i]: where the last of those columns starts).
+            local itemGap = self.flowGap or K.ROW_GAP
+            local n = #shown
+            if n < count then
+                count = math.max(1, n)
+                each = math.floor((width - gap * (count - 1)) / count)
+            end
+            local best, cut = { {} }, { {} }
+            for last = 1, n do best[1][last], cut[1][last] = StackHeight(shown, heights, 1, last, itemGap), 1 end
+            for columns = 2, count do
+                best[columns], cut[columns] = {}, {}
+                for last = columns, n do
+                    for start = columns, last do
+                        local tallest = math.max(best[columns - 1][start - 1], StackHeight(shown, heights, start, last, itemGap))
+                        if not best[columns][last] or tallest < best[columns][last] then
+                            best[columns][last], cut[columns][last] = tallest, start
+                        end
+                    end
+                end
+            end
+            local starts, last = {}, n
+            for columns = count, 1, -1 do
+                starts[columns] = n > 0 and cut[columns][last] or 1
+                last = starts[columns] - 1
+            end
+            local tallest = 0
+            for index, column in ipairs(self.columns) do
+                column.flowItems = {}
+                if index <= count and n > 0 then
+                    local stop = index < count and starts[index + 1] - 1 or n
+                    for position = starts[index], stop do column.flowItems[#column.flowItems + 1] = { frame = shown[position] } end
+                    for position, item in ipairs(column.flowItems) do
+                        local rule = item.frame.rule
+                        if rule and (options.firstRule ~= false or position > 1) then rule:Show() elseif rule then rule:Hide() end
+                    end
+                end
+                column:ClearAllPoints()
+                column:SetPoint("TOPLEFT", self, "TOPLEFT", (index - 1) * (each + gap), 0)
+                column:SetWidth(each)
+                local height = K.LayoutFlow(column, 0)
+                column:SetHeight(math.max(1, height))
+                column:SetShown(index <= count)
+                tallest = math.max(tallest, height)
+            end
+            self.columnCount, self.columnWidth = count, each
+            self:SetHeight(math.max(1, tallest))
+            return tallest
         end
         return frame
     end

@@ -1308,6 +1308,84 @@ local function SettingValue(key, value)
     return nil
 end
 
+-- Blizzard's nameplate stacking, distance, scale and fade CVars PlateSmith can manage
+-- (Nameplates/Stacking.lua), in the order the UI lists them: { key, group, kind, min, max, step,
+-- default }. A choice lists its values; a number is clamped to [min, max]. default is used only
+-- when the client reports none. The client reports no bounds, so these are PlateSmith's.
+local STACKING_CVARS = {
+    { "nameplateMotion", "stacking", "choice", choices = { 0, 1 }, default = 0 },
+    { "nameplateMotionSpeed", "stacking", "number", 0, 0.5, 0.005, default = 0.025 },
+    { "nameplateOverlapV", "stacking", "number", 0.2, 2.5, 0.05, default = 1.1 },
+    { "nameplateOverlapH", "stacking", "number", 0.2, 2.5, 0.05, default = 0.8 },
+    { "nameplateOtherTopInset", "edges", "number", -1, 0.5, 0.01, default = 0.08 },
+    { "nameplateOtherBottomInset", "edges", "number", -1, 0.5, 0.01, default = 0.1 },
+    { "nameplateLargeTopInset", "edges", "number", -1, 0.5, 0.01, default = 0.1 },
+    { "nameplateLargeBottomInset", "edges", "number", -1, 0.5, 0.01, default = 0.15 },
+    { "nameplateTargetRadialPosition", "edges", "choice", choices = { 0, 1, 2 }, default = 0 },
+    { "nameplateTargetBehindMaxDistance", "distance", "number", 0, 100, 1, default = 15 },
+    { "nameplateMaxDistance", "distance", "number", 5, 100, 1, default = 41 },
+    { "nameplateMinScale", "scale", "number", 0.3, 1.5, 0.05, default = 0.8 },
+    { "nameplateMaxScale", "scale", "number", 0.3, 2, 0.05, default = 1 },
+    { "nameplateMinScaleDistance", "scale", "number", 0, 100, 1, default = 10 },
+    { "nameplateMaxScaleDistance", "scale", "number", 0, 100, 1, default = 10 },
+    { "nameplateSelectedScale", "scale", "number", 0.5, 2, 0.05, default = 1.2 },
+    { "nameplateLargerScale", "scale", "number", 0.5, 2, 0.05, default = 1.2 },
+    { "nameplateMinAlpha", "fade", "number", 0, 1, 0.05, default = 0.6 },
+    { "nameplateMaxAlpha", "fade", "number", 0, 1, 0.05, default = 1 },
+    { "nameplateMinAlphaDistance", "fade", "number", 0, 100, 1, default = 10 },
+    { "nameplateMaxAlphaDistance", "fade", "number", 0, 100, 1, default = 40 },
+    { "nameplateSelectedAlpha", "fade", "number", 0, 1, 0.05, default = 1 },
+    { "nameplateNotSelectedAlpha", "fade", "number", 0, 1, 0.05, default = 0.5 },
+    { "nameplateOccludedAlphaMult", "fade", "number", 0, 1, 0.05, default = 0.4 },
+}
+local stackingCVar = {}
+for _, entry in ipairs(STACKING_CVARS) do stackingCVar[entry[1]] = entry end
+
+-- Fixed spacing presets (docs/STACKING.md): stacking on, then how fast plates move apart, how far
+-- apart they stack (overlap: 1 = one plate's size) and how close to the screen edges they may go.
+local STACKING_PRESETS = {
+    tight = { nameplateMotion = 1, nameplateMotionSpeed = 0.1, nameplateOverlapV = 0.7, nameplateOverlapH = 0.6,
+        nameplateOtherTopInset = 0.05, nameplateOtherBottomInset = 0.05, nameplateLargeTopInset = 0.05,
+        nameplateLargeBottomInset = 0.05 },
+    normal = { nameplateMotion = 1, nameplateMotionSpeed = 0.05, nameplateOverlapV = 1.1, nameplateOverlapH = 0.8,
+        nameplateOtherTopInset = 0.08, nameplateOtherBottomInset = 0.1, nameplateLargeTopInset = 0.1,
+        nameplateLargeBottomInset = 0.15 },
+    loose = { nameplateMotion = 1, nameplateMotionSpeed = 0.025, nameplateOverlapV = 1.6, nameplateOverlapH = 1.1,
+        nameplateOtherTopInset = 0.1, nameplateOtherBottomInset = 0.15, nameplateLargeTopInset = 0.12,
+        nameplateLargeBottomInset = 0.2 },
+}
+local stackingPresetNames = { custom = true, tight = true, normal = true, loose = true }
+-- managed = false: PlateSmith never writes these CVars (the default, and every existing profile's).
+-- values holds only what the player set; anything else keeps the client's own value.
+local stackingDefaults = { managed = false, preset = "custom", targetOnTop = true, focusOnTop = false,
+    matchFrameSize = true, combatStacking = false }
+local STACKING_OPTIONS = { "targetOnTop", "focusOnTop", "matchFrameSize", "combatStacking" }
+
+-- A stacking CVar's value made valid, or nil (unknown CVar, or not a usable value).
+local function StackingValue(key, value)
+    local entry = stackingCVar[key]
+    value = tonumber(value)
+    if not entry or not value or value ~= value then return nil end
+    if entry.choices then
+        for _, choice in ipairs(entry.choices) do if choice == value then return value end end
+        return nil
+    end
+    return math.max(entry[4], math.min(entry[5], value))
+end
+
+local function NormalizeStacking(stacking)
+    stacking = type(stacking) == "table" and stacking or {}
+    local result = { managed = stacking.managed == true, values = {} }
+    result.preset = stackingPresetNames[stacking.preset] and stacking.preset or stackingDefaults.preset
+    for _, key in ipairs(STACKING_OPTIONS) do
+        if type(stacking[key]) == "boolean" then result[key] = stacking[key] else result[key] = stackingDefaults[key] end
+    end
+    for key, value in pairs(type(stacking.values) == "table" and stacking.values or {}) do
+        result.values[key] = StackingValue(key, value)
+    end
+    return result
+end
+
 local function NormalizeSettings(settings)
     settings = type(settings) == "table" and settings or {}
     -- Every saved profile carries schemaVersion (stamped below), so a table without one is new
@@ -1325,6 +1403,9 @@ local function NormalizeSettings(settings)
         settings.relationshipColours[key] = NormalizeColour(settings.relationshipColours[key], fallback)
     end
     settings.plateProfiles = NormalizeProfiles(settings.plateProfiles, settings)
+    -- Stacking drives account-wide CVars, so Blueprints leave it out (Core/Blueprint.lua lists
+    -- what they carry).
+    settings.stacking = NormalizeStacking(settings.stacking)
     -- The top-level scale, width, healthHeight, nameFontSize and layout mirror the enemy profile.
     local enemy = settings.plateProfiles.enemy
     for key in pairs(ENEMY_ALIASES) do settings[key] = enemy[key] end
@@ -1348,6 +1429,8 @@ local stateDefaults = {
     stylePresets = {},
     -- Studio's and Settings' folded sections for this player: section key -> true.
     sectionFolds = {},
+    -- The other-nameplate-addon notice: dismissed[set of addon folder names, "A+B"] = true.
+    conflictNotice = { dismissed = {} },
 }
 local studioScaleRange = { 0.6, 1.3 }
 
@@ -1372,6 +1455,16 @@ local function NormalizeState(state)
         end
     end
     state.sectionFolds = folds
+    local dismissed, sets = {}, 0
+    local notice = type(state.conflictNotice) == "table" and state.conflictNotice.dismissed
+    if type(notice) == "table" then
+        for key, value in pairs(notice) do
+            if type(key) == "string" and #key <= 200 and value == true and sets < 32 then
+                dismissed[key], sets = true, sets + 1
+            end
+        end
+    end
+    state.conflictNotice = { dismissed = dismissed }
     return state
 end
 
@@ -1483,4 +1576,11 @@ PS.ProfileSchema = {
     ProfileOptionValue = ProfileOptionValue,
     CopyEnemyProfile = CopyEnemyProfile,
     NormalizeSettings = NormalizeSettings,
+    STACKING_CVARS = STACKING_CVARS,
+    STACKING_PRESETS = STACKING_PRESETS,
+    STACKING_OPTIONS = STACKING_OPTIONS,
+    stackingDefaults = stackingDefaults,
+    stackingPresetNames = stackingPresetNames,
+    StackingValue = StackingValue,
+    NormalizeStacking = NormalizeStacking,
 }

@@ -1,6 +1,8 @@
 -- Read-only diagnostics for live nameplates. The runtime supplies its current state
 -- without exposing plate ownership through the public module API.
 local _, PS = ...
+-- Add-ons a report names with their state (optional companions and what they build on).
+local REPORTED_ADDONS = { "PlateSmith_QuestieDB", "QuestieDB", "Questie", "LibSharedMedia-3.0" }
 local L = PS.L
 local DiagnosticUI = assert(PS.DiagnosticUI, "PlateSmith DiagnosticUI missing")
 
@@ -128,6 +130,35 @@ PS._CreateDiagnosticProbes = function(context)
             performance = PS.Performance.Report(),
             raid = {},
         }
+        if PS.Conflicts then report.conflicts = PS.Conflicts.Report() end
+        -- Modules (the QuestieDB companion and any extension) and the add-ons they rely on, so a report
+        -- shows why an optional feature is off: not installed, disabled, or loaded but failing.
+        report.modules = {}
+        if type(PS.IterateModules) == "function" then
+            for id, module in PS:IterateModules() do
+                report.modules[#report.modules + 1] = { id = id, version = tostring(module.version or "unknown"),
+                    state = tostring(module._plateSmithState or "registered") }
+            end
+        end
+        report.addons = {}
+        local addOns = C_AddOns or {}
+        for _, name in ipairs(REPORTED_ADDONS) do
+            local state = "missing"
+            local okLoaded, loaded = pcall(addOns.IsAddOnLoaded or IsAddOnLoaded, name)
+            if okLoaded and loaded == true then
+                state = "loaded"
+            else
+                local okInfo, _, _, _, loadable, reason = pcall(addOns.GetAddOnInfo or GetAddOnInfo, name)
+                if okInfo and reason == "DISABLED" then
+                    state = "disabled"
+                elseif okInfo and reason == "MISSING" then
+                    state = "missing"
+                elseif okInfo and (loadable or reason) then
+                    state = reason and string.lower(tostring(reason)) or "not-loaded"
+                end
+            end
+            report.addons[name] = state
+        end
         if inInstance and (instanceType == "party" or instanceType == "raid") then
             local trackedFriendly, overlayShown, overlayErrors, firstError = 0, 0, 0, nil
             for _, data in pairs(active) do
