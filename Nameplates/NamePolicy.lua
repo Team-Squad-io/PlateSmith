@@ -50,9 +50,19 @@ local function ClearRestore(key)
 end
 
 -- In a dungeon or raid, where Blizzard owns friendly plates and enemies use the dungeon profile.
+-- Every plate asks as it arrives, so the answer is read once per zone (NamePolicy.ZoneChanged on
+-- PLAYER_ENTERING_WORLD and ZONE_CHANGED_NEW_AREA).
+local groupInstance
 function NamePolicy.InGroupInstance()
-    local inInstance, instanceType = IsInInstance()
-    return inInstance and (instanceType == "party" or instanceType == "raid") or false
+    if groupInstance == nil then
+        local inInstance, instanceType = IsInInstance()
+        groupInstance = inInstance and (instanceType == "party" or instanceType == "raid") or false
+    end
+    return groupInstance
+end
+
+function NamePolicy.ZoneChanged()
+    groupInstance = nil
 end
 local InRestrictedInstance = NamePolicy.InGroupInstance
 

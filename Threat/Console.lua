@@ -907,16 +907,60 @@ local function ShiftDown()
 end
 
 local sizingState, sizingRow, sizingColumn, skipBottom, skipRight = {}, {}, {}, {}, {}
+-- Windows a resize pushes along (below the row, right of the column), each after the one it rests on.
+local pushDown, downParents, pushRight, rightParents, pushSources = {}, {}, {}, {}, {}
+-- The grip re-enters under the cursor as its window resizes: no tooltip until this long after.
+local GRIP_TOOLTIP_QUIET = 0.2
+
+local function ClearPushes()
+    for index = #pushDown, 1, -1 do pushDown[index] = nil end
+    for index = #pushRight, 1, -1 do pushRight[index] = nil end
+    for key in pairs(downParents) do downParents[key] = nil end
+    for key in pairs(rightParents) do rightParents[key] = nil end
+end
+
+-- The source a chain of pushed windows starts from.
+local function PushRoot(parents, key)
+    while parents[key] ~= nil do key = parents[key] end
+    return key
+end
+
+-- How far the resized edge may go before a pushed window would leave the screen: its movement
+-- is the new size less its chain's source's size at the start.
+local function PushLimit(rects, order, parents, vertical, screenWidth)
+    local limit
+    for _, key in ipairs(order) do
+        local rect, root = rects[key], rects[PushRoot(parents, key)]
+        local room
+        if vertical then
+            room = root.top - root.bottom + rect.bottom
+        else
+            room = root.right - root.left + screenWidth - rect.right
+        end
+        if not limit or room < limit then limit = room end
+    end
+    return limit
+end
+
+local function SetPushSources(id, line)
+    for key in pairs(pushSources) do pushSources[key] = nil end
+    pushSources[id] = true
+    for key in pairs(line) do pushSources[key] = true end
+    return pushSources
+end
 
 -- The windows that resize with a window: the free, unlocked, shown windows in its row take its
--- height and those in its column its width. Shift, or a following window, resizes alone. Only
--- the window itself is left out of what the resize snaps to.
+-- height and those in its column its width, and the windows stacked below them or beside them
+-- on the right move to stay attached. Shift, or a following window, resizes alone. Only the
+-- window itself is left out of what the resize snaps to.
 function ThreatConsole:LinkSizing(meter, alone)
     local group = self.sizingGroup or {}
     self.sizingGroup = group
     for id in pairs(group) do group[id] = nil end
     local id = meter.config.id
     group[id] = true
+    ClearPushes()
+    sizingState.maxWidth, sizingState.maxHeight = nil, nil
     if alone or meter.config.dockMeter > 0 then
         for key in pairs(sizingRow) do sizingRow[key] = nil end
         for key in pairs(sizingColumn) do sizingColumn[key] = nil end
@@ -930,6 +974,43 @@ function ThreatConsole:LinkSizing(meter, alone)
     Geometry.Line(rects, id, false, sizingRow)
     Geometry.Line(rects, id, true, sizingColumn)
     sizingRow[id], sizingColumn[id] = nil, nil
+    Geometry.Pushed(rects, SetPushSources(id, sizingRow), true, pushDown, downParents)
+    Geometry.Pushed(rects, SetPushSources(id, sizingColumn), false, pushRight, rightParents)
+    local screenWidth = ScreenSize()
+    local maxHeight = PushLimit(rects, pushDown, downParents, true, screenWidth)
+    local maxWidth = PushLimit(rects, pushRight, rightParents, false, screenWidth)
+    -- Never below the size at the start, so the window does not jump.
+    sizingState.maxHeight = maxHeight and math.max(maxHeight, sizingState.height or 0)
+    sizingState.maxWidth = maxWidth and math.max(maxWidth, sizingState.width or 0)
+end
+
+-- Moves the pushed windows onto the edges they rest on, which the resize has just moved.
+function ThreatConsole:PushAttached()
+    for _, id in ipairs(pushDown) do
+        local record, parent, meter = self:GetWindow(id), self:GetWindow(downParents[id]), self.meters[id]
+        if record and parent and meter then
+            record.top = parent.top - parent.height
+            meter:Place()
+        end
+    end
+    for _, id in ipairs(pushRight) do
+        local record, parent, meter = self:GetWindow(id), self:GetWindow(rightParents[id]), self.meters[id]
+        if record and parent and meter then
+            record.left = parent.left + parent.width
+            meter:Place()
+        end
+    end
+end
+
+-- The grip's tooltip shows only on a plain hover: not while resizing, not just after, and not
+-- while the button is held from a drag elsewhere.
+function ThreatConsole:GripTooltipAllowed()
+    if self.sizing or self.drag then return false end
+    if type(IsMouseButtonDown) == "function" and IsMouseButtonDown("LeftButton") == true then return false end
+    local ended = self.sizingEndedAt
+    local now = type(GetTime) == "function" and GetTime() or nil
+    if ended and type(now) == "number" and now - ended < GRIP_TOOLTIP_QUIET then return false end
+    return true
 end
 
 -- The corner grip resizes by following the cursor itself rather than the client's StartSizing,
@@ -967,8 +1048,8 @@ function ThreatConsole:UpdateSizing(final)
     if not x then return end
     local state, config = sizingState, meter.config
     local screenWidth = ScreenSize()
-    local width = math.min(state.width + x - state.x, screenWidth - state.left)
-    local height = math.min(state.height - (y - state.y), state.top)
+    local width = math.min(state.width + x - state.x, screenWidth - state.left, state.maxWidth or math.huge)
+    local height = math.min(state.height - (y - state.y), state.top, state.maxHeight or math.huge)
     width, height = Bounded(ranges.width, width, config.width), Bounded(ranges.height, height, config.height)
     local rect = ScratchRect("sizing", state.left, state.top, width, height)
     local others = self:OtherRects(self.sizingGroup)
@@ -983,11 +1064,18 @@ function ThreatConsole:UpdateSizing(final)
         for id in pairs(sizingColumn) do
             if scratchRects[id] then skipRight[scratchRects[id]] = true end
         end
+        -- A pushed window moves with the edge it rests on, so that edge does not snap to it either.
+        for _, id in ipairs(pushDown) do
+            if scratchRects[id] then skipBottom[scratchRects[id]] = true end
+        end
+        for _, id in ipairs(pushRight) do
+            if scratchRects[id] then skipRight[scratchRects[id]] = true end
+        end
         local dRight, dBottom
         dRight, dBottom, xEdge, yEdge, xTarget, yTarget = Geometry.SnapSize(rect, others, nil, screenWidth, skipBottom,
             skipRight)
-        width = Bounded(ranges.width, width + dRight, width)
-        height = Bounded(ranges.height, height - dBottom, height)
+        width = math.min(Bounded(ranges.width, width + dRight, width), state.maxWidth or math.huge)
+        height = math.min(Bounded(ranges.height, height - dBottom, height), state.maxHeight or math.huge)
         rect = ScratchRect("sizing", state.left, state.top, width, height)
     end
     width, height = math.floor(width + 0.5), math.floor(height + 0.5)
@@ -996,6 +1084,7 @@ function ThreatConsole:UpdateSizing(final)
         meter.frame:SetSize(width, height)
         for id in pairs(sizingRow) do self:ResizeLinked(id, nil, height) end
         for id in pairs(sizingColumn) do self:ResizeLinked(id, width, nil) end
+        self:PushAttached()
     end
     self:DrawSnapGuide(rect, others, xEdge, yEdge, xTarget, yTarget)
 end
@@ -1013,6 +1102,8 @@ function ThreatConsole:AbortSizing(meter)
     local grip = self.sizing.grip
     if grip and grip.SetScript then grip:SetScript("OnUpdate", nil) end
     self.sizing = nil
+    self.sizingEndedAt = type(GetTime) == "function" and GetTime() or nil
+    ClearPushes()
     self:StopSnapFeedback()
     return true
 end

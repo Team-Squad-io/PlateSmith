@@ -57,15 +57,53 @@ function Profiles.CleanName(name)
     return name
 end
 
-function Profiles.Notify()
-    changed = false
-    for _, listener in ipairs(listeners) do pcall(listener) end
+-- IsDirty compares the whole working copy with the saved profile, so its answer is kept until
+-- something can change it (an edit, a load or a save) and each Notify asks at most once.
+local dirtyKnown, dirty = false, false
+local function Invalidate() dirtyKnown = false end
+
+local function OwnerShown(owner)
+    if owner.IsVisible then return owner:IsVisible() end
+    return not owner.IsShown or owner:IsShown()
 end
 
--- Listeners run after any profile change; setting edits are batched by the ticker.
-function Profiles.Subscribe(listener) listeners[#listeners + 1] = listener end
+function Profiles.Notify()
+    changed = false
+    PS.Ticker.SetEnabled("profiles.changes", false)
+    Invalidate()
+    for _, entry in ipairs(listeners) do
+        if entry.owner and not OwnerShown(entry.owner) then
+            entry.stale = true
+        else
+            entry.stale = false
+            pcall(entry.listener)
+        end
+    end
+end
 
-function Profiles.MarkChanged() changed = true end
+-- Listeners run after any profile change; setting edits are batched by the ticker. With an owner
+-- frame, the listener is skipped while the frame is hidden and runs when it is shown again.
+function Profiles.Subscribe(listener, owner)
+    local entry = { listener = listener, owner = owner }
+    listeners[#listeners + 1] = entry
+    if owner and owner.HookScript then
+        owner:HookScript("OnShow", function()
+            if entry.stale then
+                entry.stale = false
+                pcall(listener)
+            end
+        end)
+    end
+end
+
+-- The changes tick runs only between an edit and the Notify that reports it.
+function Profiles.MarkChanged()
+    Invalidate()
+    if not changed then
+        changed = true
+        PS.Ticker.SetEnabled("profiles.changes", true)
+    end
+end
 
 function Profiles.Load()
     store = type(PlateSmithDB) == "table" and PlateSmithDB or {}
@@ -92,6 +130,7 @@ function Profiles.Load()
         store.profileKeys[characterKey] = active
     end
     working = Table.DeepCopy(store.profiles[active])
+    Invalidate()
     return working
 end
 
@@ -108,7 +147,11 @@ end
 
 function Profiles.IsDirty()
     if not working then return false end
-    return not Table.DeepEqual(working, store.profiles[Profiles.Active()])
+    if not dirtyKnown then
+        dirty = not Table.DeepEqual(working, store.profiles[Profiles.Active()])
+        dirtyKnown = true
+    end
+    return dirty
 end
 
 -- Which settings differ from the saved profile, as dotted paths (for diagnostics and the Save bar).
@@ -122,6 +165,7 @@ local function Load(settings)
     loads = loads + 1
     Table.Replace(working, Table.DeepCopy(settings))
     S.NormalizeSettings(working)
+    Invalidate()
     PS.NamePolicy.Apply()
     PS.Refresh()
     Profiles.Notify()
@@ -133,6 +177,7 @@ function Profiles.Loads() return loads end
 
 function Profiles.Save()
     store.profiles[Profiles.Active()] = Table.DeepCopy(working)
+    Invalidate()
     Profiles.Notify()
     return true
 end
@@ -239,3 +284,4 @@ end
 PS.Ticker.Register("profiles.changes", 0.2, function()
     if changed then Profiles.Notify() end
 end)
+PS.Ticker.SetEnabled("profiles.changes", false)

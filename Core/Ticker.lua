@@ -33,6 +33,18 @@ function Ticker.SetEnabled(id, enabled)
     end
 end
 
+-- Changes how often an entry runs. Time already waited counts toward the new interval, so a
+-- shorter one takes effect on the next frame that reaches it.
+function Ticker.SetInterval(id, interval)
+    local entry = byId[id]
+    if entry then entry.interval = tonumber(interval) or 0 end
+end
+
+function Ticker.IsEnabled(id)
+    local entry = byId[id]
+    return entry ~= nil and entry.enabled
+end
+
 local function Run(entry, elapsed, now)
     local started = Clock()
     local ok, failure = pcall(entry.callback, elapsed, now)

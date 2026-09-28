@@ -223,6 +223,112 @@ PS._CreateTemplateReaders = function(context)
         ["threat.offtank"] = ThreatFact("offtank"),
     }
 
+    -- What a plate's custom parts and rules read, by the kind of change that marks it (Lifecycle's
+    -- MarkValues). A token with no event of its own (combat, level, a module's token) is volatile:
+    -- whatever reads it follows every change, as it always has. friendly is fixed by the layout.
+    local READ_KINDS = { "health", "power", "threat", "cast", "target", "targeted" }
+    local TOKEN_KINDS = {
+        ["health"] = "health", ["health.max"] = "health", ["health.percent"] = "health", ["health.missing"] = "health",
+        ["power"] = "power", ["power.max"] = "power", ["power.percent"] = "power",
+        ["threat.percent"] = "threat", ["threat.lead"] = "threat", ["threat.raw"] = "threat", ["threat.hold"] = "threat",
+        ["tanking"] = "threat", ["threat.holding"] = "threat", ["threat.losing"] = "threat",
+        ["threat.pulling"] = "threat", ["threat.other"] = "threat", ["threat.offtank"] = "threat",
+        ["casting"] = "cast", ["cast.name"] = "cast", ["interruptible"] = "cast",
+        ["target"] = "target", ["targeted"] = "targeted", ["friendly"] = false,
+    }
+    local SOURCE_KINDS = {
+        healthCurrent = "health", healthValue = "health", healthPercent = "health",
+        powerCurrent = "power", powerValue = "power", powerPercent = "power",
+        threatPercent = "threat", leadPercent = "threat", rawThreat = "threat", differential = "threat",
+    }
+    local BAR_KINDS = { healthPercent = "health", powerPercent = "power", threatPercent = "threat" }
+
+    local function AddToken(set, token)
+        local kind = TOKEN_KINDS[token]
+        if kind == nil then set.volatile = true elseif kind then set[kind] = true end
+    end
+    local function AddCondition(set, node)
+        if type(node) ~= "table" then return end
+        if node.token then AddToken(set, node.token) end
+        if node.both then AddCondition(set, node.both[1]) AddCondition(set, node.both[2]) end
+        if node.either then AddCondition(set, node.either[1]) AddCondition(set, node.either[2]) end
+        AddCondition(set, node.negate)
+        AddCondition(set, node.truth)
+        AddCondition(set, node.left)
+        AddCondition(set, node.right)
+    end
+    local function AddNodes(set, nodes)
+        if type(nodes) ~= "table" then return end
+        for _, node in ipairs(nodes) do
+            if node.token then AddToken(set, node.token) end
+            if node.branches then
+                for _, branch in ipairs(node.branches) do
+                    AddCondition(set, branch.condition)
+                    AddNodes(set, branch.nodes)
+                end
+                AddNodes(set, node.otherwise)
+            end
+        end
+    end
+    -- A volatile set reads every kind.
+    local function Merge(into, set)
+        if set.volatile then
+            into.volatile = true
+            for _, kind in ipairs(READ_KINDS) do into[kind] = true end
+        else
+            for kind in pairs(set) do into[kind] = true end
+        end
+    end
+
+    local function BuildReads(profile, layout)
+        local reads = { values = {}, rules = {}, slots = {} }
+        local keys = PS.ProfileSchema.VALUE_SLOT_COUNT
+        for index = 1, keys do
+            local key = "value" .. index
+            local slot = profile.valueSlots and profile.valueSlots[key]
+            local position = layout and layout[key]
+            if type(slot) == "table" and not (position and position.visible == false) then
+                local set = {}
+                if slot.kind == "bar" then
+                    if BAR_KINDS[slot.source] then set[BAR_KINDS[slot.source]] = true end
+                elseif not slot.kind and slot.source == "template" and slot.template then
+                    -- A template that does not compile shows nothing, whatever changes.
+                    AddNodes(set, (PS.Template.Compile(slot.template)))
+                    reads.slots[key] = set
+                elseif not slot.kind and SOURCE_KINDS[slot.source] then
+                    set[SOURCE_KINDS[slot.source]] = true
+                end
+                Merge(reads.values, set)
+            end
+        end
+        for _, list in pairs(profile.rules or {}) do
+            for _, rule in ipairs(list) do
+                local set = {}
+                if rule.set == "blend" then set.health = true end
+                if type(rule.when) == "string" and rule.when:find("%S") then
+                    local tree = PS.Template.CompileCondition(rule.when)
+                    AddCondition(set, tree)
+                end
+                Merge(reads.rules, set)
+                reads.anyRules = true
+            end
+        end
+        return reads
+    end
+
+    -- Built once per profile, layout and settings revision (a slot or rule is edited in place, and
+    -- every edit bumps the revision), so plates share it.
+    local readsCache = setmetatable({}, { __mode = "k" })
+    function Readers.PlateReads(profile, layout, revision)
+        if type(profile) ~= "table" or type(layout) ~= "table" then return nil end
+        local entry = readsCache[layout]
+        if not (entry and entry.profile == profile and entry.revision == revision) then
+            entry = { profile = profile, revision = revision, reads = BuildReads(profile, layout) }
+            readsCache[layout] = entry
+        end
+        return entry.reads
+    end
+
     -- One reader per plate, made once. Its cache holds for one plate update (the values render
     -- and the rules share it); Begin starts a new one. Whether a token was read is kept apart from
     -- its value, so a protected value is never compared with nil.

@@ -223,6 +223,51 @@ function Geometry.Line(rects, start, vertical, into)
     return line
 end
 
+-- The rectangles a resize pushes along, so they stay attached: when vertical, those stacked
+-- below one of sources (top on its bottom, overlapping across it), else those beside it on the
+-- right (left on its right, overlapping along it); then, chained, those against the pushed
+-- ones. sources is a set of keys in rects, which are resized, not pushed. order is filled with
+-- the pushed keys, each after the one it rests on, and parents with key -> that key.
+function Geometry.Pushed(rects, sources, vertical, order, parents)
+    local tolerance = Geometry.TOUCH_TOLERANCE
+    for index = #order, 1, -1 do order[index] = nil end
+    for key in pairs(parents) do parents[key] = nil end
+    local keys, queue = {}, {}
+    for key in pairs(rects) do keys[#keys + 1] = key end
+    table.sort(keys, function(a, b)
+        if type(a) == type(b) then return a < b end
+        return tostring(a) < tostring(b)
+    end)
+    for _, key in ipairs(keys) do
+        if sources[key] then queue[#queue + 1] = key end
+    end
+    local index = 1
+    while queue[index] do
+        local parentKey = queue[index]
+        local parent = rects[parentKey]
+        for _, key in ipairs(keys) do
+            local rect = rects[key]
+            if not sources[key] and not parents[key] then
+                local attached
+                if vertical then
+                    attached = math.abs(rect.top - parent.bottom) <= tolerance
+                        and Overlaps(rect.left, rect.right, parent.left, parent.right, -tolerance)
+                else
+                    attached = math.abs(rect.left - parent.right) <= tolerance
+                        and Overlaps(rect.bottom, rect.top, parent.bottom, parent.top, -tolerance)
+                end
+                if attached then
+                    parents[key] = parentKey
+                    order[#order + 1] = key
+                    queue[#queue + 1] = key
+                end
+            end
+        end
+        index = index + 1
+    end
+    return order, parents
+end
+
 -- Where a window of this size may sit so all of it is on a screen of this size (the frames are
 -- clamped, so a saved position off screen would not be where the window is drawn).
 -- Returns left and top, rounded to whole units.

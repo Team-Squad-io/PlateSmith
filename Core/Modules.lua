@@ -11,6 +11,7 @@ local modules = {}
 local moduleOrder = {}
 local questProviders = {}
 local questProviderOrder = {}
+local questProviderIndex, questProviderIds = {}, {}
 local initialized = false
 local enabled = false
 local Chat = assert(PS.Chat, "PlateSmith Chat missing")
@@ -122,6 +123,7 @@ function PS:RegisterQuestProvider(id, definition)
     definition.id = id
     questProviders[id] = definition
     questProviderOrder[#questProviderOrder + 1] = definition
+    questProviderIndex[id], questProviderIds[#questProviderOrder] = #questProviderOrder, id
     return definition
 end
 
@@ -129,13 +131,19 @@ function PS:GetQuestProvider(id)
     return questProviders[id]
 end
 
-function PS:IterateQuestProviders()
+-- Stateless: the plates walk the providers for every quest check, so no closure is made per call.
+local function NextQuestProvider(_, id)
     local index = 0
-    return function()
-        index = index + 1
-        local provider = questProviderOrder[index]
-        if provider then return provider.id, provider end
+    if id ~= nil then
+        index = questProviderIndex[id]
+        if not index then return nil end
     end
+    local provider = questProviderOrder[index + 1]
+    if provider then return questProviderIds[index + 1], provider end
+end
+
+function PS:IterateQuestProviders()
+    return NextQuestProvider, nil, nil
 end
 
 -- Style extensions. Each returns true, or false and a reason, and stores nothing on failure.

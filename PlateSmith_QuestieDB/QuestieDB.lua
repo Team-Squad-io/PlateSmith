@@ -33,11 +33,12 @@ local function CopyDefaults()
     return saved
 end
 
-local function NpcIDForUnit(unit)
-    if type(UnitGUID) ~= "function" then return nil end
-    local ok, guid = pcall(UnitGUID, unit)
-    if not ok or not IsReadable(guid) or type(guid) ~= "string" then return nil end
+-- GUID -> npcID (false for a GUID that is no creature), so a plate's GUID is split once. String keys
+-- are never collected from a weak table, so the cache is bounded and starts over when full.
+local NPC_CACHE_LIMIT = 512
+local npcByGUID, npcCacheSize = {}, 0
 
+local function ParseNpcID(guid)
     local unitType, npcID
     if type(strsplit) == "function" then
         local _
@@ -45,9 +46,25 @@ local function NpcIDForUnit(unit)
     else
         unitType, npcID = guid:match("^([^-]+)%-[^-]*%-[^-]*%-[^-]*%-[^-]*%-(%d+)")
     end
-    if unitType ~= "Creature" and unitType ~= "Vehicle" then return nil end
+    if unitType ~= "Creature" and unitType ~= "Vehicle" then return false end
     npcID = tonumber(npcID)
-    return npcID and npcID > 0 and npcID or nil
+    return npcID and npcID > 0 and npcID or false
+end
+
+local function NpcIDForUnit(unit)
+    if type(UnitGUID) ~= "function" then return nil end
+    local ok, guid = pcall(UnitGUID, unit)
+    if not ok or not IsReadable(guid) or type(guid) ~= "string" then return nil end
+    local npcID = npcByGUID[guid]
+    if npcID == nil then
+        if npcCacheSize >= NPC_CACHE_LIMIT then
+            for key in pairs(npcByGUID) do npcByGUID[key] = nil end
+            npcCacheSize = 0
+        end
+        npcID = ParseNpcID(guid)
+        npcByGUID[guid], npcCacheSize = npcID, npcCacheSize + 1
+    end
+    return npcID or nil
 end
 
 local function AddReason(target, npcID, reason)
@@ -87,7 +104,67 @@ local function DatabaseDrops(itemID)
     return ok, drops
 end
 
+-- The quest log as numbers: the options, then each quest's ID and its objectives' type and
+-- finished state (all a rebuild reads from the log). An unchanged signature needs no rebuild.
+local signature, lastSignature = {}, {}
+local signatureLength, lastSignatureLength = 0, nil
+local logQuestIDs, logObjectives, logCount = {}, {}, 0
+local OBJECTIVE_TYPES = { monster = 1, item = 2 }
+
+local function Sign(value)
+    signatureLength = signatureLength + 1
+    signature[signatureLength] = value
+end
+
+local function ReadQuestLog(count, getInfo)
+    signatureLength, logCount = 0, 0
+    Sign(module.db.directObjectives and 1 or 0)
+    Sign(module.db.possibleItemDrops and 1 or 0)
+    for index = 1, math.min(MAX_QUESTS, math.floor(count)) do
+        local infoOK, info = pcall(getInfo, index)
+        local validInfo = infoOK and IsReadable(info) and type(info) == "table"
+        local isHeader
+        if validInfo then isHeader = info.isHeader end
+        if validInfo and IsReadable(isHeader) and not isHeader then
+            local questID = ReadNumber(info.questID)
+            if questID and questID > 0 then
+                local nativeObjectives = ReadQuestObjectives(questID)
+                logCount = logCount + 1
+                logQuestIDs[logCount], logObjectives[logCount] = questID, nativeObjectives or false
+                Sign(questID)
+                local objectiveCount = nativeObjectives and math.min(MAX_OBJECTIVES, #nativeObjectives) or -1
+                Sign(objectiveCount)
+                for objectiveIndex = 1, objectiveCount do
+                    local objective = nativeObjectives[objectiveIndex]
+                    local kind, finished = 0, 2
+                    if type(objective) == "table" then
+                        local objectiveType = objective.type
+                        if IsReadable(objectiveType) then kind = OBJECTIVE_TYPES[objectiveType] or 3 end
+                        if IsReadable(objective.finished) then finished = objective.finished == false and 0 or 1 end
+                    end
+                    Sign(kind * 4 + finished)
+                end
+            end
+        end
+    end
+    for index = logCount + 1, #logQuestIDs do logQuestIDs[index], logObjectives[index] = nil, nil end
+end
+
+local function SignatureUnchanged()
+    if lastSignatureLength ~= signatureLength then return false end
+    for index = 1, signatureLength do
+        if signature[index] ~= lastSignature[index] then return false end
+    end
+    return true
+end
+
+local function KeepSignature()
+    signature, lastSignature = lastSignature, signature
+    lastSignatureLength = signatureLength
+end
+
 local function ClearCache(message, suppressRefresh)
+    lastSignatureLength = nil
     module.cache = {}
     module.lastError = message
     module.stats = {
@@ -101,9 +178,8 @@ local function ClearCache(message, suppressRefresh)
     return message == nil
 end
 
-local function RebuildCache(suppressRefresh)
-    local nextCache = {}
-    local quests, objectiveCount, npcCount = 0, 0, 0
+-- force rebuilds even when the quest log reads the same (the module was enabled or an option changed).
+local function RebuildCache(suppressRefresh, force)
     if not module.db.enabled then
         return ClearCache(nil, suppressRefresh)
     end
@@ -118,66 +194,66 @@ local function RebuildCache(suppressRefresh)
     if not count then
         return ClearCache("quest-log entry count unreadable", suppressRefresh)
     end
+    ReadQuestLog(count, getInfo)
+    -- A failed read is retried on the next change, so an error never keeps a stale cache.
+    if not force and not module.lastError and SignatureUnchanged() then
+        module.skippedRebuilds = (module.skippedRebuilds or 0) + 1
+        return true
+    end
+    KeepSignature()
     module.lastError = nil
+    module.rebuilds = (module.rebuilds or 0) + 1
 
-    for index = 1, math.min(MAX_QUESTS, math.floor(count)) do
-        local infoOK, info = pcall(getInfo, index)
-        local validInfo = infoOK and IsReadable(info) and type(info) == "table"
-        local isHeader
-        if validInfo then isHeader = info.isHeader end
-        if validInfo
-            and IsReadable(isHeader) and not isHeader then
-            local questID = ReadNumber(info.questID)
-            if questID and questID > 0 then
-                local nativeObjectives = ReadQuestObjectives(questID)
-                local databaseOK, questObjectives = DatabaseObjectives(questID)
-                if not databaseOK then
-                    module.lastError = "QuestieDB quest read failed for " .. tostring(questID)
-                    questObjectives = nil
-                end
-                if nativeObjectives and type(questObjectives) == "table" then
-                    quests = quests + 1
-                    local typeOrdinals = { monster = 0, item = 0 }
-                    for objectiveIndex = 1, math.min(MAX_OBJECTIVES, #nativeObjectives) do
-                        local objective = nativeObjectives[objectiveIndex]
-                        local objectiveType
-                        if type(objective) == "table" then objectiveType = objective.type end
-                        if IsReadable(objectiveType) and (objectiveType == "monster" or objectiveType == "item") then
-                            typeOrdinals[objectiveType] = typeOrdinals[objectiveType] + 1
-                            local unfinished = IsReadable(objective.finished) and objective.finished == false
-                            if unfinished then
-                                objectiveCount = objectiveCount + 1
-                                local databaseType = objectiveType == "monster" and questObjectives[1] or questObjectives[3]
-                                local row = type(databaseType) == "table" and databaseType[typeOrdinals[objectiveType]] or nil
-                                local entityID = type(row) == "table" and ReadNumber(row[1]) or nil
-                                if entityID and objectiveType == "monster" and module.db.directObjectives then
-                                    local reason = {
-                                        kind = "questiedb-direct",
-                                        questID = questID,
-                                        objectiveIndex = objectiveIndex,
-                                        npcID = entityID,
-                                    }
-                                    if AddReason(nextCache, entityID, reason) then npcCount = npcCount + 1 end
-                                elseif entityID and objectiveType == "item" and module.db.possibleItemDrops then
-                                    local dropsOK, drops = DatabaseDrops(entityID)
-                                    if not dropsOK then
-                                        module.lastError = "QuestieDB item read failed for " .. tostring(entityID)
-                                        drops = nil
-                                    end
-                                    if type(drops) == "table" then
-                                        for dropIndex = 1, math.min(MAX_DROPS_PER_ITEM, #drops) do
-                                            local npcID = ReadNumber(drops[dropIndex])
-                                            if npcID then
-                                                local reason = {
-                                                    kind = "questiedb-item-drop",
-                                                    questID = questID,
-                                                    objectiveIndex = objectiveIndex,
-                                                    itemID = entityID,
-                                                    npcID = npcID,
-                                                }
-                                                if AddReason(nextCache, npcID, reason) then npcCount = npcCount + 1 end
-                                            end
-                                        end
+    local nextCache = {}
+    local quests, objectiveCount, npcCount = 0, 0, 0
+    for logIndex = 1, logCount do
+        local questID, nativeObjectives = logQuestIDs[logIndex], logObjectives[logIndex]
+        local databaseOK, questObjectives = DatabaseObjectives(questID)
+        if not databaseOK then
+            module.lastError = "QuestieDB quest read failed for " .. tostring(questID)
+            questObjectives = nil
+        end
+        if nativeObjectives and type(questObjectives) == "table" then
+            quests = quests + 1
+            local typeOrdinals = { monster = 0, item = 0 }
+            for objectiveIndex = 1, math.min(MAX_OBJECTIVES, #nativeObjectives) do
+                local objective = nativeObjectives[objectiveIndex]
+                local objectiveType
+                if type(objective) == "table" then objectiveType = objective.type end
+                if IsReadable(objectiveType) and (objectiveType == "monster" or objectiveType == "item") then
+                    typeOrdinals[objectiveType] = typeOrdinals[objectiveType] + 1
+                    local unfinished = IsReadable(objective.finished) and objective.finished == false
+                    if unfinished then
+                        objectiveCount = objectiveCount + 1
+                        local databaseType = objectiveType == "monster" and questObjectives[1] or questObjectives[3]
+                        local row = type(databaseType) == "table" and databaseType[typeOrdinals[objectiveType]] or nil
+                        local entityID = type(row) == "table" and ReadNumber(row[1]) or nil
+                        if entityID and objectiveType == "monster" and module.db.directObjectives then
+                            local reason = {
+                                kind = "questiedb-direct",
+                                questID = questID,
+                                objectiveIndex = objectiveIndex,
+                                npcID = entityID,
+                            }
+                            if AddReason(nextCache, entityID, reason) then npcCount = npcCount + 1 end
+                        elseif entityID and objectiveType == "item" and module.db.possibleItemDrops then
+                            local dropsOK, drops = DatabaseDrops(entityID)
+                            if not dropsOK then
+                                module.lastError = "QuestieDB item read failed for " .. tostring(entityID)
+                                drops = nil
+                            end
+                            if type(drops) == "table" then
+                                for dropIndex = 1, math.min(MAX_DROPS_PER_ITEM, #drops) do
+                                    local npcID = ReadNumber(drops[dropIndex])
+                                    if npcID then
+                                        local reason = {
+                                            kind = "questiedb-item-drop",
+                                            questID = questID,
+                                            objectiveIndex = objectiveIndex,
+                                            itemID = entityID,
+                                            npcID = npcID,
+                                        }
+                                        if AddReason(nextCache, npcID, reason) then npcCount = npcCount + 1 end
                                     end
                                 end
                             end
@@ -219,7 +295,7 @@ local function CreateCheckbox(parent, label, y, field)
         get = function() return module.db and module.db[field] end,
         set = function(value)
             module.db[field] = value
-            if module.enabled then RebuildCache() end
+            if module.enabled then RebuildCache(false, true) end
         end,
     })
     module.checkboxes = module.checkboxes or {}
@@ -275,9 +351,14 @@ function module:OnInitialize()
             local npcID = NpcIDForUnit(unit)
             local reasonEntry = npcID and module.cache[npcID] or nil
             if not reasonEntry then return false end
-            local detail = reasonEntry.itemID
-                and string.format("quest=%d item=%d npc=%d", reasonEntry.questID, reasonEntry.itemID, reasonEntry.npcID)
-                or string.format("quest=%d npc=%d", reasonEntry.questID, reasonEntry.npcID)
+            -- Formatted once per reason (a rebuild makes new ones), not on every plate check.
+            local detail = reasonEntry.detail
+            if not detail then
+                detail = reasonEntry.itemID
+                    and string.format("quest=%d item=%d npc=%d", reasonEntry.questID, reasonEntry.itemID, reasonEntry.npcID)
+                    or string.format("quest=%d npc=%d", reasonEntry.questID, reasonEntry.npcID)
+                reasonEntry.detail = detail
+            end
             return true, reasonEntry.kind, detail
         end,
         GetDiagnostics = function()
@@ -292,7 +373,7 @@ end
 
 function module:OnEnable()
     self.enabled = true
-    RebuildCache()
+    RebuildCache(false, true)
 end
 
 function module:OnDisable()
@@ -300,6 +381,8 @@ function module:OnDisable()
     ClearCache(nil)
 end
 
+-- QUEST_WATCH_LIST_CHANGED arrives here too (the core coalesces both events and passes the last
+-- one), so every call is checked against the quest log's signature rather than ignored by name.
 function module:OnQuestLogChanged(event)
     if self.enabled then RebuildCache(event ~= nil) end
 end

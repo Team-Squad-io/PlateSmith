@@ -11,6 +11,7 @@ local WidgetName = model.WidgetName
 local editorProfileSet = { enemy = true, enemyDungeon = true, friendlyPlayer = true, friendlyNPC = true }
 
 local IsReadableValue = PS.Secret.IsReadable
+local STYLE_DEFAULTS = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing").STYLE_DEFAULTS
 
 -- A component that fails (another addon's, say) is reported once, not on every refresh or
 -- slider step.
@@ -123,14 +124,14 @@ function Options:ApplyEditorPreviewStyles(profile)
                 box:SetFrameLevel(math.max(0, component:GetFrameLevel() - 1))
                 component.styleBox = box
             end
-            local padding = style.padding or 3
+            local padding = style.padding or STYLE_DEFAULTS.padding
             box:ClearAllPoints()
             box:SetPoint("TOPLEFT", text, "TOPLEFT", -padding, padding)
             box:SetPoint("BOTTOMRIGHT", text, "BOTTOMRIGHT", padding, -padding)
             box:SetBackdrop({ bgFile = PREVIEW_WHITE, edgeFile = PREVIEW_WHITE, edgeSize = 1 })
-            local fill = style.boxColour or { r = 0, g = 0, b = 0, a = 0.65 }
+            local fill = style.boxColour or STYLE_DEFAULTS.boxColour
             box:SetBackdropColor(fill.r, fill.g, fill.b, fill.a or 1)
-            local edge = style.boxBorder or { r = 0.78, g = 0.62, b = 0.3, a = 1 }
+            local edge = style.boxBorder or STYLE_DEFAULTS.boxBorder
             box:SetBackdropBorderColor(edge.r, edge.g, edge.b, edge.a or 1)
             box:Show()
         elseif box then

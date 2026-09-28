@@ -423,6 +423,7 @@ function PS.CreateVisualEditor()
     Options.editorNamedProfileDropdown = profileDropdown
     -- Studio always shows and edits the active profile: a switch from anywhere (Settings, a slash
     -- command, New from preset) redraws it, not only one made from this menu.
+    -- While Studio is hidden the listener is skipped and runs once when it is shown again.
     local seenLoads = PS.Profiles.Loads()
     PS.Profiles.Subscribe(function()
         RefreshProfile()
@@ -430,7 +431,7 @@ function PS.CreateVisualEditor()
             seenLoads = PS.Profiles.Loads()
             Options:Refresh(true)
         end
-    end)
+    end, editor)
     RefreshProfile()
 
     -- Studio: the component tree.

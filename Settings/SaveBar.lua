@@ -60,7 +60,8 @@ function SaveBar.Create(parent, makeButton)
         if PS.Options then PS.Options:Refresh() end
     end)
     bar:SetScript("OnShow", function(owner) owner:Refresh() end)
-    Profiles.Subscribe(function() bar:Refresh() end)
+    -- A hidden bar skips profile changes; its OnShow refreshes it.
+    Profiles.Subscribe(function() bar:Refresh() end, bar)
 
     bar.saveButton, bar.revertButton, bar.status = save, revert, status
     bar:Refresh()

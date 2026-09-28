@@ -12,13 +12,19 @@ PS.Commands = Commands
 
 local pendingOptionsOpen = false
 
+-- The deferred tick runs only while something waits for combat to end.
+local function SetPending(pending)
+    pendingOptionsOpen = pending
+    PS.Ticker.SetEnabled("commands.deferred", pending)
+end
+
 -- The Blizzard Settings panel is protected in combat; opening waits for it to end.
 function Commands.OpenSettings()
     if Secret.InCombat() then
-        pendingOptionsOpen = true
+        SetPending(true)
         Chat.Print(L["Settings will open when combat ends."])
     elseif PS.OpenOptions then
-        pendingOptionsOpen = false
+        SetPending(false)
         PS.OpenOptions()
     else
         Chat.Print(L["Settings are unavailable."])
@@ -143,10 +149,11 @@ SlashCmdList.PLATESMITH = Commands.Run
 
 PS.Ticker.Register("commands.deferred", 0, function()
     if pendingOptionsOpen and not Secret.InCombat() then
-        pendingOptionsOpen = false
+        SetPending(false)
         if PS.OpenOptions then PS.OpenOptions() end
     end
 end)
+PS.Ticker.SetEnabled("commands.deferred", false)
 
 -- Addon Compartment (the minimap addon menu), declared in the TOC.
 function PlateSmith_OnAddonCompartmentClick()

@@ -93,8 +93,17 @@ end
 
 -- Shows the plate's marker. Plates that needed another token keep raidIconNeedsFallback set,
 -- so a change to one of those tokens checks them again.
+-- Whether a plate that needs a stand-in must resolve again now that token (a group member's
+-- target) changed: its marker came from that token, or the token now names the plate's unit. Any
+-- other token is as it was, so the result would be too.
+function RaidMarker.TokenChanged(data, token)
+    if data.raidIconUnit == token then return true end
+    local root = RaidMarker.PlateRoot(token)
+    return (root and root == data.root) or Secret.SameUnit(data.unit, token)
+end
+
 function RaidMarker.Update(data)
-    data.raidIconNeedsFallback = false
+    data.raidIconNeedsFallback, data.raidIconUnit = false, nil
     if not data.own or data.layout.raidIcon.visible == false then
         data.raidIconSource = "disabled"
         data.raidIcon:Hide()
@@ -106,9 +115,10 @@ function RaidMarker.Update(data)
         data.raidIcon:Show()
         return
     end
-    local index, _, route = RaidMarker.Resolve(data)
+    local index, source, route = RaidMarker.Resolve(data)
     -- Plates resolved through another token must re-check when that token changes.
     data.raidIconNeedsFallback = route == "root" or route == "identity" or route == "secret" or route == "error"
+    if route == "root" or route == "identity" then data.raidIconUnit = source else data.raidIconUnit = nil end
     if not index then
         data.raidIconSource = protectedSource
         data.raidIcon:Hide()

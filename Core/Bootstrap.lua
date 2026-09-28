@@ -2,7 +2,7 @@ local addonName, PS = ...
 
 PS = PS or {}
 _G.PlateSmith = PS
-PS.RUNTIME_BUILD = "1.0.1"
+PS.RUNTIME_BUILD = "1.0.2"
 
 -- The two clients the TOC targets: Forever (1.x interface) and retail (Midnight).
 function PS.ClientFlavor()

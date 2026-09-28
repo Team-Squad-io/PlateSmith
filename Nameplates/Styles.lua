@@ -47,9 +47,9 @@ PS._CreatePlateStyles = function(context)
 
     local EMPTY = {}
     local WHITE = "Interface\\Buttons\\WHITE8X8"
-    local BAR_BACKGROUND = { 0.025, 0.025, 0.025, 0.92 }
-    local DEFAULT_BOX_FILL = { r = 0, g = 0, b = 0, a = 0.65 }
-    local DEFAULT_BOX_EDGE = { r = 0.78, g = 0.62, b = 0.3, a = 1 }
+    local BAR_BACKGROUND = S.STYLE_DEFAULTS.background
+    local DEFAULT_BOX_FILL = S.STYLE_DEFAULTS.boxColour
+    local DEFAULT_BOX_EDGE = S.STYLE_DEFAULTS.boxBorder
     local DEFAULT_BAR_EDGE = { r = 0, g = 0, b = 0, a = 1 }
     -- Backdrops are shared, never changed after creation: SetBackdrop keeps a reference.
     local BOX_BACKDROP = { bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 }
@@ -162,7 +162,7 @@ PS._CreatePlateStyles = function(context)
             box = CreateFrame("Frame", nil, data.overlay, "BackdropTemplate")
             data.styleBoxes[key] = box
         end
-        local padding = style.padding or 3
+        local padding = style.padding or S.STYLE_DEFAULTS.padding
         box:ClearAllPoints()
         box:SetPoint("TOPLEFT", region, "TOPLEFT", -padding, padding)
         box:SetPoint("BOTTOMRIGHT", region, "BOTTOMRIGHT", padding, -padding)
@@ -187,7 +187,7 @@ PS._CreatePlateStyles = function(context)
             if colour then
                 background:SetColorTexture(colour.r, colour.g, colour.b, colour.a or 1)
             else
-                background:SetColorTexture(BAR_BACKGROUND[1], BAR_BACKGROUND[2], BAR_BACKGROUND[3], BAR_BACKGROUND[4])
+                background:SetColorTexture(BAR_BACKGROUND.r, BAR_BACKGROUND.g, BAR_BACKGROUND.b, BAR_BACKGROUND.a)
             end
         end
         data.styleBorders = data.styleBorders or {}

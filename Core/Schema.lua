@@ -339,7 +339,6 @@ local defaultRelationshipColours = {
 local validModes = { auto = true, own = true, overlay = true }
 local validFriendlyModes = { names = true, full = true, off = true }
 local validFriendlyPvpStyles = { off = true, colour = true, icon = true, both = true }
-local validEditorThemes = { auto = true, platesmith = true, classic = true, modern = true }
 local validAuraSources = { all = true, mine = true }
 local validClassificationStyles = { icon = true, words = true, letters = true }
 local validQuestIcons = { auto = true, platesmith = true, questie = true }
@@ -908,6 +907,13 @@ end
 -- one (GradientRules) and is not kept.
 local STYLE_OUTLINES = { none = true, outline = true, thick = true }
 local STYLE_PADDING, STYLE_BORDER = { 0, 12, true }, { 0, 4, true }
+-- What an unset field draws as, on the plates, in Studio's preview and in the inspector. Read only.
+local STYLE_DEFAULTS = {
+    boxColour = { r = 0, g = 0, b = 0, a = 0.65 },
+    boxBorder = { r = 0.78, g = 0.62, b = 0.3, a = 1 },
+    padding = 3,
+    background = { r = 0.025, g = 0.025, b = 0.025, a = 0.92 },
+}
 local function StyleColour(value, alpha)
     if type(value) ~= "table" then return nil end
     return { r = Format.Unit(value.r, 1), g = Format.Unit(value.g, 1), b = Format.Unit(value.b, 1),
@@ -1331,7 +1337,6 @@ end
 -- restore, the threat windows (Threat/Console.lua checks each entry), saved styles and how
 -- Studio looks to this player.
 local stateDefaults = {
-    editorTheme = "platesmith", -- auto, platesmith, classic, modern: how Studio looks to this player
     studioScale = 0.85, -- Blueprint Studio's size for this player, before fitting the screen
     -- Studio's accessibility options for this player: colour-blind friendly cues, high contrast.
     studioColourBlind = false,
@@ -1354,7 +1359,8 @@ local function NormalizeState(state)
     end
     if type(state.threatWindows) ~= "table" then state.threatWindows = {} end
     if state.cvarRestore ~= nil and type(state.cvarRestore) ~= "table" then state.cvarRestore = nil end
-    if not validEditorThemes[state.editorTheme] then state.editorTheme = stateDefaults.editorTheme end
+    -- Studio no longer has themes: an older saved choice is dropped.
+    state.editorTheme = nil
     state.studioScale = Bounded(studioScaleRange, state.studioScale, stateDefaults.studioScale)
     state.stylePresets = NormalizeStylePresets(state.stylePresets)
     local folds, count = {}, 0
@@ -1456,6 +1462,7 @@ PS.ProfileSchema = {
     STYLE_OUTLINES = STYLE_OUTLINES,
     STYLE_PADDING = STYLE_PADDING,
     STYLE_BORDER = STYLE_BORDER,
+    STYLE_DEFAULTS = STYLE_DEFAULTS,
     RULE_SETS = RULE_SETS,
     MAX_RULES_PER_PART = MAX_RULES_PER_PART,
     MAX_RULES = MAX_RULES,

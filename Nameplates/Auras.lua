@@ -252,10 +252,19 @@ PS._CreatePlateAuras = function(context)
         return shown, shown > 0 and "shown" or "none"
     end
 
-    local function PopulateAuraIcons(kind, unit, filter, icons, limit)
+    -- An indexed read of a plate's own unit that errored in combat is not tried again on every
+    -- event: until combat ends or the plate gets its next unit (data[INDEX_ERROR_KEYS[kind]]), the
+    -- row goes straight to the other routes, as that read would.
+    local INDEX_ERROR_KEYS = { buffs = "buffsIndexError", debuffs = "debuffsIndexError" }
+    local function PopulateAuraIcons(kind, unit, filter, icons, limit, data)
         Counters.auraReads = Counters.auraReads + 1
-        local api = C_UnitAuras and C_UnitAuras.GetAuraDataByIndex
-        local shown, indexState = PopulateAuraIconsByIndex(api, unit, filter, icons, limit)
+        local errorKey = data and unit == data.unit and INDEX_ERROR_KEYS[kind]
+        local shown, indexState = 0, "error"
+        if not (errorKey and data[errorKey]) then
+            local api = C_UnitAuras and C_UnitAuras.GetAuraDataByIndex
+            shown, indexState = PopulateAuraIconsByIndex(api, unit, filter, icons, limit)
+            if errorKey and shown == 0 and indexState == "error" and Secret.InCombat() then data[errorKey] = true end
+        end
         if shown > 0 then return shown, "indexed" end
         -- A readable empty result or protected value is authoritative. Try other
         -- API shapes only when this API itself is missing or raises an error.
@@ -348,8 +357,8 @@ PS._CreatePlateAuras = function(context)
         container:Show()
     end
 
-    -- Re-anchored on every update: the row moves and resizes with the layout after the container
-    -- is built. A centred row's container keeps the size its own layout gave it (FlowOf).
+    -- The row resizes with the layout after the container is built. A centred row's container keeps
+    -- the size its own layout gave it (FlowOf).
     local function Reanchor(container, row, layout)
         local _, _, _, pin = FlowOf(layout)
         container:ClearAllPoints()
@@ -413,17 +422,32 @@ PS._CreatePlateAuras = function(context)
             end
         end
         row.nativeAuraFilters[signature] = row.nativeAuraFilter
-        pcall(Reanchor, container, row, layout)
-        -- As a child it would inherit the plate's scale and fade; outside the plate it copies them.
+        -- Pinned to the row, it follows the row's moves; placed again only for another container or
+        -- shape (the row's size follows the shape).
+        local fresh = row.nativeAuraPlaced ~= container
+        if fresh or row.nativeAuraPlacedSignature ~= signature then
+            pcall(Reanchor, container, row, layout)
+            row.nativeAuraPlaced, row.nativeAuraPlacedSignature = container, signature
+            row.nativeAuraScale, row.nativeAuraAlpha = nil, nil
+        end
+        -- As a child it would inherit the plate's scale and fade; outside the plate it copies them,
+        -- written when they change.
         local okScale, rowScale = pcall(row.GetEffectiveScale, row)
         local okParent, parentScale = UIParent ~= nil, 1
         if UIParent then okParent, parentScale = pcall(UIParent.GetEffectiveScale, UIParent) end
         if okScale and okParent and IsReadable(rowScale) and IsReadable(parentScale)
             and type(rowScale) == "number" and type(parentScale) == "number" and parentScale > 0 then
-            pcall(container.SetScale, container, rowScale / parentScale)
+            local scale = rowScale / parentScale
+            if row.nativeAuraScale ~= scale then
+                pcall(container.SetScale, container, scale)
+                row.nativeAuraScale = scale
+            end
         end
         local okAlpha, alpha = pcall(row.GetEffectiveAlpha, row)
-        if okAlpha and IsReadable(alpha) and type(alpha) == "number" then pcall(container.SetAlpha, container, alpha) end
+        if okAlpha and IsReadable(alpha) and type(alpha) == "number" and row.nativeAuraAlpha ~= alpha then
+            pcall(container.SetAlpha, container, alpha)
+            row.nativeAuraAlpha = alpha
+        end
         row.nativeAuraState = "ready"
         row.nativeAuraError = nil
         return true
@@ -488,13 +512,13 @@ PS._CreatePlateAuras = function(context)
         local auraUnit = data.unit
         if targeted then auraUnit = "target" end
         local previous = row.plateSmithShownCount or AURA_ICON_COUNT
-        local shown, route = PopulateAuraIcons(kind, auraUnit, filter, icons, layout.count)
+        local shown, route = PopulateAuraIcons(kind, auraUnit, filter, icons, layout.count, data)
         if auraUnit == "target" then
             if not SameUnit(data.unit, "target") then
                 shown = 0
                 route = "target-changed"
             elseif shown == 0 then
-                shown, route = PopulateAuraIcons(kind, data.unit, filter, icons, layout.count)
+                shown, route = PopulateAuraIcons(kind, data.unit, filter, icons, layout.count, data)
             end
         end
         -- The readable lookup is tried first on every update; the native container is only a
@@ -537,8 +561,12 @@ PS._CreatePlateAuras = function(context)
 
     -- Returns whether the plate shows either row (it then wants UNIT_AURA and the slow pass).
     local function UpdateAuras(data)
+        -- The target token is confirmed only on the plate the target highlight marked (data.targeted,
+        -- which follows every target change).
         local targeted = false
-        if RowWanted(data, "buffs") or RowWanted(data, "debuffs") then targeted = SameUnit(data.unit, "target") end
+        if data.targeted and (RowWanted(data, "buffs") or RowWanted(data, "debuffs")) then
+            targeted = SameUnit(data.unit, "target")
+        end
         local buffs = UpdateAuraRow(data, "buffs", targeted)
         local debuffs = UpdateAuraRow(data, "debuffs", targeted)
         return buffs or debuffs

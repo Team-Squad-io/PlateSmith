@@ -33,12 +33,12 @@ local AURA_EVENT_INTERVAL = 0.1
 -- re-read relationships at most every RELATIONSHIP_INTERVAL; plate adds past ADD_BUDGET_MS in one
 -- frame wait for the next.
 local LIMITS = { STATE_INTERVAL = 0.25, STATE_PLATES_PER_FRAME = 4, NATIVE_PLATES_PER_PASS = 4,
-    RELATIONSHIP_INTERVAL = 1, ADD_BUDGET_MS = 5 }
+    RELATIONSHIP_INTERVAL = 1, ADD_BUDGET_MS = 5, RAID_FALLBACK_INTERVAL = 0.25, NATIVE_INTERVAL = 2 }
 
 -- Call counts for the performance guards (PS._Test.Counters); plain integers.
 local counters = { appearance = 0, componentLayout = 0, renderValues = 0, applyRules = 0, reflow = 0,
     parentVisibility = 0, updateIdentity = 0, auraReads = 0, auraRowLayouts = 0, applyLayout = 0, flushes = 0,
-    deferredAdds = 0 }
+    deferredAdds = 0, batches = 0 }
 
 local function Clock()
     return type(debugprofilestop) == "function" and debugprofilestop() or nil
@@ -58,13 +58,31 @@ local function Queue(data)
     if batchDepth == 0 and not data.flushing then FlushPlate(data) end
 end
 
--- What changed for the values: "health", "power", "threat", "all", or nil (templates and
--- graphics only). Values feed rules, and both can change what shows.
+-- What changed for the values: "health", "power", "threat", "cast", "target" (the unit's target),
+-- "targeted" (whether it is yours), "all", or nil (templates and graphics). Values feed rules, and
+-- both can change what shows. data.reads (TemplateReaders.PlateReads) says which kinds the plate's
+-- custom parts and rules read: a kind nothing reads marks nothing, and only the pass that reads it
+-- runs. data.dirtyKinds collects the kinds for the values pass.
 local function MarkValues(data, kind)
-    data.dirtyValues, data.dirtyRules, data.dirtyVisibility, data.dirtyMeasure = true, true, true, true
-    if kind == "health" or kind == "all" then data.dirtyHealth = true end
-    if kind == "power" or kind == "all" then data.dirtyPower = true end
-    if kind == "threat" or kind == "all" then data.dirtyThreat = true end
+    local reads = data.reads
+    local values, rules = true, true
+    if reads and kind and kind ~= "all" then
+        values, rules = reads.values[kind] == true, reads.rules[kind] == true
+        if not (values or rules) then return end
+        -- A render can write a colour a rule set (the lead's state colour): the rules go on top again.
+        if values and (reads.anyRules or data.ruleRegions) then rules = true end
+    end
+    if values then
+        data.dirtyValues = true
+        local kinds = data.dirtyKinds
+        if not kinds then
+            kinds = {}
+            data.dirtyKinds = kinds
+        end
+        kinds[kind or "any"] = true
+    end
+    if rules then data.dirtyRules = true end
+    data.dirtyVisibility, data.dirtyMeasure = true, true
     Queue(data)
 end
 
@@ -84,9 +102,14 @@ local function MarkVisibility(data)
     Queue(data)
 end
 
+local function ClearKinds(data)
+    local kinds = data.dirtyKinds
+    if kinds then for kind in pairs(kinds) do kinds[kind] = nil end end
+end
+
 local function ClearDirty(data)
-    data.dirtyValues, data.dirtyHealth, data.dirtyPower, data.dirtyThreat = false, false, false, false
-    data.dirtyRules, data.dirtyStacks, data.dirtyMeasure, data.dirtyVisibility = false, false, false, false
+    data.dirtyValues, data.dirtyRules, data.dirtyStacks, data.dirtyMeasure, data.dirtyVisibility = false, false, false, false, false
+    ClearKinds(data)
     dirtyPlates[data] = nil
 end
 
@@ -101,6 +124,7 @@ end
 
 -- Runs fn(a, b) as one batch; the outermost batch flushes unless defer (the frame ticker will).
 local function RunBatch(defer, fn, a, b)
+    counters.batches = counters.batches + 1
     batchDepth = batchDepth + 1
     local ok, reason = pcall(fn, a, b)
     batchDepth = batchDepth - 1
@@ -128,7 +152,9 @@ local function ListSet(list, data, key, wanted)
     end
 end
 
-local rounds = { state = {}, native = {}, stateCursor = 0, nativeCursor = 0, clock = 0, targetDueAt = 0 }
+-- pulses: plates whose target halo pulses (the animation entry runs only while one does or a
+-- spotlight dims other plates).
+local rounds = { state = {}, native = {}, stateCursor = 0, nativeCursor = 0, clock = 0, targetDueAt = 0, pulses = {} }
 
 local function RegionVisibleState(region)
     if not region or type(region.IsVisible) ~= "function" then return "unavailable" end
@@ -392,7 +418,7 @@ local function ApplyCastInfo(data, channel)
     data.castTimeTenths, data.castTimeAt = nil, nil
     UpdateCastTime(data, GetTime())
     cast:Show()
-    data.casting = true
+    data.casting, data.castChannel = true, channel and true or false
     activeCasts[data] = true
     return true
 end
@@ -430,7 +456,28 @@ local function UpdateCast(data)
     end
     MarkStacks(data)
     UpdateValueAnchors(data)
-    MarkValues(data)
+    MarkValues(data, "cast")
+end
+
+-- A cast's times moved (UNIT_SPELLCAST_DELAYED, CHANNEL_UPDATE): only the bar's range and the time
+-- follow; the spell, its icon and what reads the cast are unchanged. Anything else is a new cast.
+local function UpdateCastTiming(data)
+    if not data.casting then return UpdateCast(data) end
+    local channel = data.castChannel
+    local api = channel and UnitChannelInfo or UnitCastingInfo
+    if type(api) ~= "function" then return UpdateCast(data) end
+    local ok, name, _, _, startMS, endMS = pcall(api, data.unit)
+    if not ok or not HasValue(name) then return UpdateCast(data) end
+    local readableTimes = IsReadable(startMS) and IsReadable(endMS)
+    if readableTimes and (type(startMS) ~= "number" or type(endMS) ~= "number") then return UpdateCast(data) end
+    if not readableTimes and not (HasValue(startMS) and HasValue(endMS)) then return UpdateCast(data) end
+    local cast = data.cast
+    if not pcall(cast.SetMinMaxValues, cast, startMS, endMS) then return UpdateCast(data) end
+    cast:SetValue(GetTime() * 1000)
+    data.castEndMS = readableTimes and endMS or nil
+    data.castDuration = not readableTimes and data.castTimeWanted and CastDuration(data.unit, channel) or nil
+    data.castTimeTenths, data.castTimeAt = nil, nil
+    UpdateCastTime(data, GetTime())
 end
 
 -- Questie draws its own quest icons on nameplates when its "nameplate icons" option is on;
@@ -680,7 +727,8 @@ local function UpdateHealth(data)
     else
         data.healthValue, data.healthMaxValue = nil, nil
     end
-    UpdateValueAnchors(data)
+    -- A new value changes no part's shown state: only what reads health follows (MarkValues).
+    if data.valueAnchorsDirty then UpdateValueAnchors(data) end
     MarkValues(data, "health")
 end
 
@@ -696,6 +744,9 @@ end
 local function UpdatePower(data)
     if not data.own or data.namesOnly
         or (data.restrictedFriendly and not data.restrictedOverlayEnabled) then return end
+    -- The bar off and nothing reading power: the bar stays hidden (ApplyLayout), nothing to read.
+    local reads = data.reads
+    if data.layout.power.visible == false and reads and not reads.values.power and not reads.rules.power then return end
     local unit, bar = data.unit, data.power
     local wasShown = bar:IsShown()
     local okPower, power = pcall(UnitPower, unit)
@@ -775,6 +826,7 @@ local function UpdateTarget(data)
         changed = true
         data.targetGlowStyle = style
         data.targetPulseActive = style == "halo"
+        rounds.pulses[data] = data.targetPulseActive or nil
         for _, glow in ipairs(data.targetBarGlows) do
             glow.steady:SetShown(showHighlight)
             glow.pulse:SetShown(data.targetPulseActive)
@@ -786,7 +838,8 @@ local function UpdateTarget(data)
     end
     ApplyHealthBorder(data)
     -- A template can say whether this is your target.
-    if changed then MarkValues(data) end
+    if changed then MarkValues(data, "targeted") end
+    rounds.SyncAnimation()
 end
 
 -- idle: known to be out of combat (a tracked mob not engaged, or a friendly plate), so the threat
@@ -809,6 +862,7 @@ local function UpdateThreat(data)
         if data.threatValuesSet and data.threatInfo == nil then return end
         data.threat:Hide()
         data.threat:SetText("")
+        data.threatTextInfo, data.threatTextRevision = nil, nil
         UpdateThreatValues(data, nil, data.friendly == true)
         return
     end
@@ -827,15 +881,19 @@ local function UpdateThreat(data)
     end
     if not info or not info.engaged then
         data.threat:SetText("")
+        data.threatTextInfo, data.threatTextRevision = nil, nil
         data.tankWarning = false
         ApplyHealthBorder(data)
         UpdateThreatValues(data, nil, info ~= nil)
         return
     end
-    if showCombined then
+    -- Written once per refresh of the record (its revision), not on every state visit.
+    local revision = info.revision
+    if showCombined and not (revision ~= nil and data.threatTextInfo == info and data.threatTextRevision == revision) then
         ApplyThreatText(data.threat, info, ThreatText.Gap(data.unit))
         -- Coloured by state (ThreatText.StateColour), as the threat windows colour theirs.
         data.threat:SetTextColor(ThreatColour(info))
+        data.threatTextInfo, data.threatTextRevision = info, revision
     end
     UpdateThreatValues(data, info)
     data.tankWarning = data.own and service ~= nil and service:GetPlayerRole() == "TANK" and info.tanking == false
@@ -1020,9 +1078,12 @@ local function RunFlush(data)
     Readers.Begin(data)
     if data.dirtyValues then
         counters.renderValues = counters.renderValues + 1
-        local health, power, threat = data.dirtyHealth, data.dirtyPower, data.dirtyThreat
-        data.dirtyValues, data.dirtyHealth, data.dirtyPower, data.dirtyThreat = false, false, false, false
-        RenderValueSlots(data, health, power, threat)
+        data.dirtyValues = false
+        -- A mark made while rendering (a hook) goes into the plate's other kinds table.
+        local kinds = data.dirtyKinds or EMPTY
+        data.dirtyKinds, data.spareKinds = data.spareKinds, data.dirtyKinds
+        RenderValueSlots(data, kinds)
+        for kind in pairs(kinds) do kinds[kind] = nil end
     end
     if data.dirtyRules then
         counters.applyRules = counters.applyRules + 1
@@ -1131,6 +1192,9 @@ local function ApplyLayout(data)
     -- What each update compares against is read again for a fresh plate or new settings.
     data.healthValue, data.healthMaxValue, data.powerRead = nil, nil, nil
     data.threatValuesSet, data.taggedShown, data.pvpState = nil, nil, nil
+    data.threatTextInfo, data.threatTextRevision = nil, nil
+    -- What the plate's custom parts and rules read (MarkValues skips the rest).
+    data.reads = Readers.PlateReads(data.profile, data.layout, settingsRevision)
     local prepared = data.own and data.preparedLayout == data.layout and data.preparedRevision == settingsRevision
     if not prepared then
         data.preparedLayout, data.valuesCleared = nil, nil
@@ -1172,6 +1236,7 @@ local function ApplyLayout(data)
                 UpdateTagged(data)
                 UpdateCast(data)
                 UpdatePlateAuras(data)
+                MarkValues(data, "all")
             end)
             if not ok then DisableRestrictedOverlay(data, failure) end
         end
@@ -1230,7 +1295,8 @@ local function ApplyLayout(data)
     UpdateCast(data)
     UpdatePlateAuras(data)
     HookStackFrames(data)
-    MarkRules(data)
+    -- Every custom part is drawn for the new layout, whichever kinds it reads.
+    MarkValues(data, "all")
     MarkStacks(data)
 end
 
@@ -1245,6 +1311,7 @@ local function AddPlate(unit)
     root.PlateSmithData = data
     data.unit = unit
     data.targetUnit = Readers.TargetToken(unit)
+    data.buffsIndexError, data.debuffsIndexError = nil, nil
     active[unit] = data
     if PS.ThreatService then
         PS.ThreatService:TrackEnemy(unit, root)
@@ -1340,7 +1407,10 @@ local function UpdateSpotlight(now)
     if spotlightUnit and (not active[spotlightUnit] or now >= spotlightUntil) then
         spotlightUnit, spotlightUntil = nil, nil
     end
-    if not spotlightUnit and not spotlightDimmed then return end
+    if not spotlightUnit and not spotlightDimmed then
+        rounds.SyncAnimation()
+        return
+    end
     spotlightDimmed = false
     for unit, data in pairs(active) do
         local enemy = data.profileKey == "enemy" or data.profileKey == "enemyDungeon"
@@ -1352,6 +1422,7 @@ local function UpdateSpotlight(now)
         end
         if alpha ~= 1 then spotlightDimmed = true end
     end
+    rounds.SyncAnimation()
 end
 
 local function RemovePlate(unit)
@@ -1379,8 +1450,11 @@ local function RemovePlate(unit)
         end
     end
     SetTargetTextGlow(data)
-    data.targetPulseActive = nil
+    data.targetPulseActive, rounds.pulses[data] = nil, nil
     data.targetGlowStyle = nil
+    data.threatTextInfo, data.threatTextRevision, data.raidIconUnit = nil, nil, nil
+    -- An aura read that errored in combat is tried again for the next unit.
+    data.buffsIndexError, data.debuffsIndexError = nil, nil
     if data.spotlightAlpha and data.spotlightAlpha ~= 1 then SetPlateAlpha(data, 1) end
     RestoreParentFaded(data)
     data.spotlightAlpha = nil
@@ -1679,6 +1753,16 @@ function changes.UnitFlags(data)
     end
 end
 
+-- UNIT_TARGET on a plate's unit: its target-of-target name follows (stacks only when that part
+-- shows or showed), and whatever reads the target token (MarkValues).
+function changes.UnitTarget(data)
+    local region = data.targetName
+    local wasShown = region and region:IsShown()
+    UpdateTargetName(data)
+    if wasShown or (region and region:IsShown()) then MarkStacks(data) end
+    MarkValues(data, "target")
+end
+
 -- The player's own flags changed (AFK, PvP): other units' reactions can follow, so each plate's
 -- kind is checked; enemies' colours follow their reaction.
 function changes.UnitKinds()
@@ -1716,7 +1800,7 @@ local Diagnose, ProbePlayerPlate, AuraProbe, BuildDiagnosticReport = assert(PS._
 })
 
 local pending = { kinds = false, relationships = false, relationshipsAt = 0, auras = false, aurasAt = 0,
-    quests = false, questsAt = 0, raidFallback = false }
+    quests = false, questsAt = 0, raidFallback = false, raidFallbackAt = 0, raidTokens = {} }
 
 local function UpdateCastTimes(now)
     local castTime = now * 1000
@@ -1760,12 +1844,27 @@ local function FrameTick(now)
         end
     end
     if next(auraWork.pending) then auraWork.Run() end
-    if pending.raidFallback then
-        pending.raidFallback = false
-        -- A token that can stand in for a withheld marker changed.
+    -- A token that can stand in for a withheld marker changed: the target, focus or mouseover (every
+    -- stand-in resolved again, at most every RAID_FALLBACK_INTERVAL), or a group member's target
+    -- (only that token tested, pending.raidTokens).
+    if pending.raidFallback and now >= pending.raidFallbackAt then
+        pending.raidFallback, pending.raidFallbackAt = false, now + LIMITS.RAID_FALLBACK_INTERVAL
+        for token in pairs(pending.raidTokens) do pending.raidTokens[token] = nil end
         for unit, data in pairs(active) do
             if data.unit == unit and data.raidIconNeedsFallback then SafePlateUpdate(data, UpdateRaidIcon) end
         end
+    elseif next(pending.raidTokens) then
+        for unit, data in pairs(active) do
+            if data.unit == unit and data.raidIconNeedsFallback then
+                for token in pairs(pending.raidTokens) do
+                    if RaidMarker.TokenChanged(data, token) then
+                        SafePlateUpdate(data, UpdateRaidIcon)
+                        break
+                    end
+                end
+            end
+        end
+        for token in pairs(pending.raidTokens) do pending.raidTokens[token] = nil end
     end
     if pending.quests and now >= pending.questsAt then
         pending.quests = false
@@ -1803,7 +1902,7 @@ end)
 
 -- Blizzard's native frames on owned plates: the hooks restore them at once; this catches a miss,
 -- a few plates a pass in turn.
-PS.Ticker.Register("plates.native", 0.5, function()
+PS.Ticker.Register("plates.native", LIMITS.NATIVE_INTERVAL, function()
     if not db then return end
     for _ = 1, math.min(LIMITS.NATIVE_PLATES_PER_PASS, #rounds.native) do
         rounds.nativeCursor = rounds.nativeCursor % #rounds.native + 1
@@ -1834,17 +1933,31 @@ PS.Ticker.Register(SPOTLIGHT_TICKER, 0.03, function(_, now)
 end)
 PS.Ticker.SetEnabled(SPOTLIGHT_TICKER, false)
 
-PS.Ticker.Register("plates.animation", 0.10, function(_, now)
+local ANIMATION_TICKER = "plates.animation"
+function rounds.SyncAnimation()
+    local wanted = next(rounds.pulses) ~= nil or spotlightUnit ~= nil or spotlightDimmed == true
+    if rounds.animating ~= wanted then
+        rounds.animating = wanted
+        PS.Ticker.SetEnabled(ANIMATION_TICKER, wanted)
+    end
+end
+
+PS.Ticker.Register(ANIMATION_TICKER, 0.10, function(_, now)
     if not db then return end
-    for _, data in pairs(active) do
-        if data.targetPulseActive then
+    for data in pairs(rounds.pulses) do
+        if data.targetPulseActive and data.unit and active[data.unit] == data then
             local alpha = 0.25 + (0.45 * (0.5 + 0.5 * math.sin(now * 3)))
             for _, glow in ipairs(data.targetBarGlows) do glow.pulse:SetAlpha(alpha) end
             SetTargetTextGlow(data, 0.4 + alpha * 0.6, true)
+        else
+            rounds.pulses[data] = nil
         end
     end
+    -- Switches the entry off once nothing pulses or dims.
     UpdateSpotlight(now)
 end)
+PS.Ticker.SetEnabled(ANIMATION_TICKER, false)
+rounds.animating = false
 
 -- Time-based plate work (threat, TAGGED) with no reliable event: each plate that has any is
 -- visited at most every STATE_INTERVAL, at most STATE_PLATES_PER_FRAME a frame, so no frame's pass
@@ -1910,6 +2023,7 @@ local coreEvents = {
     "UPDATE_MOUSEOVER_UNIT",
     "UNIT_TARGET",
     "PLAYER_ENTERING_WORLD",
+    "ZONE_CHANGED_NEW_AREA",
     "PLAYER_LOGOUT",
     "GROUP_ROSTER_UPDATE",
     "UNIT_FACTION",
@@ -1958,6 +2072,41 @@ local POWER_EVENTS = { UNIT_POWER_UPDATE = true, UNIT_MAXPOWER = true }
 local SOCIAL_EVENTS = { GROUP_ROSTER_UPDATE = true, GUILD_ROSTER_UPDATE = true, PLAYER_GUILD_UPDATE = true,
     FRIENDLIST_UPDATE = true, BN_FRIEND_INFO_CHANGED = true, BN_FRIEND_LIST_SIZE_CHANGED = true }
 local UNIT_CHANGE_EVENTS = { UNIT_FACTION = true, PLAYER_FLAGS_CHANGED = true, UNIT_CLASSIFICATION_CHANGED = true }
+local CAST_TIMING_EVENTS = { UNIT_SPELLCAST_DELAYED = true, UNIT_SPELLCAST_CHANNEL_UPDATE = true }
+
+-- Unit events reach the addon for every group member, the target, focus and more. One for a readable
+-- token that has no plate is dropped in OnEvent, before the profiler clock and the batch, unless the
+-- token can stand in for a plate (the target's auras, a group member's target, the player's flags):
+-- byEvent[event][unit] says the token has no use for that event. Each answer is worked out once per
+-- token (the client's token set is bounded). Protected tokens take the full path.
+local unitFilters = {}
+do
+    local function Memo(test)
+        return setmetatable({}, { __index = function(cache, unit)
+            local answer = test(unit) and true or false
+            cache[unit] = answer
+            return answer
+        end })
+    end
+    local always = setmetatable({}, { __index = function() return true end })
+    -- A group member's own token (its plate gets its nameplate event), the player's or a pet's.
+    local noAuraStandIn = Memo(function(unit)
+        return unit:find("^nameplate%d") or unit:find("^raid") or unit:find("^party") or unit == "player" or unit == "pet"
+    end)
+    unitFilters.candidates = Memo(RaidMarker.IsCandidateSource)
+    local notCandidate = Memo(function(unit) return not unitFilters.candidates[unit] end)
+    local plateToken = Memo(function(unit) return unit:find("^nameplate") end)
+    unitFilters.byEvent = {
+        UNIT_HEALTH = always, UNIT_MAXHEALTH = always, UNIT_POWER_UPDATE = always, UNIT_MAXPOWER = always,
+        UNIT_NAME_UPDATE = always, UNIT_LEVEL = always, UNIT_FLAGS = always,
+        UNIT_SPELLCAST_START = always, UNIT_SPELLCAST_STOP = always, UNIT_SPELLCAST_FAILED = always,
+        UNIT_SPELLCAST_INTERRUPTED = always, UNIT_SPELLCAST_DELAYED = always, UNIT_SPELLCAST_CHANNEL_START = always,
+        UNIT_SPELLCAST_CHANNEL_STOP = always, UNIT_SPELLCAST_CHANNEL_UPDATE = always,
+        UNIT_AURA = noAuraStandIn, UNIT_TARGET = notCandidate,
+        -- Another token (the target, a group member) can name a plate's unit; a nameplate token cannot.
+        UNIT_FACTION = plateToken, UNIT_CLASSIFICATION_CHANGED = plateToken,
+    }
+end
 
 -- The owned plate for a plain unit token, if it has one.
 local function PlateFor(unit)
@@ -2048,32 +2197,45 @@ local function HandleEvent(event, unit)
             if data.unit == plateUnit then SafePlateUpdate(data, UpdateRaidIcon) end
         end
     elseif event == "UNIT_TARGET" then
-        -- A plate's unit changed target: its target-of-target name follows.
+        -- A plate's unit changed target: its target-of-target name follows, and what reads it.
         local data = PlateFor(unit)
-        if data then
-            SafePlateUpdate(data, UpdateTargetName)
-            MarkValues(data)
-            MarkStacks(data)
+        if data then SafePlateUpdate(data, changes.UnitTarget) end
+        -- A group member's target is a token that can reveal a withheld marker: only that token is
+        -- tested. A protected token could be any of them.
+        if not IsReadable(unit) then
+            pending.raidFallback = true
+        elseif unitFilters.candidates[unit] then
+            pending.raidTokens[Readers.TargetToken(unit)] = true
         end
-        -- A group member's target is a token that can reveal a withheld marker.
-        if not IsReadable(unit) or RaidMarker.IsCandidateSource(unit) then pending.raidFallback = true end
     elseif event == "PLAYER_FOCUS_CHANGED" or event == "UPDATE_MOUSEOVER_UNIT" then
         pending.raidFallback = true
     elseif event == "PLAYER_ENTERING_WORLD" then
         RaidMarker.InvalidateCandidates()
+        NamePolicy.ZoneChanged()
         NamePolicy.Apply()
         RefreshAllNow(true)
         ScanPlates()
     elseif event == "PLAYER_REGEN_ENABLED" then
         NamePolicy.FlushPending()
+        -- Aura reads that errored during combat are tried again.
+        for plateUnit, data in pairs(active) do
+            if data.unit == plateUnit and (data.buffsIndexError or data.debuffsIndexError) then
+                data.buffsIndexError, data.debuffsIndexError = nil, nil
+                if data.aurasWanted then auraWork.pending[data] = true end
+            end
+        end
+    elseif event == "ZONE_CHANGED_NEW_AREA" then
+        NamePolicy.ZoneChanged()
     elseif event == "PLAYER_LOGOUT" then
         NamePolicy.RestoreAll()
         NamePolicy.FlushPending()
     elseif event == "QUEST_LOG_UPDATE" or event == "QUEST_WATCH_LIST_CHANGED" then
-        pending.quests, pending.questEvent = true, event
+        -- Providers get QUEST_LOG_UPDATE when one arrived in the window, so a watch-list-only change can be skipped.
+        local logSeen = pending.quests and pending.questEvent == "QUEST_LOG_UPDATE"
+        pending.quests, pending.questEvent = true, logSeen and "QUEST_LOG_UPDATE" or event
     else
         local data = PlateFor(unit)
-        if data then SafePlateUpdate(data, UpdateCast) end
+        if data then SafePlateUpdate(data, CAST_TIMING_EVENTS[event] and UpdateCastTiming or UpdateCast) end
     end
 end
 
@@ -2081,7 +2243,10 @@ end
 -- the profiler clock the ticker already uses.
 do
     local RecordEvent = PS.Performance and PS.Performance.RecordEvent
+    local byEvent = unitFilters.byEvent
     eventFrame:SetScript("OnEvent", function(_, event, unit)
+        local ignored = byEvent[event]
+        if ignored and IsReadable(unit) and type(unit) == "string" and not active[unit] and ignored[unit] then return end
         local started = RecordEvent and Clock()
         RunBatch(DEFERRED_EVENTS[event] == true, HandleEvent, event, unit)
         if started then RecordEvent(event, Clock() - started) end

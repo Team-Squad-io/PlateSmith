@@ -2,6 +2,59 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.0.2
+
+### Changed
+
+- The AddOns list shows PlateSmith as "PlateSmith Nameplates", in the Unit Frames category.
+- `/ps diagnose` matches the Settings pages: proper tabs, the title and history buttons on one line,
+  and even spacing. **Details** now shows the report in folding sections (Context, Profile,
+  Performance, Target, Auras, Threat, Threat windows, Quest, Restrictions, Other) as name and value
+  rows, with problem values in red at the top of their section and counted on a folded section's
+  header. Ticker entries and events show as small tables sorted by cost. The fold state is saved.
+- Resizing a threat window now moves the windows stacked below it (and below its row) down or up
+  with its bottom edge, and the windows snapped to its right (and its column's right) with its right
+  edge, so they stay attached. They stop at the screen edge. Hold Shift as you start to resize one
+  window alone, without moving the others.
+- A threat window's title has a tooltip: drag to move it with the windows snapped to it, Shift to
+  move it alone (it still snaps), right-click for its menu.
+- Blueprint Studio's **+ Add rule** and **+ stop** buttons, when unavailable, now look disabled
+  like Studio's other buttons instead of being dimmed twice.
+
+### Fixed
+
+- The threat window resize grip no longer shows its tooltip while you resize (or just after); it
+  shows only when you hover over the grip.
+
+### Performance
+
+- Threat tracking does less work in groups and raids: a group change is handled once instead of
+  once per event, changing target re-reads only the old and new target, and stance or aura changes
+  no longer re-check your role when it is fixed (Always, Never, or assigned by the group).
+- With the threat setting off and no threat window shown, threat tracking now sleeps and catches up
+  when it is needed again. Out of combat with nothing changing it checks four times less often.
+- Threat windows redraw only when something they show changed.
+- Save and Revert bars that are not on screen no longer update on every edit, and the unsaved-changes
+  check runs once per update instead of once per bar.
+- The QuestieDB companion rebuilds its quest markers only when your quests or objectives actually
+  changed, and remembers each plate's creature so it is not worked out again on every check.
+- Protected-value checks, which run for nearly everything PlateSmith reads, are cheaper.
+- In raids and groups, health, power, cast, name and aura updates for group members and other units
+  without a nameplate are ignored straight away instead of reaching the plates.
+- Nameplates redraw only what an update changes: a health change redraws only the parts that show
+  health (text, bars, templates and rules that use it), and nothing at all on plates that show none.
+  In instances where health is protected, the regular health check no longer redraws every plate.
+- A delayed or pushed-back cast only moves its cast bar; a hidden power bar no longer reads power;
+  a mob changing target redraws its plate only when you show its target's name or use it.
+- Threat text on plates is rewritten only when the threat reading changes.
+- Aura rows check your target only on your target's plate; an aura read the game refuses in combat
+  is not retried on every update (it is tried again after combat); Blizzard's aura fallback is only
+  moved or rescaled when it needs to be.
+- Withheld raid markers: a group member's retarget checks only that member's target, and focus and
+  mouseover changes look up markers at most four times a second.
+- The target halo and spotlight animation runs only while one is showing; the native-plate
+  backstop runs every 2 seconds; whether you are in a dungeon or raid is checked once per zone.
+
 ## 1.0.1
 
 ### Changed

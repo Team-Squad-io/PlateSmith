@@ -276,21 +276,27 @@ local function CreateFrames(meter)
     grip:SetScript("OnMouseUp", function() meter.console:StopSizing(meter) end)
     grip:SetScript("OnEnter", function(instance)
         meter:SetGripArt("hover")
-        if GameTooltip then
+        if GameTooltip and meter.console:GripTooltipAllowed() then
             GameTooltip:SetOwner(instance, "ANCHOR_TOP")
             GameTooltip:SetText(L["Resize"])
             GameTooltip:AddLine(L["Drag to resize. Edges snap to windows beside or below, the screen edge "
                 .. "and Blizzard's damage meter; windows side by side share one height."], 1, 0.82, 0.45, true)
-            GameTooltip:AddLine(L["Hold Shift to resize this window alone, without snapping."], 0.8, 0.8, 0.8, true)
+            GameTooltip:AddLine(L["Windows stacked below or snapped on the right move to stay attached."],
+                1, 0.82, 0.45, true)
+            GameTooltip:AddLine(L["Hold Shift as you start to resize this window alone: no snapping, nothing moved."],
+                0.8, 0.8, 0.8, true)
             GameTooltip:Show()
         end
     end)
-    grip:SetScript("OnLeave", function()
+    grip:SetScript("OnLeave", function(instance)
         meter:SetGripArt("normal")
-        if GameTooltip then GameTooltip:Hide() end
+        if GameTooltip and (not GameTooltip.IsOwned or GameTooltip:IsOwned(instance)) then GameTooltip:Hide() end
     end)
 
-    local function DragStart() meter.console:StartDrag(meter) end
+    local function DragStart()
+        if GameTooltip and GameTooltip.IsOwned and GameTooltip:IsOwned(titleBar) then GameTooltip:Hide() end
+        meter.console:StartDrag(meter)
+    end
     local function DragStop() meter.console:StopDrag(meter) end
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
@@ -300,6 +306,18 @@ local function CreateFrames(meter)
     titleBar:SetScript("OnDragStop", DragStop)
     titleBar:SetScript("OnMouseUp", function(_, button)
         if button == "RightButton" then meter.console:OpenMenu(meter, titleBar) end
+    end)
+    titleBar:SetScript("OnEnter", function(owner)
+        if not GameTooltip or not meter.console:GripTooltipAllowed() then return end
+        GameTooltip:SetOwner(owner, "ANCHOR_TOP")
+        GameTooltip:SetText(meter.config.name or L["Threat window"])
+        GameTooltip:AddLine(L["Drag to move this window and the windows snapped to it."], 1, 0.82, 0.45, true)
+        GameTooltip:AddLine(L["Hold Shift to move it alone; it still snaps."], 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine(L["Right-click for the window menu."], 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    titleBar:SetScript("OnLeave", function(owner)
+        if GameTooltip and (not GameTooltip.IsOwned or GameTooltip:IsOwned(owner)) then GameTooltip:Hide() end
     end)
     frame:SetScript("OnSizeChanged", function() meter:Layout() end)
     frame:SetScript("OnShow", function() meter.console:MarkDirty() end)

@@ -1,9 +1,9 @@
 ## Interface: 120100, 16001
-## Title: PlateSmith
-## Notes: Clear, lightweight nameplates with quest markers and threat differential.
+## Title: PlateSmith Nameplates
+## Notes: Design your own nameplates in a live editor, with threat on every plate, cast bars, auras, quest markers and threat windows.
 ## Author: TeamSquadIO
-## Version: 1.0.1
-## Category: Combat
+## Version: 1.0.2
+## Category: Unit Frames
 ## SavedVariables: PlateSmithDB, PlateSmithDiagnosticsDB
 ## SavedVariablesPerCharacter: PlateSmithCharacterDB
 ## IconTexture: Interface\AddOns\PlateSmith\Media\PlateSmithIcon
@@ -35,6 +35,7 @@ Diagnostics\History.lua
 Diagnostics\Summary.lua
 Diagnostics\Performance.lua
 Diagnostics\ReportCode.lua
+Diagnostics\Details.lua
 Diagnostics\Window.lua
 Diagnostics\Probes.lua
 Core\Media.lua

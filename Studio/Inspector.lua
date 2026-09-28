@@ -13,17 +13,12 @@ local profileRanges, optionalRanges = Schema.profileRanges, Schema.optionalProfi
 local PixelText, PointText, PercentText = Controls.PixelText, Controls.PointText, Controls.PercentText
 local MAX_RULES = Schema.MAX_RULES
 
--- Rule presets (Rules > Presets): Core/ProfilePresets.lua, shared with the profile presets.
-local RULE_PRESETS = assert(PS.ProfilePresets, "PlateSmith ProfilePresets missing").RULES
-
--- Style presets (Style > Presets): built-in looks, then the player's saved ones.
-local STYLE_PRESETS = {
-    { name = L["Level box"], kind = "text", style = { box = true, boxColour = { r = 0, g = 0, b = 0, a = 0.7 },
-        boxBorder = { r = 0.78, g = 0.62, b = 0.3, a = 1 }, padding = 3 } },
-    { name = L["Bold outline"], kind = "text", style = { outline = "thick", shadow = true } },
-    { name = L["Framed bar"], kind = "bar", style = { border = 2, borderColour = { r = 0, g = 0, b = 0, a = 1 },
-        background = { r = 0.05, g = 0.05, b = 0.05, a = 0.9 } } },
-}
+-- Rule and style presets (Rules > Presets, Style > Presets): Core/ProfilePresets.lua, shared with
+-- the profile presets. Style > Presets lists the built-in looks, then the player's saved ones.
+local Presets = assert(PS.ProfilePresets, "PlateSmith ProfilePresets missing")
+local RULE_PRESETS, STYLE_PRESETS = Presets.RULES, Presets.STYLES
+local STYLE_DEFAULTS = Schema.STYLE_DEFAULTS
+local SetAvailable = assert(PS.SaveBar, "PlateSmith SaveBar missing").SetAvailable
 
 -- The inspector's layout kit: the shared panel layout (UI/Layout.lua: its spacing tokens, flow
 -- and builders) for the inspector's column, in parchment ink (high contrast: the dark palette),
@@ -137,10 +132,7 @@ end
 -- group, plate, context (which part controls) and movable.
 local function Selection() return Options.editorInspectorSelection or {} end
 local function Profile() return PS.GetPlateProfileSettings(Options.editorProfile) end
-local function Register(control)
-    Options.controls[#Options.controls + 1] = control
-    return control
-end
+local Register = assert(Options.RegisterControl, "PlateSmith RegisterControl missing")
 local function SelectedPosition()
     local key = Options.selectedComponent
     return key and Options.editorLayout and Options.editorLayout[key]
@@ -950,12 +942,12 @@ local function BuildStyle(page)
     K.Add(section, CheckRow(L["Shadow"], "shadow", nil, L["Drop shadow"]), Text)
     K.Add(section, K.SubHeader(section, L["Box behind"]), Text)
     K.Add(section, CheckRow(L["Box"], "box", true, L["Show a box"]), Text)
-    K.Add(section, SwatchRow(L["Fill"], "boxColour", { r = 0, g = 0, b = 0, a = 0.65 }, true), Text)
-    local boxBorder = SwatchRow(L["Border"], "boxBorder", { r = 0.78, g = 0.62, b = 0.3, a = 1 }, true)
+    K.Add(section, SwatchRow(L["Fill"], "boxColour", STYLE_DEFAULTS.boxColour, true), Text)
+    local boxBorder = SwatchRow(L["Border"], "boxBorder", STYLE_DEFAULTS.boxBorder, true)
     K.Add(section, boxBorder, Text)
     local paddingRow, padding = K.SliderRow(section, L["Padding"], {
         min = Schema.STYLE_PADDING[1], max = Schema.STYLE_PADDING[2], step = 1,
-        get = function() return Style().padding or 3 end,
+        get = function() return Style().padding or STYLE_DEFAULTS.padding end,
         drag = function(value) return WriteStyle("padding", value, true) end,
         set = function(value) return WriteStyle("padding", value) end,
     })
@@ -969,7 +961,7 @@ local function BuildStyle(page)
         for _, choice in ipairs(PS.Media.StatusBarChoices()) do choices[#choices + 1] = choice end
         return choices
     end, "selected_style_texture"), Bar)
-    K.Add(section, SwatchRow(L["Background"], "background", { r = 0.025, g = 0.025, b = 0.025, a = 0.92 }, true), Bar)
+    K.Add(section, SwatchRow(L["Background"], "background", STYLE_DEFAULTS.background, true), Bar)
     local barBorder = SwatchRow(L["Border"], "borderColour", { r = 0, g = 0, b = 0, a = 1 })
     SizeAfterSwatch(barBorder, "border", Schema.STYLE_BORDER, 0)
     K.Add(section, barBorder, Bar)
@@ -1310,8 +1302,7 @@ local function RuleCard(parent, index)
             end
         end
         local room = #stops < Schema.MAX_BLEND_STOPS
-        addStop:SetEnabled(room)
-        addStop:SetAlpha(room and 1 or 0.45)
+        SetAvailable(addStop, room)
         instance:Measure()
     end
     return card
@@ -1404,8 +1395,7 @@ local function BuildRules(page)
         end
         -- At either limit (or with nothing that fits) a button is off and dimmed, not refused on click.
         local room = RuleRoom(rules) > 0
-        addRule:SetEnabled(room)
-        addRule:SetAlpha(room and 1 or 0.45)
+        SetAvailable(addRule, room)
         -- With no preset for this part, the title has no action at all (not a blank, dimmed one).
         local fits = #RulePresetEntries() > 0
         presets:SetEnabled(fits)

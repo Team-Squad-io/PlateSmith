@@ -2,6 +2,7 @@
 local _, PS = ...
 local L = PS.L
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
+local BAR_BACKGROUND = S.STYLE_DEFAULTS.background -- behind every bar (Schema defines it once)
 
 PS._CreatePlateFactory = function(context)
     local CreateAuraRow = context.CreateAuraRow
@@ -106,7 +107,7 @@ PS._CreatePlateFactory = function(context)
         health:SetValue(1)
         local healthBackground = health:CreateTexture(nil, "BACKGROUND")
         healthBackground:SetAllPoints()
-        healthBackground:SetColorTexture(0.025, 0.025, 0.025, 0.92)
+        healthBackground:SetColorTexture(BAR_BACKGROUND.r, BAR_BACKGROUND.g, BAR_BACKGROUND.b, BAR_BACKGROUND.a)
         health.plateSmithBackground = healthBackground
         local healthBorder = CreateBorder(health)
 
@@ -118,7 +119,7 @@ PS._CreatePlateFactory = function(context)
         power:SetValue(1)
         local powerBackground = power:CreateTexture(nil, "BACKGROUND")
         powerBackground:SetAllPoints()
-        powerBackground:SetColorTexture(0.025, 0.025, 0.025, 0.92)
+        powerBackground:SetColorTexture(BAR_BACKGROUND.r, BAR_BACKGROUND.g, BAR_BACKGROUND.b, BAR_BACKGROUND.a)
         power.plateSmithBackground = powerBackground
         CreateBorder(power)
         power:Hide()
@@ -273,7 +274,7 @@ PS._CreatePlateFactory = function(context)
         cast:SetValue(0)
         local castBackground = cast:CreateTexture(nil, "BACKGROUND")
         castBackground:SetAllPoints()
-        castBackground:SetColorTexture(0.025, 0.025, 0.025, 0.92)
+        castBackground:SetColorTexture(BAR_BACKGROUND.r, BAR_BACKGROUND.g, BAR_BACKGROUND.b, BAR_BACKGROUND.a)
         cast.plateSmithBackground = castBackground
         CreateBorder(cast)
         local castName = cast:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")

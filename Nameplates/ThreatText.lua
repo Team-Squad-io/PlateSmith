@@ -21,8 +21,11 @@ function ThreatText.Record(info)
     if value ~= "" then return value end
     local parts = {}
     if type(info.percent) == "number" then parts[#parts + 1] = Format.Percent(info.percent) end
-    if type(info.leadPercent) == "number" then parts[#parts + 1] = "L" .. Format.Percent(info.leadPercent) end
-    if type(info.rawThreat) == "number" then parts[#parts + 1] = "T" .. Format.Abbreviate(info.rawThreat) end
+    -- L: the lead percentage, T: raw threat.
+    if type(info.leadPercent) == "number" then
+        parts[#parts + 1] = string.format(L["L%s"], Format.Percent(info.leadPercent))
+    end
+    if type(info.rawThreat) == "number" then parts[#parts + 1] = string.format(L["T%s"], Format.Abbreviate(info.rawThreat)) end
     if #parts > 0 then return table.concat(parts, "  ") end
     if info.selfHolds then return L["YOU"] end
     return ""
@@ -60,17 +63,18 @@ function ThreatText.Gap(unit)
     if ok and Secret.IsReadable(gap) and type(gap) == "number" then return gap end
 end
 
--- Formats by [percent][lead][raw]: lead 1 is the lead percentage, 2 the signed gap.
+-- Formats by [percent][lead][raw]: lead 1 is the lead percentage (L), 2 the signed gap; T is raw
+-- threat. Translated as whole format strings, so a locale can change the prefixes.
 local SINK_FORMATS = {
     [true] = {
-        [0] = { [true] = "%.0f%%  T%s", [false] = "%.0f%%" },
-        [1] = { [true] = "%.0f%%  L%.0f%%  T%s", [false] = "%.0f%%  L%.0f%%" },
-        [2] = { [true] = "%.0f%%  %+.0f  T%s", [false] = "%.0f%%  %+.0f" },
+        [0] = { [true] = L["%.0f%%  T%s"], [false] = "%.0f%%" },
+        [1] = { [true] = L["%.0f%%  L%.0f%%  T%s"], [false] = L["%.0f%%  L%.0f%%"] },
+        [2] = { [true] = L["%.0f%%  %+.0f  T%s"], [false] = "%.0f%%  %+.0f" },
     },
     [false] = {
-        [0] = { [true] = "T%s" },
-        [1] = { [true] = "L%.0f%%  T%s", [false] = "L%.0f%%" },
-        [2] = { [true] = "%+.0f  T%s", [false] = "%+.0f" },
+        [0] = { [true] = L["T%s"] },
+        [1] = { [true] = L["L%.0f%%  T%s"], [false] = L["L%.0f%%"] },
+        [2] = { [true] = L["%+.0f  T%s"], [false] = "%+.0f" },
     },
 }
 

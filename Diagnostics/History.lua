@@ -104,7 +104,8 @@ function History.InstallErrorCapture(buildReport)
     if not ok or type(previous) ~= "function" then return false end
     local capturing = false
     local installed = pcall(seterrorhandler, function(message, ...)
-        if not capturing and History.IsEnabled() and IsPlateSmithError(message) then
+        -- Ownership first: other addons' errors never touch the saved store.
+        if not capturing and IsPlateSmithError(message) and History.IsEnabled() then
             local now = type(GetTime) == "function" and GetTime() or 0
             local repeated = errorCapture.lastMessage == message and errorCapture.lastMessageAt
                 and now - errorCapture.lastMessageAt < ERROR_REPEAT_INTERVAL

@@ -39,6 +39,16 @@ ProfilePresets.RULES = {
     } },
 }
 
+-- Style presets: built-in looks for one part of a kind (Studio's Style > Presets lists them before
+-- the player's saved ones). Applying one replaces the part's style.
+ProfilePresets.STYLES = {
+    { id = "levelBox", name = L["Level box"], kind = "text", style = { box = true,
+        boxColour = { r = 0, g = 0, b = 0, a = 0.7 }, boxBorder = { r = 0.78, g = 0.62, b = 0.3, a = 1 }, padding = 3 } },
+    { id = "boldOutline", name = L["Bold outline"], kind = "text", style = { outline = "thick", shadow = true } },
+    { id = "framedBar", name = L["Framed bar"], kind = "bar", style = { border = 2, borderColour = { r = 0, g = 0, b = 0, a = 1 },
+        background = { r = 0.05, g = 0.05, b = 0.05, a = 0.9 } } },
+}
+
 -- Colours the presets' own styles and rules use.
 local BLACK, DARK = { r = 0, g = 0, b = 0, a = 1 }, { r = 0.06, g = 0.06, b = 0.07, a = 0.92 }
 local WHITE = { r = 1, g = 1, b = 1 }

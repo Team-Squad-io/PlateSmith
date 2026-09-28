@@ -2,6 +2,7 @@
 -- the bar, box and icon kinds. Rendered in one pass per plate flush.
 local _, PS = ...
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
+local BAR_BACKGROUND = S.STYLE_DEFAULTS.background -- behind every bar (Schema defines it once)
 local ThreatText = assert(PS.ThreatText, "PlateSmith ThreatText missing")
 
 PS._CreatePlateValues = function(context)
@@ -57,17 +58,21 @@ PS._CreatePlateValues = function(context)
         if not data.own or data.friendly or data.namesOnly or not GetSettings().threat
             or data.layout[key].visible == false or not info or not info.engaged then
             region:Hide()
-        elseif source == "differential" then
+            return
+        end
+        -- A readable number or nil (ThreatText.Gap), read once.
+        local gap
+        if source == "leadPercent" then gap = ThreatText.Gap(data.unit) end
+        if source == "differential" then
             if IsReadable(info.lead) and type(info.lead) == "number" then
                 region:SetText(ThreatText.Readable(nil, info.lead))
                 region:Show()
             else
                 region:Hide()
             end
-        elseif source == "leadPercent" and ThreatText.Gap(data.unit) then
+        elseif gap then
             -- The signed gap the threat windows show, coloured by state like the threat text. When
             -- the numbers are protected there is no gap: the protected lead percentage shows (below).
-            local gap = ThreatText.Gap(data.unit)
             region:SetTextColor(ThreatText.StateColour(info))
             DisplayValue(region, "%+.0f", gap)
         elseif source == "rawThreat" then
@@ -83,7 +88,7 @@ PS._CreatePlateValues = function(context)
                 value = info.leadPercent
             end
             if IsDisplayNumber(value) then
-                DisplayValue(region, source == "leadPercent" and "L%.0f%%" or "%.0f%%", value)
+                DisplayValue(region, source == "leadPercent" and PS.L["L%.0f%%"] or "%.0f%%", value)
             else
                 region:Hide()
             end
@@ -116,7 +121,22 @@ PS._CreatePlateValues = function(context)
         end
     end
 
-    local function RenderValueSlots(data, health, power, threat)
+    -- Whether a template reads a kind that changed (or reads something with no event of its own).
+    local function TemplateChanged(reads, kinds)
+        if not reads or reads.volatile then return true end
+        for kind in pairs(kinds) do
+            if reads[kind] then return true end
+        end
+        return false
+    end
+
+    -- kinds: what changed (Lifecycle's MarkValues): health, power and threat sources follow their
+    -- kind; a template follows a kind it reads (data.reads.slots), or any change without a kind.
+    local function RenderValueSlots(data, kinds)
+        local all = kinds.all
+        local health, power, threat = all or kinds.health, all or kinds.power, all or kinds.threat
+        local everyTemplate = all or kinds.any
+        local slotReads = data.reads and data.reads.slots or EMPTY
         local slots, values = data.profile.valueSlots, data.values
         -- A names-only or unowned plate shows no custom parts: hidden once, then nothing to do
         -- until the plate is laid out again (ApplyLayout clears valuesCleared).
@@ -144,7 +164,7 @@ PS._CreatePlateValues = function(context)
             elseif source == "template" then
                 if not data.own or data.namesOnly or data.layout[key].visible == false or not slot.template then
                     region:Hide()
-                else
+                elseif everyTemplate or TemplateChanged(slotReads[key], kinds) then
                     region:SetShown(PS.Template.Apply(region, slot.template, Readers.Get(data)))
                 end
             elseif THREAT_SOURCES[source] then
@@ -194,7 +214,7 @@ PS._CreatePlateValues = function(context)
             graphic:SetMinMaxValues(0, 100)
             local background = graphic:CreateTexture(nil, "BACKGROUND")
             background:SetAllPoints(graphic)
-            background:SetColorTexture(0.025, 0.025, 0.025, 0.92)
+            background:SetColorTexture(BAR_BACKGROUND.r, BAR_BACKGROUND.g, BAR_BACKGROUND.b, BAR_BACKGROUND.a)
             graphic.plateSmithBackground = background
         else
             graphic = holder:CreateTexture(nil, "ARTWORK")

@@ -26,6 +26,8 @@ local function Severity(value)
     end
     return nil
 end
+-- "problem", "limited" or nil for a report value (the Details view marks rows with it).
+Summary.Severity = Severity
 
 local function SortedKeys(value, preferred)
     local keys, seen = {}, {}
@@ -40,6 +42,7 @@ local function SortedKeys(value, preferred)
     for _, key in ipairs(rest) do keys[#keys + 1] = key end
     return keys
 end
+Summary.SortedKeys = SortedKeys
 
 local function Scalar(value)
     if type(value) == "string" then return value end

@@ -3,6 +3,8 @@ local _, PS = ...
 if not PS or type(PS.RegisterModule) ~= "function" then return end
 
 local REFRESH_INTERVAL = 0.05
+-- Out of combat with nothing to re-read, the tick only expires engagements and probes deaths.
+local IDLE_INTERVAL = 0.25
 local REFRESH_BUDGET = 2
 local IMMEDIATE_REFRESH_BUDGET = 4
 local DEAD_PROBE_BUDGET = 2
@@ -64,6 +66,7 @@ local ThreatService = {
     groupThreatWanted = false,
     threatPass = 0,
     groupScans = 0,
+    tickInterval = REFRESH_INTERVAL,
 }
 
 local Secret = assert(PS.Secret, "PlateSmith Secret missing")
@@ -82,8 +85,41 @@ local function TargetToken(unit)
     return token
 end
 
+-- Roster tokens, built once rather than on every roster rebuild.
+local RAID_TOKENS, RAID_PET_TOKENS, PARTY_TOKENS, PARTY_PET_TOKENS = {}, {}, {}, {}
+for index = 1, 40 do RAID_TOKENS[index], RAID_PET_TOKENS[index] = "raid" .. index, "raidpet" .. index end
+for index = 1, 4 do PARTY_TOKENS[index], PARTY_PET_TOKENS[index] = "party" .. index, "partypet" .. index end
+
+-- Fields a threat window shows or sorts by. A refresh that changes none of them (and holds no
+-- protected value, which cannot be compared) leaves the snapshot as it is.
+local SHOWN_FIELDS = {
+    "unit", "guid", "enemyName", "serial", "root", "threatMobSource", "holdState", "engaged", "loose",
+    "targetName", "activeAttackerCount", "percent", "lead", "leadKind", "leadPercent", "rawThreat",
+    "selfHolds", "tankHolds", "tanking", "status",
+}
+
 local function Now()
     return type(GetTime) == "function" and GetTime() or 0
+end
+
+-- The nameplate token for a unit token such as "target" or "boss1": true and the token (nil when
+-- the unit has no plate), or false when the client will not say.
+local function PlateToken(unit)
+    local getPlate = C_NamePlate and C_NamePlate.GetNamePlateForUnit
+    if type(getPlate) ~= "function" then return false end
+    local ok, plate = pcall(getPlate, unit)
+    if not ok or not IsReadable(plate) then return false end
+    if plate == nil then return true, nil end
+    if type(plate) ~= "table" then return false end
+    local token = plate.namePlateUnitToken
+    if not IsReadable(token) or type(token) ~= "string" then return false end
+    return true, token
+end
+
+-- The character's tank choice: "adaptive", "always" or "never".
+local function TankMode()
+    local character = type(PS.GetCharacterSettings) == "function" and PS.GetCharacterSettings() or nil
+    return type(character) == "table" and character.tankRole or "adaptive"
 end
 
 -- A threat tuple is "no entry on this mob's table" only when every value is readable and nil.
@@ -235,8 +271,11 @@ end
 -- The player's role. Always and Never (per character) win; Adaptive takes the assigned group
 -- role, then what the player is doing (PlayerTankEvidence), then the specialization's.
 function ThreatService:ResolvePlayerRole()
+    self.roleDirty = false
+    self.roleResolves = (self.roleResolves or 0) + 1
     local role, source = "NONE", "none"
-    for index = 1, self.rosterCount do
+    local mode = TankMode()
+    for index = 1, mode == "always" and 0 or self.rosterCount do
         local entry = self.rosterPool[index]
         if entry.isPlayer then
             role = entry.assignedRole
@@ -247,17 +286,13 @@ function ThreatService:ResolvePlayerRole()
     -- Adaptive: what the player is doing now (a tanking stance, presence or bear form) outranks
     -- the role a talent spec implies (Feral reads as damage); only a group-assigned role, or the
     -- Always / Never choice, comes before it.
-    local mode = (function()
-        local character = type(PS.GetCharacterSettings) == "function" and PS.GetCharacterSettings() or nil
-        return type(character) == "table" and character.tankRole or "adaptive"
-    end)()
     if role == "NONE" and mode == "adaptive" then
         local evidence = PlayerTankEvidence()
         if evidence == nil then evidence = self.playerTankEvidence end
         self.playerTankEvidence = evidence
         if evidence then role, source = "TANK", "adaptive" end
     end
-    if role == "NONE" and type(GetSpecialization) == "function"
+    if role == "NONE" and mode ~= "always" and type(GetSpecialization) == "function"
         and type(GetSpecializationRole) == "function" then
         local ok, specialization = pcall(GetSpecialization)
         if ok and IsReadable(specialization) and type(specialization) == "number" then
@@ -282,6 +317,8 @@ function ThreatService:ResolvePlayerRole()
 end
 
 function ThreatService:RebuildRoster()
+    self.rosterDirty = false
+    self.rosterRebuilds = (self.rosterRebuilds or 0) + 1
     local oldCount = self.rosterCount
     self.rosterCount, self.playerRosterIndex, self.rosterMissingGUID = 0, nil, 0
     -- Cached group scans were read against the old roster.
@@ -297,8 +334,8 @@ function ThreatService:RebuildRoster()
             groupCount = math.min(value, 40)
         end
         for index = 1, groupCount do
-            self:AddRosterUnit("raid" .. index, nil, true)
-            self:AddRosterUnit("raidpet" .. index, "raid" .. index, false)
+            self:AddRosterUnit(RAID_TOKENS[index], nil, true)
+            self:AddRosterUnit(RAID_PET_TOKENS[index], RAID_TOKENS[index], false)
         end
     else
         self:AddRosterUnit("player", nil, true)
@@ -310,8 +347,8 @@ function ThreatService:RebuildRoster()
             end
         end
         for index = 1, groupCount do
-            self:AddRosterUnit("party" .. index, nil, true)
-            self:AddRosterUnit("partypet" .. index, "party" .. index, false)
+            self:AddRosterUnit(PARTY_TOKENS[index], nil, true)
+            self:AddRosterUnit(PARTY_PET_TOKENS[index], PARTY_TOKENS[index], false)
         end
     end
 
@@ -329,6 +366,49 @@ function ThreatService:RebuildRoster()
     self:ResolvePlayerRole()
 end
 
+-- The tick returns to the refresh rate as soon as there is something to re-read.
+function ThreatService:Hurry()
+    if self.tickInterval ~= REFRESH_INTERVAL then
+        self.tickInterval = REFRESH_INTERVAL
+        if PS.Ticker then PS.Ticker.SetInterval("threat.service", REFRESH_INTERVAL) end
+    end
+end
+
+-- Roster events come in bursts (a raid forming, pets resummoned): each only flags the roster,
+-- which is rebuilt once, on the next tick or before anything reads it.
+function ThreatService:MarkRosterDirty()
+    self.rosterDirty = true
+    self:Hurry()
+end
+
+-- Stance, form, aura and talent events likewise only flag the player's role.
+function ThreatService:MarkRoleDirty()
+    self.roleDirty = true
+    self:Hurry()
+end
+
+-- Whether what the player is doing can decide the role: Adaptive with no group-assigned role.
+function ThreatService:TankEvidenceMatters()
+    if self.rosterDirty then return true end
+    if TankMode() ~= "adaptive" then return false end
+    local entry = self.playerRosterIndex and self.rosterPool[self.playerRosterIndex]
+    return not entry or entry.assignedRole == "NONE"
+end
+
+-- Applies a flagged roster or role change. Returns nothing; safe to call on any read.
+function ThreatService:FlushPending()
+    if self.rosterDirty then
+        self:RebuildRoster()
+        self:RebuildTargeterCounts()
+        self:MarkDirty()
+    end
+    if self.roleDirty then
+        local previous = self.playerRole
+        self:ResolvePlayerRole()
+        if self.playerRole ~= previous then self:MarkDirty() end
+    end
+end
+
 -- A group member retargeted: only that member's target is read again at the next flush. A mob's
 -- retarget changes no group targeter; an unreadable or unknown group token re-reads everyone.
 function ThreatService:MarkTargeterDirty(unit)
@@ -339,12 +419,14 @@ function ThreatService:MarkTargeterDirty(unit)
         if entry.isMember then
             entry.targetDirty = true
             self.targetersDirty = true
+            self:Hurry()
         end
         return
     end
     if token and not (token == "pet" or token:match("^party") or token:match("^raid")) then return end
     self.allTargetersDirty = true
     self.targetersDirty = true
+    self:Hurry()
 end
 
 -- Rebuilds who targets which enemy from each member's target GUID. With onlyDirty, only members
@@ -393,7 +475,7 @@ end
 function ThreatService:ExpireEngagements(now)
     now = tonumber(now) or Now()
     local nextExpiry
-    local anyChanged = false
+    -- An expired record is re-read; the snapshot changes only if what it shows does.
     for enemyIndex = 1, self.enemyCount do
         local record = self.enemyOrder[enemyIndex]
         if record.unitDamageAt then
@@ -403,12 +485,10 @@ function ThreatService:ExpireEngagements(now)
             else
                 record.unitDamageAt = nil
                 record.dirty = true
-                anyChanged = true
             end
         end
     end
     self.nextEngagementExpiry = nextExpiry
-    if anyChanged then self.snapshotDirty = true end
 end
 
 function ThreatService:RecordUnitDamage(unit)
@@ -418,7 +498,7 @@ function ThreatService:RecordUnitDamage(unit)
     local now = Now()
     record.unitDamageAt = now
     record.dirty = true
-    self.snapshotDirty = true
+    self:Hurry()
     local expiry = now + ENGAGEMENT_WINDOW
     if not self.nextEngagementExpiry or expiry < self.nextEngagementExpiry then
         self.nextEngagementExpiry = expiry
@@ -831,16 +911,34 @@ function ThreatService:SetGroupThreatWanted(wanted)
             local record = self.enemyOrder[index]
             if SameUnit(record.unit, "target") then record.dirty = true end
         end
+        self:Hurry()
     else
         self.groupThreatRecord, self.groupThreatCount, self.groupThreatPending = nil, 0, nil
     end
 end
 
+local function ShownChanged(record)
+    if record.hasOpaquePercent or record.hasOpaqueLeadPercent or record.hasOpaqueRawThreat
+        or record.hasOpaqueLeadSituation then return true end
+    local shown = record.shown
+    for index = 1, #SHOWN_FIELDS do
+        local field = SHOWN_FIELDS[index]
+        if shown[field] ~= record[field] then return true end
+    end
+    return false
+end
+
 function ThreatService:RefreshRecord(record)
     if not record or not record.unit then return false end
+    if self.rosterDirty or self.roleDirty then self:FlushPending() end
     if not IsVisibleHostile(record.root, record.unit) then
         self:UntrackEnemy(record.unit)
         return false
+    end
+    local shown = record.shown
+    for index = 1, #SHOWN_FIELDS do
+        local field = SHOWN_FIELDS[index]
+        shown[field] = record[field]
     end
 
     record.enemyName = ReadName(record.unit, record.unit)
@@ -856,7 +954,7 @@ function ThreatService:RefreshRecord(record)
     self:FindTarget(record)
     record.dirty = false
     record.revision = record.revision + 1
-    self.snapshotDirty = true
+    if ShownChanged(record) then self.snapshotDirty = true end
     return true
 end
 
@@ -868,7 +966,9 @@ function ThreatService:TrackEnemy(unit, root)
     if not IsVisibleHostile(root, unit) then return nil end
 
     local record = self.enemyByUnit[unit]
+    self:Hurry()
     if record then
+        if record.root ~= root then self.snapshotDirty = true end
         record.root = root
         record.dirty = true
         return record
@@ -954,12 +1054,25 @@ function ThreatService:MarkDirty(unit)
         local record = IsReadable(unit) and self.enemyByUnit[unit]
         if record then
             record.dirty = true
+            self:Hurry()
             return
         end
         if IsReadable(unit) and type(unit) == "string" then
             -- Group tokens are never mobs; their target changes reach records
             -- through the targeter rebuild instead.
             if IsGroupToken(unit) then return end
+            -- "target", "focus", "boss1"...: the plate the client names for it, else (when it will
+            -- not say) every record the token matches.
+            local known, token = PlateToken(unit)
+            if known then
+                record = token and self.enemyByUnit[token]
+                if record then
+                    record.dirty = true
+                    self:Hurry()
+                end
+                return
+            end
+            self:Hurry()
             for index = 1, self.enemyCount do
                 local candidate = self.enemyOrder[index]
                 if SameUnit(candidate.unit, unit) then candidate.dirty = true end
@@ -968,6 +1081,19 @@ function ThreatService:MarkDirty(unit)
         end
     end
     for index = 1, self.enemyCount do self.enemyOrder[index].dirty = true end
+    self:Hurry()
+end
+
+-- The player's target changed: only the old target (the records last read through "target") and
+-- the new one can read differently now.
+function ThreatService:MarkTargetChanged()
+    local known, token = PlateToken("target")
+    if not known then return self:MarkDirty() end
+    for index = 1, self.enemyCount do
+        local record = self.enemyOrder[index]
+        if record.threatMobSource == "target" or record.unit == token then record.dirty = true end
+    end
+    self:Hurry()
 end
 
 function ThreatService:RefreshUnit(unit)
@@ -988,7 +1114,10 @@ function ThreatService:RequestRefresh(unit)
         return self:RefreshUnit(unit)
     end
     local record = self.enemyByUnit[unit] or self:TrackEnemy(unit)
-    if record then record.dirty = true end
+    if record then
+        record.dirty = true
+        self:Hurry()
+    end
     return record
 end
 
@@ -1004,14 +1133,18 @@ function ThreatService:RefreshBatch(budget)
         if record and record.dirty and self:RefreshRecord(record) then refreshed = refreshed + 1 end
         visited = visited + 1
     end
-    -- A mob can die without a threat event; probe a few records per tick.
+    -- A mob can die without a threat event; probe a few records per tick. Out of combat only
+    -- engaged ones: an idle mob that dies (or leaves) takes its plate with it.
+    local anyRecord = Secret.InCombat()
     for _ = 1, math.min(DEAD_PROBE_BUDGET, self.enemyCount) do
         if self.enemyCount == 0 then break end
         self.deadCursor = (self.deadCursor % self.enemyCount) + 1
         local record = self.enemyOrder[self.deadCursor]
-        if record and (ReadBoolean(UnitIsDeadOrGhost, record.unit) == true
-            or ReadBoolean(UnitIsDead, record.unit) == true) then
-            self:RefreshRecord(record)
+        if record and (anyRecord or record.engaged) then
+            self.deathProbes = (self.deathProbes or 0) + 1
+            if ReadBoolean(UnitIsDeadOrGhost, record.unit) == true or ReadBoolean(UnitIsDead, record.unit) == true then
+                self:RefreshRecord(record)
+            end
         end
     end
     return refreshed
@@ -1046,11 +1179,13 @@ function ThreatService:GetEnemy(unit)
 end
 
 function ThreatService:GetPlayerRole()
+    if self.rosterDirty or self.roleDirty then self:FlushPending() end
     return self.playerRole, self.playerRoleSource
 end
 
 local function GetTargeterBucket(service, unit)
     if type(unit) ~= "string" then return nil end
+    if service.rosterDirty then service:FlushPending() end
     local record = service.enemyByUnit[unit]
     local guid = record and record.guid
     return guid and service.attackerTargets[guid] or nil
@@ -1143,35 +1278,56 @@ function ThreatService:ScanVisibleEnemies()
     end
 end
 
+local ROSTER_EVENTS = { GROUP_ROSTER_UPDATE = true, PLAYER_ROLES_ASSIGNED = true, PLAYER_ENTERING_WORLD = true,
+    UNIT_PET = true }
+-- A form or aura only matters as tank evidence; talents (and a new pull) can also change the spec.
+local EVIDENCE_EVENTS = { UPDATE_SHAPESHIFT_FORM = true, UNIT_AURA = true }
+local ROLE_EVENTS = { CHARACTER_POINTS_CHANGED = true, PLAYER_TALENT_UPDATE = true, PLAYER_REGEN_DISABLED = true }
+
+-- With nothing reading threat, events only note what must be redone on waking: a plate
+-- removal is applied (it is cheap and leaves no stale record), additions are rescanned, and
+-- the roster and role are rebuilt.
+function ThreatService:NoteWhileAsleep(event, unit)
+    if event == "NAME_PLATE_UNIT_REMOVED" then
+        self:UntrackEnemy(unit)
+    elseif event == "NAME_PLATE_UNIT_ADDED" then
+        self.platesDirty = true
+    elseif ROSTER_EVENTS[event] then
+        self.rosterDirty = true
+        if event == "PLAYER_ENTERING_WORLD" then self.platesDirty = true end
+    elseif ROLE_EVENTS[event] or event == "UPDATE_SHAPESHIFT_FORM"
+        or (event == "UNIT_AURA" and IsReadable(unit) and unit == "player") then
+        self.roleDirty = true
+    end
+    self.missedEvents = true
+end
+
 function ThreatService:HandleEvent(event, unit, action)
     if not self.eventsEnabled then return end
-    if not self.tickerEnabled then self:WakeTicker() end
+    if not self.tickerEnabled then
+        self:WakeTicker()
+        if not self.tickerEnabled then return self:NoteWhileAsleep(event, unit) end
+    end
     if event == "NAME_PLATE_UNIT_ADDED" then
         self:TrackEnemy(unit)
     elseif event == "NAME_PLATE_UNIT_REMOVED" then
         self:UntrackEnemy(unit)
-    elseif event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ROLES_ASSIGNED"
-        or event == "PLAYER_ENTERING_WORLD" or event == "UNIT_PET" then
-        self:RebuildRoster()
-        self:RebuildTargeterCounts()
-        self:MarkDirty()
-    elseif event == "UPDATE_SHAPESHIFT_FORM" or event == "CHARACTER_POINTS_CHANGED" or event == "PLAYER_TALENT_UPDATE"
-        or (event == "UNIT_AURA" and IsReadable(unit) and unit == "player") then
-        -- A stance, form, aura or talent can make the player the tank (or stop it).
-        local previous = self.playerRole
-        self:ResolvePlayerRole()
-        if self.playerRole ~= previous then self:MarkDirty() end
-    elseif event == "PLAYER_REGEN_DISABLED" then
-        -- Specialization can change between pulls without a roster event.
-        local previous = self.playerRole
-        self:ResolvePlayerRole()
-        if self.playerRole ~= previous then self:MarkDirty() end
+    elseif ROSTER_EVENTS[event] then
+        self:MarkRosterDirty()
+    elseif EVIDENCE_EVENTS[event] then
+        -- A stance, form or aura can make the player the tank (or stop it), but only as evidence.
+        if (event ~= "UNIT_AURA" or (IsReadable(unit) and unit == "player")) and self:TankEvidenceMatters() then
+            self:MarkRoleDirty()
+        end
+    elseif ROLE_EVENTS[event] then
+        -- Talents change the spec's role; the spec can also change between pulls without a roster event.
+        self:MarkRoleDirty()
     elseif event == "UNIT_TARGET" then
         self:MarkTargeterDirty(unit)
         self:MarkDirty(unit)
     elseif event == "PLAYER_TARGET_CHANGED" then
         self:MarkTargeterDirty("player")
-        self:MarkDirty()
+        self:MarkTargetChanged()
     elseif event == "UNIT_THREAT_LIST_UPDATE" or event == "UNIT_THREAT_SITUATION_UPDATE" then
         self:MarkDirty(unit)
     elseif event == "UNIT_COMBAT" and IsReadable(action) and action == "WOUND" then
@@ -1194,9 +1350,24 @@ function ThreatService:SyncTicker()
     if wanted ~= self.tickerEnabled then
         self.tickerEnabled = wanted
         if PS.Ticker then PS.Ticker.SetEnabled("threat.service", wanted) end
-        if wanted then self:MarkDirty() end
+        if wanted then self:Wake() end
     end
     return wanted
+end
+
+-- Catches up with what was skipped while nothing read threat, then re-reads every record.
+function ThreatService:Wake()
+    if self.platesDirty then
+        self.platesDirty = false
+        self:ScanVisibleEnemies()
+    end
+    if self.missedEvents then
+        -- Retargets were not followed while asleep.
+        self.missedEvents = false
+        self.allTargetersDirty, self.targetersDirty = true, true
+    end
+    self:FlushPending()
+    self:MarkDirty()
 end
 
 function ThreatService:WakeTicker()
@@ -1209,12 +1380,32 @@ function ThreatService:OnUpdate()
         return
     end
     local now = Now()
+    self:FlushPending()
     if self.nextEngagementExpiry and now >= self.nextEngagementExpiry then
         self:ExpireEngagements(now)
     end
     self:FlushTargeters()
     if self.groupThreatPending then self:FlushGroupThreat(now) end
     self:RefreshBatch(REFRESH_BUDGET)
+    self:PaceTicker()
+end
+
+-- Something is still waiting to be re-read.
+function ThreatService:HasPendingWork()
+    if self.targetersDirty or self.groupThreatPending or self.rosterDirty or self.roleDirty then return true end
+    for index = 1, self.enemyCount do
+        if self.enemyOrder[index].dirty then return true end
+    end
+    return false
+end
+
+-- Idle out of combat, the tick slows to IDLE_INTERVAL; anything marked dirty hurries it back.
+function ThreatService:PaceTicker()
+    local interval = (Secret.InCombat() or self:HasPendingWork()) and REFRESH_INTERVAL or IDLE_INTERVAL
+    if interval ~= self.tickInterval then
+        self.tickInterval = interval
+        if PS.Ticker then PS.Ticker.SetInterval("threat.service", interval) end
+    end
 end
 
 function ThreatService:OnInitialize()
@@ -1228,6 +1419,7 @@ function ThreatService:OnInitialize()
             activeAttackerCount = 0,
             activeAttackerNames = {},
             activeAttackerUnits = {},
+            shown = {},
         }
     end
     self.freeCount = MAX_ENEMIES
@@ -1272,6 +1464,7 @@ end
 ThreatService._Test = {
     IsSecret = IsSecret,
     RefreshInterval = REFRESH_INTERVAL,
+    IdleInterval = IDLE_INTERVAL,
     RefreshBudget = REFRESH_BUDGET,
     EngagementWindow = ENGAGEMENT_WINDOW,
     GroupScanInterval = GROUP_SCAN_INTERVAL,

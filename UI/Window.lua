@@ -316,6 +316,86 @@ function Window.SetScrollText(scroll, text)
     Window.RefreshScroll(scroll)
 end
 
+-- A tab strip: flat tabs on a hairline, the selected one in gold with an underline and a faint
+-- fill, the others dim until hovered. Colours default to Blizzard's panel inks.
+Window.colours.tab = {
+    selected = { 1, 0.82, 0 }, normal = { 0.62, 0.62, 0.62 }, hover = { 1, 1, 1 },
+    fill = { 1, 1, 1, 0.06 }, hoverFill = { 1, 1, 1, 0.03 }, line = { 0.45, 0.45, 0.45, 0.8 }, accent = { 1, 0.82, 0, 1 },
+}
+local TAB = { height = 26, padding = 14, minWidth = 72, gap = 2, accent = 2 }
+Window.tabMetrics = TAB
+
+-- spec: tabs = { { key, text }, ... }, onSelect(key), colours (Window.colours.tab by default),
+-- font (default GameFontNormal). The caller anchors the strip (its TOPLEFT and TOPRIGHT) and
+-- calls strip:Select(key); strip.buttons[key]:SetText(text) re-measures a tab.
+function Window.Tabs(parent, spec)
+    local colours = spec.colours or Window.colours.tab
+    local strip = CreateFrame("Frame", nil, parent)
+    strip:SetHeight(TAB.height)
+    strip.line = strip:CreateTexture(nil, "BORDER")
+    strip.line:SetPoint("BOTTOMLEFT", strip, "BOTTOMLEFT", 0, 0)
+    strip.line:SetPoint("BOTTOMRIGHT", strip, "BOTTOMRIGHT", 0, 0)
+    strip.line:SetHeight(1)
+    strip.line:SetColorTexture(colours.line[1], colours.line[2], colours.line[3], colours.line[4])
+    strip.buttons, strip.order = {}, {}
+
+    local function Paint(button)
+        local chosen = strip.selected == button.key
+        local ink = chosen and colours.selected or button.hover and colours.hover or colours.normal
+        button.label:SetTextColor(ink[1], ink[2], ink[3], 1)
+        local fill = chosen and colours.fill or button.hover and colours.hoverFill or nil
+        if fill then button.fill:SetColorTexture(fill[1], fill[2], fill[3], fill[4]) end
+        button.fill:SetShown(fill ~= nil)
+        button.accent:SetShown(chosen)
+    end
+
+    local function Place()
+        local x = 0
+        for _, button in ipairs(strip.order) do
+            button:ClearAllPoints()
+            button:SetPoint("BOTTOMLEFT", strip, "BOTTOMLEFT", x, 0)
+            x = x + button:GetWidth() + TAB.gap
+        end
+    end
+
+    for _, tab in ipairs(spec.tabs) do
+        local key = tab[1]
+        local button = CreateFrame("Button", nil, strip)
+        button.key = key
+        button:SetHeight(TAB.height)
+        button.fill = button:CreateTexture(nil, "BACKGROUND")
+        button.fill:SetAllPoints(button)
+        button.accent = button:CreateTexture(nil, "ARTWORK")
+        button.accent:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 0, 0)
+        button.accent:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 0, 0)
+        button.accent:SetHeight(TAB.accent)
+        button.accent:SetColorTexture(colours.accent[1], colours.accent[2], colours.accent[3], colours.accent[4])
+        button.label = button:CreateFontString(nil, "OVERLAY", spec.font or "GameFontNormal")
+        button.label:SetPoint("CENTER", button, "CENTER", 0, 1)
+        function button:SetText(text)
+            self.label:SetText(text)
+            local width = self.label.GetStringWidth and self.label:GetStringWidth() or 0
+            self:SetWidth(math.max(TAB.minWidth, math.ceil(tonumber(width) or 0) + 2 * TAB.padding))
+            Place()
+        end
+        function button:GetText() return self.label:GetText() end
+        button:SetScript("OnEnter", function(instance) instance.hover = true Paint(instance) end)
+        button:SetScript("OnLeave", function(instance) instance.hover = false Paint(instance) end)
+        button:SetScript("OnClick", function()
+            if spec.onSelect then spec.onSelect(key) else strip:Select(key) end
+        end)
+        strip.buttons[key] = button
+        strip.order[#strip.order + 1] = button
+        button:SetText(tab[2])
+    end
+
+    function strip:Select(key)
+        self.selected = key
+        for _, button in ipairs(self.order) do Paint(button) end
+    end
+    return strip
+end
+
 function Window.Button(parent, text, width, height, onClick)
     local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
     button:SetSize(width or 110, height or 24)
