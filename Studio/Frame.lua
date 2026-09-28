@@ -421,7 +421,16 @@ function PS.CreateVisualEditor()
     PS.UI.Controls.AttachTooltip(profileDropdown, L["Profile"], { L["The saved profile being edited."] })
     profileDropdown.studioLabel = Options.editorProfileLabel
     Options.editorNamedProfileDropdown = profileDropdown
-    PS.Profiles.Subscribe(RefreshProfile)
+    -- Studio always shows and edits the active profile: a switch from anywhere (Settings, a slash
+    -- command, New from preset) redraws it, not only one made from this menu.
+    local seenLoads = PS.Profiles.Loads()
+    PS.Profiles.Subscribe(function()
+        RefreshProfile()
+        if PS.Profiles.Loads() ~= seenLoads then
+            seenLoads = PS.Profiles.Loads()
+            Options:Refresh(true)
+        end
+    end)
     RefreshProfile()
 
     -- Studio: the component tree.

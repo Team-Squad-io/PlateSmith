@@ -774,24 +774,29 @@ local function ShowHighlight(highlight, rect)
     highlight:Show()
 end
 
--- The dragged or resized window's snap feedback, each snap tick.
+-- The dragged window's snap feedback, each snap tick (a resize draws its own as it sizes).
 function ThreatConsole:UpdateSnapGuide()
     local drag, sizing = self.drag, self.sizing
-    if not drag and not sizing then
+    if sizing then return self:UpdateSizing() end
+    if not drag then
         self:StopSnapFeedback()
         return
     end
+    local rect = CurrentRect(drag.meter)
+    local others = self:OtherRects(drag.group)
+    local screenWidth, screenHeight = ScreenSize()
+    local _, _, xEdge, yEdge, xTarget, yTarget = Geometry.Snap(rect, others, screenWidth, screenHeight)
+    self:DrawSnapGuide(rect, others, xEdge, yEdge, xTarget, yTarget)
+end
+
+-- A line along each edge that snaps, and a border around the window or meter joined.
+function ThreatConsole:DrawSnapGuide(rect, others, xEdge, yEdge, xTarget, yTarget)
     local guide = self:SnapGuide()
-    local rect, others, xEdge, yEdge, xTarget, yTarget
-    if drag then
-        rect = CurrentRect(drag.meter)
-        others = self:OtherRects(drag.group)
-        local screenWidth, screenHeight = ScreenSize()
-        _, _, xEdge, yEdge, xTarget, yTarget = Geometry.Snap(rect, others, screenWidth, screenHeight)
-    else
-        rect = CurrentRect(sizing, true)
-        others = self:OtherRects(self.sizingGroup)
-        _, _, xEdge, yEdge, xTarget, yTarget = Geometry.SnapSize(rect, others)
+    if xEdge == nil and yEdge == nil then
+        guide:Hide()
+        guide.highlight.target = nil
+        guide.highlight:Hide()
+        return
     end
     guide.vertical:SetShown(xEdge ~= nil)
     guide.horizontal:SetShown(yEdge ~= nil)
@@ -823,7 +828,7 @@ function ThreatConsole:StopSnapFeedback()
         guide.highlight.target = nil
         guide.highlight:Hide()
     end
-    if PS.Ticker and not self.drag and not self.sizing then PS.Ticker.SetEnabled("threat.snap", false) end
+    if PS.Ticker and not self.drag then PS.Ticker.SetEnabled("threat.snap", false) end
 end
 
 function ThreatConsole:StopDrag(meter)
@@ -841,15 +846,27 @@ function ThreatConsole:StopDrag(meter)
     local config = lead.config
     config.left, config.top = math.floor(rect.left + dx + 0.5), math.floor(rect.top + dy + 0.5)
     -- Dropped against a side of a Blizzard meter window: the window follows it on that side.
-    local meterIndex, side
+    -- Dropped against another window: it joins that window's row (its top and height) or column
+    -- (its left and width).
+    local meterIndex, side, joined
     for _, target in ipairs({ xTarget or 0, yTarget or 0 }) do
+        local dropped = Geometry.Rect(config.left, config.top, config.width, config.height)
         if not side and scratchMeterIndex[target] then
-            side = Geometry.DockSide(Geometry.Rect(config.left, config.top, config.width, config.height), others[target])
+            side = Geometry.DockSide(dropped, others[target])
             if side then meterIndex = scratchMeterIndex[target] end
+        elseif not side and not joined and others[target] then
+            local left, top, width, height = Geometry.Join(dropped, others[target])
+            if left then
+                joined = true
+                config.left, config.top = math.floor(left + 0.5), math.floor(top + 0.5)
+                config.width = math.floor(Bounded(ranges.width, width, config.width) + 0.5)
+                config.height = math.floor(Bounded(ranges.height, height, config.height) + 0.5)
+            end
         end
     end
     KeepOnScreen(config)
     lead:Place()
+    if joined then lead:Layout() end
     for _, follower in ipairs(drag.followers) do
         local followerConfig = follower.meter.config
         followerConfig.left, followerConfig.top = config.left + follower.dx, config.top + follower.dy
@@ -875,43 +892,158 @@ function ThreatConsole:EndDrag()
     if self.drag then self:StopDrag(self.drag.meter) end
 end
 
+-- The cursor in UIParent units, or nil when the client does not report it.
+local function CursorPosition()
+    if type(GetCursorPosition) ~= "function" then return nil end
+    local x, y = GetCursorPosition()
+    if type(x) ~= "number" or type(y) ~= "number" then return nil end
+    local scale = UIParent and type(UIParent.GetEffectiveScale) == "function" and UIParent:GetEffectiveScale() or 1
+    if type(scale) ~= "number" or scale <= 0 then scale = 1 end
+    return x / scale, y / scale
+end
+
+local function ShiftDown()
+    return type(IsShiftKeyDown) == "function" and IsShiftKeyDown() == true
+end
+
+local sizingState, sizingRow, sizingColumn, skipBottom, skipRight = {}, {}, {}, {}, {}
+
+-- The windows that resize with a window: the free, unlocked, shown windows in its row take its
+-- height and those in its column its width. Shift, or a following window, resizes alone. Only
+-- the window itself is left out of what the resize snaps to.
+function ThreatConsole:LinkSizing(meter, alone)
+    local group = self.sizingGroup or {}
+    self.sizingGroup = group
+    for id in pairs(group) do group[id] = nil end
+    local id = meter.config.id
+    group[id] = true
+    if alone or meter.config.dockMeter > 0 then
+        for key in pairs(sizingRow) do sizingRow[key] = nil end
+        for key in pairs(sizingColumn) do sizingColumn[key] = nil end
+        return
+    end
+    local rects = self:WindowRects(true)
+    for key in pairs(rects) do
+        local record = self:GetWindow(key)
+        if key ~= id and record and record.locked then rects[key] = nil end
+    end
+    Geometry.Line(rects, id, false, sizingRow)
+    Geometry.Line(rects, id, true, sizingColumn)
+    sizingRow[id], sizingColumn[id] = nil, nil
+end
+
+-- The corner grip resizes by following the cursor itself rather than the client's StartSizing,
+-- which owns the size until the button is released and so cannot snap as it goes. The top-left
+-- stays put; the bottom and right edges snap (Shift: no snap) and the size is kept in bounds and
+-- on screen. A transient OnUpdate on the grip runs it while the button is held.
 function ThreatConsole:StartSizing(meter)
     if meter.config.locked then return false end
     self:StopSizing()
-    if not pcall(meter.frame.StartSizing, meter.frame, "BOTTOMRIGHT") then return false end
+    local x, y = CursorPosition()
+    if not x then return false end
+    local rect = CurrentRect(meter, true)
+    local state = sizingState
+    state.x, state.y = x, y
+    state.left, state.top = rect.left, rect.top
+    state.width, state.height = rect.right - rect.left, rect.top - rect.bottom
+    state.startWidth = meter.config.width
     self.sizing = meter
-    local group = self.sizingGroup or {}
-    for id in pairs(group) do group[id] = nil end
-    group[meter.config.id] = true
-    self.sizingGroup = group
-    if PS.Ticker then PS.Ticker.SetEnabled("threat.snap", true) end
+    self:LinkSizing(meter, ShiftDown())
+    local grip = meter.grip
+    if grip and grip.SetScript then grip:SetScript("OnUpdate", function() self:UpdateSizing() end) end
     return true
 end
 
--- Ends a resize: the size is kept, with the bottom and right edges snapped to a neighbour's.
+-- One step of a resize: the size under the cursor, snapped, applied to the window and the
+-- windows linked to it.
+function ThreatConsole:UpdateSizing(final)
+    local meter = self.sizing
+    if not meter then return end
+    if not final and type(IsMouseButtonDown) == "function" and IsMouseButtonDown("LeftButton") == false then
+        -- The button came up where the grip could not hear it.
+        return self:StopSizing(meter)
+    end
+    local x, y = CursorPosition()
+    if not x then return end
+    local state, config = sizingState, meter.config
+    local screenWidth = ScreenSize()
+    local width = math.min(state.width + x - state.x, screenWidth - state.left)
+    local height = math.min(state.height - (y - state.y), state.top)
+    width, height = Bounded(ranges.width, width, config.width), Bounded(ranges.height, height, config.height)
+    local rect = ScratchRect("sizing", state.left, state.top, width, height)
+    local others = self:OtherRects(self.sizingGroup)
+    local xEdge, yEdge, xTarget, yTarget
+    if not ShiftDown() then
+        for key in pairs(skipBottom) do skipBottom[key] = nil end
+        for key in pairs(skipRight) do skipRight[key] = nil end
+        -- A linked window's shared edge moves with this one, so that edge does not snap to it.
+        for id in pairs(sizingRow) do
+            if scratchRects[id] then skipBottom[scratchRects[id]] = true end
+        end
+        for id in pairs(sizingColumn) do
+            if scratchRects[id] then skipRight[scratchRects[id]] = true end
+        end
+        local dRight, dBottom
+        dRight, dBottom, xEdge, yEdge, xTarget, yTarget = Geometry.SnapSize(rect, others, nil, screenWidth, skipBottom,
+            skipRight)
+        width = Bounded(ranges.width, width + dRight, width)
+        height = Bounded(ranges.height, height - dBottom, height)
+        rect = ScratchRect("sizing", state.left, state.top, width, height)
+    end
+    width, height = math.floor(width + 0.5), math.floor(height + 0.5)
+    if width ~= config.width or height ~= config.height then
+        config.width, config.height = width, height
+        meter.frame:SetSize(width, height)
+        for id in pairs(sizingRow) do self:ResizeLinked(id, nil, height) end
+        for id in pairs(sizingColumn) do self:ResizeLinked(id, width, nil) end
+    end
+    self:DrawSnapGuide(rect, others, xEdge, yEdge, xTarget, yTarget)
+end
+
+function ThreatConsole:ResizeLinked(id, width, height)
+    local record, meter = self:GetWindow(id), self.meters[id]
+    if not record or not meter then return end
+    record.width, record.height = width or record.width, height or record.height
+    meter.frame:SetSize(record.width, record.height)
+end
+
+-- Ends a resize without saving anything more (the window was rebound to another record).
+function ThreatConsole:AbortSizing(meter)
+    if not self.sizing or (meter and self.sizing ~= meter) then return false end
+    local grip = self.sizing.grip
+    if grip and grip.SetScript then grip:SetScript("OnUpdate", nil) end
+    self.sizing = nil
+    self:StopSnapFeedback()
+    return true
+end
+
+-- Ends a resize: the size reached is kept (it was saved as it changed).
 function ThreatConsole:StopSizing(meter)
     local sizing = self.sizing
     if not sizing or (meter and sizing ~= meter) then return false end
-    self.sizing = nil
-    self:StopSnapFeedback()
-    local frame, config = sizing.frame, sizing.config
-    pcall(frame.StopMovingOrSizing, frame)
-    if frame.SetUserPlaced then pcall(frame.SetUserPlaced, frame, false) end
-    local rect = CurrentRect(sizing, true)
-    local dRight, dBottom = Geometry.SnapSize(rect, self:OtherRects(self.sizingGroup))
-    local oldWidth = config.width
-    config.width = math.floor(Bounded(ranges.width, rect.right - rect.left + dRight, config.width) + 0.5)
+    self:UpdateSizing(true)
+    self:AbortSizing(sizing)
+    local config = sizing.config
     -- Resized while following above or below: it keeps this width instead of the meter's, until
     -- it is snapped back to the meter's width.
-    if config.dockMeter > 0 and (config.dockSide == "above" or config.dockSide == "below") and config.width ~= oldWidth then
+    if config.dockMeter > 0 and (config.dockSide == "above" or config.dockSide == "below")
+        and config.width ~= sizingState.startWidth then
         local meterRect = self:ReadMeterRect(config.dockMeter)
         config.dockOwnWidth = not (meterRect and math.abs(meterRect.right - meterRect.left - config.width) < 1)
     end
-    config.height = math.floor(Bounded(ranges.height, rect.top - rect.bottom - dBottom, config.height) + 0.5)
-    config.left, config.top = math.floor(rect.left + 0.5), math.floor(rect.top + 0.5)
     if config.dockMeter == 0 then KeepOnScreen(config) end
     sizing:Place()
     sizing:Layout()
+    for _, line in ipairs({ sizingRow, sizingColumn }) do
+        for id in pairs(line) do
+            local linked = self.meters[id]
+            if linked then
+                linked:Place()
+                linked:Layout()
+            end
+            line[id] = nil
+        end
+    end
     return true
 end
 

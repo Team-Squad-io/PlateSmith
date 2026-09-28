@@ -1604,7 +1604,7 @@ function Options:PositionEditorComponent(key)
     -- Pinned to a parent's edge: anchored to the parent's drawn text or frame, as on the plates,
     -- so it meets the name exactly however wide it renders.
     local edge = position.attach and Schema.ATTACH_EDGES[position.attach]
-    local pinTarget = edge and self:EditorPinTarget(key)
+    local pinTarget = edge and self:EditorPinDepth(key) and self:EditorPinTarget(key)
     local parentComponent = pinTarget and self.editorComponents and self.editorComponents[pinTarget]
     if parentComponent then
         local _, _, parentScale = self:EditorPlacement(key)
@@ -1613,10 +1613,14 @@ function Options:PositionEditorComponent(key)
         local ownX, ownY = self:EditorContentInset(key)
         local targetX, targetY = self:EditorContentInset(pinTarget)
         local targetScale = self:EditorDrawnScale(pinTarget) / scale
-        component:SetPoint(edge[3], parentComponent, edge[4],
+        -- The parent may still hang off this part from an earlier layout (a caller placing one
+        -- part alone): the client refuses that anchor, so the part falls back to its place below.
+        if pcall(component.SetPoint, component, edge[3], parentComponent, edge[4],
             ((position.x or 0) * parentScale) / scale - edge[1] * (ownX + targetX * targetScale),
-            ((position.y or 0) * parentScale) / scale - edge[2] * (ownY + targetY * targetScale))
-        return
+            ((position.y or 0) * parentScale) / scale - edge[2] * (ownY + targetY * targetScale)) then
+            return
+        end
+        component:ClearAllPoints()
     end
     -- Where the hierarchy (and its stacks) draw it; the part's own offsets are in its drawn units.
     local transform = self:EditorTransforms()[key]
@@ -2288,9 +2292,40 @@ function Options:StopEditorDrag(key, component)
     end
 end
 
+-- How many pins key's anchor chain has above it (0: placed from the stage); nil when the chain
+-- leads back to key or runs deeper than a layout can nest.
+function Options:EditorPinDepth(key)
+    local depth, node = 0, key
+    for _ = 1, Schema.MAX_DEPTH + 1 do
+        local position = self.editorLayout and self.editorLayout[node]
+        local edge = position and position.attach and Schema.ATTACH_EDGES[position.attach]
+        local target = edge and self:EditorPinTarget(node)
+        if not (target and self.editorComponents and self.editorComponents[target]) then return depth end
+        if target == key then return nil end
+        depth, node = depth + 1, target
+    end
+    return nil
+end
+
+-- Every component is let go first, then placed parents first: a part is only ever anchored to one
+-- already placed for this layout, never to one still anchored to it from the last layout (a
+-- profile or plate type that pins them the other way round), which the client refuses.
+local layoutScratch, depthScratch = {}, {}
 function Options:RefreshEditorLayout()
     if not self.editorCanvas then return end
-    for _, key in ipairs(editorOrder) do self:PositionEditorComponent(key) end
+    local components = self.editorComponents or {}
+    local order = layoutScratch
+    for index = #order, 1, -1 do order[index] = nil end
+    for index, key in ipairs(editorOrder) do
+        local component = components[key]
+        if component then
+            component:ClearAllPoints()
+            order[#order + 1] = key
+            depthScratch[key] = (self:EditorPinDepth(key) or 0) * 1000 + index
+        end
+    end
+    table.sort(order, function(left, right) return depthScratch[left] < depthScratch[right] end)
+    for _, key in ipairs(order) do self:PositionEditorComponent(key) end
     -- A selected group's box is measured from its members, so it follows every change.
     if self.editorSelectedGroup and not self.selectedComponent then self:UpdateEditorSelectionHandles() end
 end

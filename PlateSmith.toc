@@ -2,7 +2,7 @@
 ## Title: PlateSmith
 ## Notes: Clear, lightweight nameplates with quest markers and threat differential.
 ## Author: TeamSquadIO
-## Version: 1.0.0
+## Version: 1.0.1
 ## Category: Combat
 ## SavedVariables: PlateSmithDB, PlateSmithDiagnosticsDB
 ## SavedVariablesPerCharacter: PlateSmithCharacterDB
@@ -22,6 +22,7 @@ Core\Template.lua
 Core\Table.lua
 Core\Locale.lua
 Core\Json.lua
+Core\Base64.lua
 Core\Ticker.lua
 Core\Modules.lua
 Core\Restrictions.lua
@@ -33,6 +34,7 @@ Threat\Service.lua
 Diagnostics\History.lua
 Diagnostics\Summary.lua
 Diagnostics\Performance.lua
+Diagnostics\ReportCode.lua
 Diagnostics\Window.lua
 Diagnostics\Probes.lua
 Core\Media.lua

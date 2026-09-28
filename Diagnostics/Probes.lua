@@ -120,6 +120,9 @@ PS._CreateDiagnosticProbes = function(context)
             restrictions = PS.Restrictions.Report(),
             profile = {
                 active = tostring(PS.Profiles.Active()), unsaved = PS.Profiles.IsDirty(),
+                -- The profile Studio's header names, so a Studio out of step with the plates shows.
+                studio = PS.Options and PS.Options.editorNamedProfileDropdown
+                    and tostring(PS.Options.editorNamedProfileDropdown:GetText()) or "none",
                 changes = PS.Json.Array(PS.Profiles.Changes(10)),
             },
             performance = PS.Performance.Report(),

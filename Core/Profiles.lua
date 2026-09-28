@@ -19,6 +19,7 @@ Profiles.DEFAULT = "Default"
 Profiles.MAX_NAME_LENGTH = 32
 
 local store, working, characterKey
+local loads = 0
 local listeners = {}
 local changed = false
 
@@ -118,12 +119,17 @@ end
 
 -- Replaces the working copy in place (the runtime holds a reference to it) and reapplies it.
 local function Load(settings)
+    loads = loads + 1
     Table.Replace(working, Table.DeepCopy(settings))
     S.NormalizeSettings(working)
     PS.NamePolicy.Apply()
     PS.Refresh()
     Profiles.Notify()
 end
+
+-- Bumped each time other settings are loaded into the working copy (a switch, revert, reset or copy),
+-- so a view can tell a new design from an edit.
+function Profiles.Loads() return loads end
 
 function Profiles.Save()
     store.profiles[Profiles.Active()] = Table.DeepCopy(working)

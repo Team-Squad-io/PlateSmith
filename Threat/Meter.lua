@@ -269,10 +269,26 @@ local function CreateFrames(meter)
     grip:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
     grip.texture = grip:CreateTexture(nil, "OVERLAY")
     grip.texture:SetAllPoints()
-    grip:SetScript("OnMouseDown", function() meter.console:StartSizing(meter) end)
+    grip:SetScript("OnMouseDown", function()
+        if GameTooltip then GameTooltip:Hide() end
+        meter.console:StartSizing(meter)
+    end)
     grip:SetScript("OnMouseUp", function() meter.console:StopSizing(meter) end)
-    grip:SetScript("OnEnter", function() meter:SetGripArt("hover") end)
-    grip:SetScript("OnLeave", function() meter:SetGripArt("normal") end)
+    grip:SetScript("OnEnter", function(instance)
+        meter:SetGripArt("hover")
+        if GameTooltip then
+            GameTooltip:SetOwner(instance, "ANCHOR_TOP")
+            GameTooltip:SetText(L["Resize"])
+            GameTooltip:AddLine(L["Drag to resize. Edges snap to windows beside or below, the screen edge "
+                .. "and Blizzard's damage meter; windows side by side share one height."], 1, 0.82, 0.45, true)
+            GameTooltip:AddLine(L["Hold Shift to resize this window alone, without snapping."], 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end
+    end)
+    grip:SetScript("OnLeave", function()
+        meter:SetGripArt("normal")
+        if GameTooltip then GameTooltip:Hide() end
+    end)
 
     local function DragStart() meter.console:StartDrag(meter) end
     local function DragStop() meter.console:StopDrag(meter) end
@@ -303,11 +319,7 @@ end
 -- of the old window's runtime state (scroll, a resize in progress) carries over.
 function Meter:Bind(config)
     local console = self.console
-    if console.sizing == self then
-        console.sizing = nil
-        pcall(self.frame.StopMovingOrSizing, self.frame)
-        if console.StopSnapFeedback then console:StopSnapFeedback() end
-    end
+    if console.sizing == self then console:AbortSizing(self) end
     self.config = config
     self.offset, self.rowCount = 0, 0
     self:ApplyTheme()

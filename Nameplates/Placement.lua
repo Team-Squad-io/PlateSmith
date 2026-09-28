@@ -237,10 +237,14 @@ PS._CreatePlatePlacement = function(context)
         if parentRegion then
             local parentTransform = Transforms(layout, data)[position.parent]
             local parentScale = parentTransform and parentTransform.scale or 1
-            region:SetPoint(edge[3], parentRegion, edge[4], (position.x or 0) * parentScale / scale,
-                (position.y or 0) * parentScale / scale)
-            if region.SetScale then region:SetScale(scale) end
-            return
+            -- ApplyComponentLayout lets every part go first, so the parent cannot still hang off this
+            -- part from another layout; should the client refuse anyway, the part keeps its place.
+            if pcall(region.SetPoint, region, edge[3], parentRegion, edge[4], (position.x or 0) * parentScale / scale,
+                (position.y or 0) * parentScale / scale) then
+                if region.SetScale then region:SetScale(scale) end
+                return
+            end
+            region:ClearAllPoints()
         end
         region:SetPoint("CENTER", region.plateSmithOverlay or region:GetParent(), "CENTER", transform.x / scale, transform.y / scale)
         if region.SetScale then region:SetScale(scale) end
@@ -392,6 +396,16 @@ PS._CreatePlatePlacement = function(context)
         data.layoutTransforms = nil -- sizes may have changed with the profile
         -- Hiding under a parent is worked out again for this layout (the flush's visibility pass).
         RestoreParentFaded(data)
+        -- Every part lets go before any is placed: parts pin to each other, and a layout that pins
+        -- them the other way round from the last one (a profile switch: name on level, then level
+        -- on name) would otherwise anchor a part to one still anchored to it, which the client refuses.
+        for _, key in ipairs(LAYOUT_PARTS) do data[key]:ClearAllPoints() end
+        for _, key in ipairs(LATE_LAYOUT_PARTS) do data[key]:ClearAllPoints() end
+        for index = 1, VALUE_SLOT_COUNT do
+            local region = data.values[VALUE_KEYS[index]]
+            if region then region:ClearAllPoints() end
+        end
+        if data.classificationIcon then data.classificationIcon:ClearAllPoints() end
         for _, key in ipairs(LAYOUT_PARTS) do AnchorPart(data, data[key], key) end
         -- The loot bag takes the quest mark's place and scale.
         data.questLoot:ClearAllPoints()

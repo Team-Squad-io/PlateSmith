@@ -2,6 +2,35 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.0.1
+
+### Changed
+
+- The threat window resize grip has a tooltip explaining snapping and Shift.
+- `/ps diagnose` opens on a short summary; Copy full report gives one PS1 code line. For a bug
+  report, paste the summary and that line. The full readable report is still under **Show full
+  report**, and every flagged value under **Details**.
+
+### Fixed
+
+- Switching profiles in Blueprint Studio no longer shows an error.
+- A profile's fonts now apply when you switch to it: plate names no longer keep the look of the
+  profile or preset you used before (such as Bold's Morpheus or Classic's thin text).
+- Blueprint Studio now follows a profile switch made anywhere (Settings, a slash command, New from
+  preset), so its preview always shows the profile your plates use.
+- Threat windows snapped side by side now line up at the top and share one height, and a window
+  snapped above or below another takes its width. Resizing one from its corner resizes the others
+  in its row (height) or column (width), and its edges now snap to neighbours and the screen edge
+  while you drag, with the highlight showing. Hold Shift to resize one window freely.
+- `/ps diagnose`: every tab's scroll bar now follows the text (its thumb shows how much is visible
+  and can be dragged), hides when the text fits, and the view ends at the last line instead of
+  scrolling on into empty space.
+- `/ps diagnose` summary: only errors from this session are listed as problems (older ones stay in
+  History with their build and time, and each History row has its own dismiss button); error text
+  drops the addon path and is cut cleanly; Studio is named only when it edits another profile; and
+  the top event reads like "plate added ×12, 170.8 ms total (peak 25.4 ms)". **Clear history** now
+  sits next to **Keep history**.
+
 ## 1.0.0
 
 PlateSmith's first full release. Design your own nameplates in **Blueprint Studio**, see who has

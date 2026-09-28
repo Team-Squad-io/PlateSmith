@@ -130,29 +130,97 @@ function Geometry.Snap(rect, others, screenWidth, screenHeight, threshold)
     return xDelta or 0, yDelta or 0, xEdge, yEdge, xTarget, yTarget
 end
 
--- A window resized from its bottom-right corner: its bottom edge snaps to the bottom of a
--- neighbour it sits beside, and its right edge to the right of a neighbour it is stacked with.
--- Returns the change to the right and bottom edges, the snapped edges and the indexes in others.
-function Geometry.SnapSize(rect, others, threshold)
+-- A window resized from its bottom-right corner (top-left fixed). The bottom edge snaps to the
+-- bottom of a neighbour beside it and onto the top of one below it; the right edge to the right
+-- of a neighbour stacked with it and against the left of one beside it; both to the screen's
+-- right and bottom when screenWidth is given. The moving edges only need to be within threshold
+-- of touching, since the resize moves them. skipBottom and skipRight (sets of rectangles in
+-- others, optional) are left out for that edge: they resize with the window. Returns the change
+-- to the right and bottom edges, the snapped edges and the indexes in others (nil for the screen).
+function Geometry.SnapSize(rect, others, threshold, screenWidth, skipBottom, skipRight)
     threshold = threshold or Geometry.SNAP_DISTANCE
     local tolerance = Geometry.TOUCH_TOLERANCE
     local xd, xDelta, xEdge, xTarget, yd, yDelta, yEdge, yTarget
     for index = 1, others and #others or 0 do
         local other = others[index]
-        local beside = (math.abs(rect.right - other.left) <= tolerance or math.abs(rect.left - other.right) <= tolerance)
-            and Overlaps(rect.bottom, rect.top, other.bottom, other.top, threshold)
-        local stacked = (math.abs(rect.bottom - other.top) <= tolerance or math.abs(rect.top - other.bottom) <= tolerance)
-            and Overlaps(rect.left, rect.right, other.left, other.right, threshold)
-        if beside then
-            yd, yDelta, yEdge, yTarget = Consider(yd, yDelta, yEdge, yTarget, other.bottom - rect.bottom, other.bottom, index,
-                threshold)
+        local alongY = Overlaps(rect.bottom, rect.top, other.bottom, other.top, 0)
+        local alongX = Overlaps(rect.left, rect.right, other.left, other.right, 0)
+        if not (skipBottom and skipBottom[other]) then
+            local beside = math.abs(rect.left - other.right) <= tolerance or math.abs(rect.right - other.left) <= threshold
+            if beside and alongY then
+                yd, yDelta, yEdge, yTarget = Consider(yd, yDelta, yEdge, yTarget, other.bottom - rect.bottom, other.bottom,
+                    index, threshold)
+            end
+            if alongX and other.top <= rect.top - tolerance then
+                yd, yDelta, yEdge, yTarget = Consider(yd, yDelta, yEdge, yTarget, other.top - rect.bottom, other.top, index,
+                    threshold)
+            end
         end
-        if stacked then
-            xd, xDelta, xEdge, xTarget = Consider(xd, xDelta, xEdge, xTarget, other.right - rect.right, other.right, index,
-                threshold)
+        if not (skipRight and skipRight[other]) then
+            local stacked = math.abs(rect.top - other.bottom) <= tolerance or math.abs(rect.bottom - other.top) <= threshold
+            if stacked and alongX then
+                xd, xDelta, xEdge, xTarget = Consider(xd, xDelta, xEdge, xTarget, other.right - rect.right, other.right,
+                    index, threshold)
+            end
+            if alongY and other.left >= rect.left + tolerance then
+                xd, xDelta, xEdge, xTarget = Consider(xd, xDelta, xEdge, xTarget, other.left - rect.right, other.left, index,
+                    threshold)
+            end
         end
     end
+    if screenWidth then
+        _, xDelta, xEdge, xTarget = Consider(xd, xDelta, xEdge, xTarget, screenWidth - rect.right, screenWidth, nil, threshold)
+        _, yDelta, yEdge, yTarget = Consider(yd, yDelta, yEdge, yTarget, -rect.bottom, 0, nil, threshold)
+    end
     return xDelta or 0, yDelta or 0, xEdge, yEdge, xTarget, yTarget
+end
+
+-- A window at rect that has just been dropped against target takes its place in target's row or
+-- column: beside it, it takes target's top and height; stacked with it, target's left and width.
+-- Returns left, top, width, height, or nil when rect does not share an edge with target.
+function Geometry.Join(rect, target, tolerance)
+    tolerance = tolerance or Geometry.TOUCH_TOLERANCE
+    local beside = (math.abs(rect.left - target.right) <= tolerance or math.abs(rect.right - target.left) <= tolerance)
+        and Overlaps(rect.bottom, rect.top, target.bottom, target.top, -tolerance)
+    if beside then return rect.left, target.top, rect.right - rect.left, target.top - target.bottom end
+    local stacked = (math.abs(rect.top - target.bottom) <= tolerance or math.abs(rect.bottom - target.top) <= tolerance)
+        and Overlaps(rect.left, rect.right, target.left, target.right, -tolerance)
+    if stacked then return target.left, rect.top, target.right - target.left, rect.top - rect.bottom end
+    return nil
+end
+
+-- The keys of every rectangle in rects[start]'s row (side by side, tops level) or, when
+-- vertical, its column (stacked, lefts level), through shared edges, start included. into, when
+-- given, is cleared and filled instead of a new table.
+function Geometry.Line(rects, start, vertical, into)
+    local tolerance = Geometry.TOUCH_TOLERANCE
+    local line = into or {}
+    for key in pairs(line) do line[key] = nil end
+    line[start] = true
+    local changed = rects[start] ~= nil
+    while changed do
+        changed = false
+        for key, rect in pairs(rects) do
+            if not line[key] then
+                for member in pairs(line) do
+                    local other = rects[member]
+                    local joined
+                    if vertical then
+                        joined = math.abs(rect.left - other.left) <= tolerance
+                            and (math.abs(rect.top - other.bottom) <= tolerance or math.abs(rect.bottom - other.top) <= tolerance)
+                    else
+                        joined = math.abs(rect.top - other.top) <= tolerance
+                            and (math.abs(rect.left - other.right) <= tolerance or math.abs(rect.right - other.left) <= tolerance)
+                    end
+                    if joined then
+                        line[key], changed = true, true
+                        break
+                    end
+                end
+            end
+        end
+    end
+    return line
 end
 
 -- Where a window of this size may sit so all of it is on a screen of this size (the frames are

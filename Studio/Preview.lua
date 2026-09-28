@@ -97,7 +97,6 @@ end
 -- Styles in the preview, over what each component's refresh has just drawn: fonts, outline,
 -- shadow and box on text; texture, background and border on bars.
 local PREVIEW_WHITE = "Interface\\Buttons\\WHITE8X8"
-local PREVIEW_OUTLINES = { none = "", outline = "OUTLINE", thick = "THICKOUTLINE" }
 function Options:ApplyEditorPreviewStyles(profile)
     local styles = profile and profile.styles or {}
     -- The health bar shows the test health % (Test values).
@@ -108,11 +107,9 @@ function Options:ApplyEditorPreviewStyles(profile)
     for key, component in pairs(self.editorComponents or {}) do
         local style = styles[key]
         local text, bar = component.previewText, component.previewBar
-        if text and style and (style.font or style.outline) and text.SetFont then
-            local path = style.font and PS.Media.FontPath(style.font) or PS.Media.FontPath(settings.font)
-            local currentPath, size = text:GetFont()
-            if text.SetTextScale then text:SetTextScale(1) end
-            text:SetFont(path or currentPath or STANDARD_TEXT_FONT, size or 12, PREVIEW_OUTLINES[style.outline or "outline"])
+        -- The plates' own font route (Nameplates/Factory), at the size the part's refresh gave it.
+        if text and style and (style.font or style.outline) and type(PS.ApplyNameplateFont) == "function" then
+            PS.ApplyNameplateFont(text, text.plateSmithFontSize or settings.nameFontSize or 12, style)
         end
         if text and style and style.shadow ~= nil and text.SetShadowColor then
             text:SetShadowColor(0, 0, 0, style.shadow and 1 or 0)
@@ -331,7 +328,10 @@ function Options:RefreshEditorAppearance(settings, light)
         local definition = editorDefinitions[key]
         local baseText, baseFont, baseBar = component.previewBaseText, component.previewBaseFont, component.previewBaseBar
         if baseText and component.previewText then component.previewText:SetTextColor(unpack(baseText)) end
-        if baseFont and baseFont[1] and component.previewText and component.previewText.SetFont then
+        -- Text the plates' font route draws is set again by its refresh (a face set here would stay
+        -- over that route's font object on the client).
+        if baseFont and baseFont[1] and component.previewText and component.previewText.SetFont
+            and not component.previewText.plateSmithFontSize then
             component.previewText:SetFont(baseFont[1], baseFont[2] or 12, baseFont[3])
         end
         if baseBar and component.previewBar and component.previewBar == component.previewBaseBarFrame then

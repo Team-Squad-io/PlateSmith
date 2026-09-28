@@ -42,13 +42,11 @@ function Blend.Colour(stops, percent)
 end
 
 PS._CreatePlateStyles = function(context)
-    local GetSettings = context.GetSettings
     local ApplyNameplateFont = context.ApplyNameplateFont
     local Styles = {}
 
     local EMPTY = {}
     local WHITE = "Interface\\Buttons\\WHITE8X8"
-    local OUTLINE_FLAGS = { none = "", outline = "OUTLINE", thick = "THICKOUTLINE" }
     local BAR_BACKGROUND = { 0.025, 0.025, 0.025, 0.92 }
     local DEFAULT_BOX_FILL = { r = 0, g = 0, b = 0, a = 0.65 }
     local DEFAULT_BOX_EDGE = { r = 0.78, g = 0.62, b = 0.3, a = 1 }
@@ -145,16 +143,9 @@ PS._CreatePlateStyles = function(context)
     -- A text part's font: the plates' font and size, then the style's font, outline and shadow.
     function Styles.StyledFont(data, key, region, size)
         if not region then return end
-        ApplyNameplateFont(region, size)
         local style = PartStyle(data, key)
+        ApplyNameplateFont(region, size, style)
         StyledShadow(data, style, region)
-        if not style then return end
-        if (style.font or style.outline) and region.SetFont then
-            local path = style.font and PS.Media.FontPath(style.font) or PS.Media.FontPath(GetSettings().font)
-            if not path and region.GetFont then path = region:GetFont() end
-            if region.SetTextScale then region:SetTextScale(1) end
-            region:SetFont(path or STANDARD_TEXT_FONT, size, OUTLINE_FLAGS[style.outline or "outline"])
-        end
     end
 
     -- A box behind a text part (the "level box"): fill, border and padding around the text. It

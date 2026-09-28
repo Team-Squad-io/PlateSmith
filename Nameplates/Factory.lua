@@ -44,27 +44,52 @@ PS._CreatePlateFactory = function(context)
         return { red, green, blue, alpha, x, y }
     end
 
-    local function ApplyNameplateFont(fontString, size)
+    local OUTLINE_FLAGS = { none = "", outline = "OUTLINE", thick = "THICKOUTLINE" }
+    local function ReadFont(object)
+        if not (object and object.GetFont) then return nil end
+        local ok, path, height, flags = pcall(object.GetFont, object)
+        if not ok then return nil end
+        return type(path) == "string" and path or nil, type(height) == "number" and height or nil, flags or ""
+    end
+
+    -- The one route for plate text and Studio's preview: the plate font (settings.font) at size,
+    -- then the part's style (font, outline). The default font is Blizzard's multilingual family
+    -- (CJK glyphs), scaled to size. The client keeps a face set with SetFont over a font object
+    -- set later, so text that had its own face (another profile's style) is given the family's
+    -- face, height and outline explicitly when the family does not take.
+    local function ApplyNameplateFont(fontString, size, style)
         if not fontString then return end
         size = tonumber(size) or 12
+        fontString.plateSmithFontSize = size
         local settings = GetSettings and GetSettings()
-        local path = settings and PS.Media.FontPath(settings.font)
-        if path and fontString.SetFont then
-            if fontString.SetTextScale then fontString:SetTextScale(1) end
-            fontString:SetFont(path, size, "OUTLINE")
-            return
-        end
-        local fontFamily = _G.SystemFont_Outline or _G.SystemFont_NamePlate
-        if fontFamily and fontString.SetFontObject then
-            fontString:SetFontObject(fontFamily)
-            if fontString.SetTextScale then
-                fontString:SetTextScale(size / 13)
-            elseif fontString.SetFontHeight then
-                fontString:SetFontHeight(size)
+        local path = PS.Media.FontPath(style and style.font or (settings and settings.font))
+        local flags = OUTLINE_FLAGS[style and style.outline or "outline"] or "OUTLINE"
+        local family = _G.SystemFont_Outline or _G.SystemFont_NamePlate
+        local familyPath, familyHeight, familyFlags = ReadFont(family)
+        if not path and family and fontString.SetFontObject and flags == "OUTLINE" then
+            fontString:SetFontObject(family)
+            local taken = not fontString.plateSmithOwnFace
+            if not taken and familyPath then
+                local nowPath, nowHeight, nowFlags = ReadFont(fontString)
+                taken = nowPath == familyPath and nowHeight == familyHeight and nowFlags == familyFlags
             end
-            return
+            if taken then
+                fontString.plateSmithOwnFace = nil
+                if fontString.SetTextScale then
+                    fontString:SetTextScale(size / (familyHeight or 13))
+                elseif fontString.SetFontHeight then
+                    fontString:SetFontHeight(size)
+                end
+                return
+            end
+            flags = familyFlags or flags
         end
-        if fontString.SetFont then fontString:SetFont(STANDARD_TEXT_FONT, size, "OUTLINE") end
+        if not fontString.SetFont then return end
+        -- Never the text's current face: that may be the stale one.
+        path = path or familyPath or STANDARD_TEXT_FONT
+        if fontString.SetTextScale then fontString:SetTextScale(1) end
+        fontString:SetFont(path, size, flags)
+        fontString.plateSmithOwnFace = true
     end
 
     local function CreatePlate(root)

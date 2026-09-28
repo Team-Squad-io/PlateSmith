@@ -12,6 +12,8 @@ local ERROR_REPEAT_INTERVAL = 60
 History.LIMIT = HISTORY_LIMIT
 
 local errorCapture = {}
+-- Entries recorded since this login or reload (saved entries come back as new tables).
+local sessionEntries = setmetatable({}, { __mode = "k" })
 -- Set by the window so any change to history repaints it.
 History.onChange = nil
 
@@ -59,11 +61,32 @@ function History.Record(report, reason, errorText)
     local store = Store()
     if not store.keepHistory then return nil end
     local entry = { time = type(time) == "function" and time() or 0, reason = reason or "manual",
-        error = errorText, report = report }
+        error = errorText, report = report, build = tostring(PS.RUNTIME_BUILD or "unknown") }
     store.entries[#store.entries + 1] = entry
+    sessionEntries[entry] = true
     while #store.entries > HISTORY_LIMIT do table.remove(store.entries, 1) end
     Changed()
     return entry
+end
+
+-- Whether entry was captured in this session (so on this build).
+function History.InSession(entry) return sessionEntries[entry] == true end
+
+-- The build an entry was captured on; entries saved before builds were stored use the report's.
+function History.Build(entry)
+    if type(entry) ~= "table" then return nil end
+    if type(entry.build) == "string" then return entry.build end
+    local version = type(entry.report) == "table" and entry.report.version
+    return type(version) == "string" and version or nil
+end
+
+-- PlateSmith errors captured this session, oldest first.
+function History.SessionErrors()
+    local errors = {}
+    for _, entry in ipairs(Store().entries) do
+        if entry.reason == "error" and entry.error and sessionEntries[entry] then errors[#errors + 1] = entry end
+    end
+    return errors
 end
 
 local function IsPlateSmithError(message)
