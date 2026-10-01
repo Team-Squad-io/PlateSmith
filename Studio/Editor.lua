@@ -18,14 +18,10 @@ local editorProfiles = {
 -- (shown, hidden and moved from the tree and the preview) use "other".
 local editorContextForKey = {
     name = "name", level = "level", guild = "guild", targetName = "targetName",
-    health = "health", power = "power", cast = "cast", questLoot = "questLoot",
+    health = "health", power = "power", cast = "cast", quest = "quest", questLoot = "questLoot",
     raidIcon = "raidIcon", relationshipIcon = "relationshipIcon", pvpIcon = "pvpIcon", classification = "classification",
-    buffs = "buffs", debuffs = "debuffs",
+    buffs = "buffs", debuffs = "debuffs", threat = "threat", combo = "combo", targetedBy = "targetedBy",
 }
--- Parts whose plates also follow a profile-wide switch. The tree's eye drives it: showing the
--- part turns its switch on, so nothing Studio no longer offers can keep a shown part off.
-local PART_SWITCHES = { quest = "quest", questLoot = "quest", threat = "threat", tagged = "showTagged",
-    buffs = "showBuffs", debuffs = "showDebuffs", classification = "showClassification" }
 for index = 1, VALUE_SLOT_COUNT do editorContextForKey["value" .. index] = "value" end
 local editorDescriptions = {
     name = L["The unit's name."],
@@ -45,6 +41,8 @@ local editorDescriptions = {
     classification = L["Shows elite, rare, rare elite, or world-boss status."],
     buffs = L["Buffs on this unit."],
     debuffs = L["Debuffs on this unit."],
+    combo = L["Your combo points (rogue, or druid in cat form), on your target's plate only."],
+    targetedBy = L["Which group members target this enemy: a class-coloured badge each, where the game says."],
 }
 for index = 1, VALUE_SLOT_COUNT do
     editorDescriptions["value" .. index] = L["A custom part: choose what it shows, then anchor and place it."]
@@ -522,44 +520,28 @@ function Options:ApplyEditorListInk()
     end
 end
 
--- Whether the tree's eye shows key as shown: in this layout, and not kept off by its switch.
-function Options:IsEditorPartShown(key, settings)
+-- Whether the tree's eye shows key as shown: the eye alone decides (Settings' Show on plates
+-- boxes only set the eyes).
+function Options:IsEditorPartShown(key)
     local position = self.editorLayout and self.editorLayout[key]
-    if not position or position.visible == false then return false end
-    local switch = PART_SWITCHES[key]
-    settings = settings or PS.GetSettings()
-    return not (switch and settings and settings[switch] == false)
+    return position ~= nil and position.visible ~= false
 end
 
--- The profile-wide switch key's plates also follow (Settings' Show on plates and Aura defaults), if any.
-function Options:EditorPartSwitch(key) return PART_SWITCHES[key] end
-
--- Shows or hides key in this layout; showing it also turns its switch on. Returns whether it did.
 local function WritePartVisibility(self, key, visible)
     PS.SetComponentVisibility(key, visible, self.editorProfile, self:CurrentEditorVariant())
-    local switch = PART_SWITCHES[key]
-    local settings = PS.GetSettings()
-    if visible and switch and settings and settings[switch] == false then
-        PS.SetOption(switch, true)
-        return true
-    end
-    return false
 end
 
--- After an eye: a switch it turned on is ticked in Settings too (every control refreshes), else
+-- After an eye: every control refreshes, so a Show on plates box shows the eyes' new state, and
 -- the layout, preview and tree follow.
-local function AfterPartVisibility(self, switched)
-    if switched then self:Refresh(true) else self:ReloadEditorLayout() end
-end
+local function AfterPartVisibility(self) self:Refresh(true) end
 
 function Options:SetEditorGroupVisibility(groupKey, visible)
-    local switched = false
     for _, key in ipairs(editorOrder) do
         if self:IsEditorUnder(key, groupKey) and self:IsEditorComponentRelevant(key) then
-            switched = WritePartVisibility(self, key, visible) or switched
+            WritePartVisibility(self, key, visible)
         end
     end
-    AfterPartVisibility(self, switched)
+    AfterPartVisibility(self)
 end
 
 -- Whether this plate type can take another value, and the free slot it would use.
@@ -660,7 +642,8 @@ end
 local ADD_MENU = {
     { label = L["Text"], keys = { "name", "level", "guild", "threat", "tagged", "targetName" } },
     { label = L["Bars"], keys = { "health", "power", "cast" } },
-    { label = L["Icons"], keys = { "quest", "questLoot", "raidIcon", "relationshipIcon", "pvpIcon", "classification" } },
+    { label = L["Icons"], keys = { "quest", "questLoot", "raidIcon", "relationshipIcon", "pvpIcon", "classification", "combo",
+        "targetedBy" } },
     { label = L["Auras"], keys = { "buffs", "debuffs" } },
 }
 
@@ -820,7 +803,7 @@ function Options:RefreshEditorInspectorContext()
     end
     if self.editorComponentDescription then
         self.editorComponentDescription:SetText(group and L["A group of parts."]
-            or plate and L["The whole plate's scale, for this plate type."]
+            or plate and L["The whole plate, for this plate type: its scale, and a quick layout to place parts by position."]
             or key and (editorDescriptions[key] or L["A part of the plate."]) or "")
     end
     local selectedContext = group and "group" or plate and "plate" or key and (editorContextForKey[key] or "other")
@@ -1602,7 +1585,8 @@ function Options:SetEditorComponentVisibility(key, visible)
     if not self:IsEditorComponentRelevant(key) then return false end
     if not (self.editorLayout and self.editorLayout[key]) then return false end
     -- The refresh redraws the tree and the inspector; clicking another part's eye selects it.
-    AfterPartVisibility(self, WritePartVisibility(self, key, visible and true or false))
+    WritePartVisibility(self, key, visible and true or false)
+    AfterPartVisibility(self)
     if self.selectedComponent ~= key then self:SelectEditorComponent(key) end
     return true
 end
@@ -2018,16 +2002,17 @@ function Options:FitEditorPreview(zoom)
             bottom, top = math.min(bottom or y-hh, y-hh), math.max(top or y+hh, y+hh)
         end
     end
-    -- Across, the plate's own centre (x = 0, where it sits over the unit) stays in the middle, so
-    -- parts on one side only (TAGGED, the classification) do not pull it off centre: the wider
-    -- side sets the width. Up and down, the parts' bounds are centred.
+    -- The plate's own centre (0, 0, where it sits over the unit) stays in the middle both ways, so
+    -- the grid's centre is in the same place on every plate type: parts on one side only (TAGGED,
+    -- the aura rows above) do not pull it off centre; the wider side sets the size.
     local halfWidth = left and math.max(math.abs(left), math.abs(right)) or 0
+    local halfHeight = bottom and math.max(math.abs(bottom), math.abs(top)) or 0
     zoom = zoom or (left and math.min(PREVIEW_FIT_ZOOM, (canvas:GetWidth()-32) / math.max(1, 2 * halfWidth),
-        (canvas:GetHeight()-112) / math.max(1, top-bottom)) or PREVIEW_ZOOM_DEFAULT)
+        (canvas:GetHeight()-112) / math.max(1, 2 * halfHeight)) or PREVIEW_ZOOM_DEFAULT)
     zoom = math.max(PREVIEW_ZOOM_MIN, math.min(PREVIEW_ZOOM_MAX, zoom))
     self:SetEditorPreviewZoom(zoom, true)
     -- The preview's lower controls take a little more room.
-    self:SetEditorPreviewPan(0, 12/zoom - (bottom and (bottom+top)/2 or 0))
+    self:SetEditorPreviewPan(0, 12/zoom)
     return true
 end
 

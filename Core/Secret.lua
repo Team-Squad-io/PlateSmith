@@ -74,6 +74,26 @@ function Secret.ReadBoolean(callback, ...)
     return value and true or false
 end
 
+-- A readable number from a frame or region getter (object:method()), or nil when the getter is
+-- missing, errors, or returns a protected or non-number value.
+function Secret.ReadNumber(object, method)
+    local getter = object[method]
+    if type(getter) ~= "function" then return nil end
+    local ok, value = pcall(getter, object)
+    if ok and IsReadable(value) and type(value) == "number" then return value end
+end
+
+-- "<unit>target" for a unit token, built once per token instead of on every read.
+local targetTokens = {}
+function Secret.TargetToken(unit)
+    local token = targetTokens[unit]
+    if not token then
+        token = unit .. "target"
+        targetTokens[unit] = token
+    end
+    return token
+end
+
 function Secret.SameUnit(left, right)
     return Secret.ReadBoolean(UnitIsUnit, left, right) == true
 end
@@ -93,6 +113,43 @@ function Secret.ReadName(unit, fallback)
     local ok, name = pcall(UnitName, unit)
     return ok and Secret.String(name) or fallback
 end
+
+-- A display value chosen inside the client by a boolean that may be protected
+-- (C_CurveUtil.EvaluateColorValueFromBoolean), so Lua never branches on it: true and the value
+-- (possibly protected: for sinks such as SetAlpha or SetTextColor only), or false when the client
+-- has no such sink or refuses the call.
+function Secret.Pick(flag, whenTrue, whenFalse)
+    local sink = C_CurveUtil and C_CurveUtil.EvaluateColorValueFromBoolean
+    if type(sink) ~= "function" then return false end
+    local ok, value = pcall(sink, flag, whenTrue, whenFalse)
+    if ok then return true, value end
+    return false
+end
+
+-- A unit's class file as the client gives it (possibly protected), and whether there is one.
+function Secret.ClassFile(unit)
+    if type(UnitClass) ~= "function" then return nil, false end
+    local ok, _, classFile = pcall(UnitClass, unit)
+    if not ok or not Secret.HasValue(classFile) then return nil, false end
+    return classFile, true
+end
+
+-- Colours a region by a class file that may be protected: C_ClassColor.GetClassColor turns it into
+-- a colour inside the client and its channels go straight to the region's setter (SetTextColor by
+-- default, or SetVertexColor for a texture). False when the client has no such sink, the colour is
+-- unavailable, or the call is refused.
+function Secret.SetClassColour(region, classFile, setter)
+    local classColour = rawget(_G, "C_ClassColor")
+    local getColour = type(classColour) == "table" and classColour.GetClassColor
+    if type(getColour) ~= "function" then return false end
+    local set = region[setter or "SetTextColor"]
+    if type(set) ~= "function" then return false end
+    local ok, colour = pcall(getColour, classFile)
+    if not ok or not IsReadable(colour) or type(colour) ~= "table" then return false end
+    return (pcall(set, region, colour.r, colour.g, colour.b))
+end
+
+function Secret.SetClassTextColour(region, classFile) return Secret.SetClassColour(region, classFile) end
 
 function Secret.InCombat()
     return type(InCombatLockdown) == "function" and InCombatLockdown() and true or false

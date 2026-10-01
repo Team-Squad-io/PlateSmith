@@ -43,7 +43,8 @@ local settingRanges = S.settingRanges
 local profileNumbers = S.profileRanges
 local healthColourModes = Set("automatic", "custom")
 local styleFields = { "scale", "width", "healthHeight", "nameFontSize", "healthTexture", "healthColourMode", "healthColour",
-    "powerWidth", "castWidth", "castHeight", "castIcon", "castTime", "castName", "rules", "styles" }
+    "powerWidth", "castWidth", "castHeight", "castIcon", "castTime", "castName", "castInterruptColours", "castOnTop",
+    "castColours", "questProgress", "questProgressFormat", "rules", "styles" }
 local sections = { "settings", "layouts", "dungeonFriendly", "styles", "values", "dungeon", "other" }
 
 local moduleFields = {}
@@ -216,10 +217,12 @@ local function CheckValueSlots(value, path)
 end
 
 local profileFields = Set("scale", "width", "healthHeight", "powerHeight", "powerWidth", "castWidth", "castHeight",
-    "castIcon", "castTime", "castName", "layoutVersion",
+    "castIcon", "castTime", "castName", "castInterruptColours", "castOnTop", "castColours", "layoutVersion",
+    "questProgress", "questProgressFormat",
     "nameFontSize", "healthTexture",
     "healthColourMode", "healthColour", "layout", "namesLayout", "dungeonNamesLayout", "valueSlots", "auraLayouts",
     "rules", "styles")
+local castColourFields = Set("ready", "cooldown", "locked")
 local auraLayoutFields = Set("count", "columns", "size", "spacing", "growX", "growY", "showDuration")
 
 -- Each aura row's layout: every field optional, each checked against its range or choices.
@@ -249,7 +252,8 @@ local function ApplyProfile(target, value, path, allowNames)
     for key, range in pairs(S.optionalProfileRanges) do
         target[key] = value[key] ~= nil and CheckRange(value[key], path .. "." .. key, range) or nil
     end
-    -- The cast bar's icon side and its time and name switches; absent keeps the default.
+    -- The cast bar's icon side and its time and name switches, and the quest mark's progress;
+    -- absent keeps the default.
     for key, choices in pairs(S.castOptions) do
         if value[key] ~= nil then
             if choices == "boolean" then target[key] = CheckBoolean(value[key], path .. "." .. key)
@@ -264,6 +268,15 @@ local function ApplyProfile(target, value, path, allowNames)
         target.healthColourMode = CheckEnum(value.healthColourMode, path .. ".healthColourMode", healthColourModes)
     end
     if value.healthColour ~= nil then target.healthColour = CheckColour(value.healthColour, path .. ".healthColour") end
+    -- Colour by interrupt's colours: any of ready, cooldown and locked; absent keeps the default.
+    if value.castColours ~= nil then
+        CheckObject(value.castColours, path .. ".castColours", castColourFields)
+        local colours = Table.DeepCopy(target.castColours)
+        for key, colour in pairs(value.castColours) do
+            colours[key] = CheckColour(colour, path .. ".castColours." .. key)
+        end
+        target.castColours = colours
+    end
     for _, field in ipairs({ "layout", "namesLayout", "dungeonNamesLayout" }) do
         if value[field] ~= nil then
             if field ~= "layout" and not allowNames then Reject(path .. "." .. field, "is not used by this profile") end
@@ -290,7 +303,7 @@ local function ApplyProfile(target, value, path, allowNames)
     end
     if value.auraLayouts ~= nil then CheckAuraLayouts(value.auraLayouts, path .. ".auraLayouts", target.auraLayouts) end
     if value.rules ~= nil then
-        -- Rules: part -> ordered list of { when, set, colour (hex) | alpha | stops }. A blend's
+        -- Rules: part -> ordered list of { when, set, colour (hex) | alpha | stops[, enabled] }. A blend's
         -- condition may be empty (always); its stops are { at (0-100), colour (hex) }.
         CheckObject(value.rules, path .. ".rules")
         local rules = {}
@@ -302,9 +315,10 @@ local function ApplyProfile(target, value, path, allowNames)
             rules[key] = {}
             for index, rule in ipairs(list) do
                 local rulePath = listPath .. "[" .. index .. "]"
-                CheckObject(rule, rulePath, Set("when", "set", "colour", "alpha", "stops"))
+                CheckObject(rule, rulePath, Set("when", "set", "colour", "alpha", "stops", "enabled"))
                 CheckText(rule.when, rulePath .. ".when", S.TEMPLATE_LENGTH, true)
                 local entry = { when = rule.when, set = CheckEnum(rule.set, rulePath .. ".set", S.RULE_SETS) }
+                if rule.enabled ~= nil and not CheckBoolean(rule.enabled, rulePath .. ".enabled") then entry.enabled = false end
                 if rule.when ~= "" then
                     local compiled, reason = PS.Template.CompileCondition(rule.when)
                     if not compiled then Reject(rulePath .. ".when", "is not a condition: " .. tostring(reason)) end
@@ -334,11 +348,13 @@ local function ApplyProfile(target, value, path, allowNames)
     end
     if value.styles ~= nil then
         -- Styles: part -> { font, outline, shadow, box, boxColour, boxBorder, padding, texture,
-        -- background, border, borderColour }; colours are { r, g, b, a } from 0 to 1. An older
+        -- background, border, borderColour, pipFill, pipEmpty, pipWidth, pipHeight, pipSpacing,
+        -- badgeSize, badgeSpacing, badgeOrientation, badgeInitial }; colours are { r, g, b, a } from 0 to 1. An older
         -- Blueprint's gradient (low, mid, high) becomes the part's leading blend rule.
         CheckObject(value.styles, path .. ".styles")
         local fields = Set("font", "outline", "shadow", "box", "boxColour", "boxBorder", "padding", "texture",
-            "background", "border", "borderColour", "gradient")
+            "background", "border", "borderColour", "gradient", "pipFill", "pipEmpty", "pipWidth", "pipHeight", "pipSpacing",
+            "badgeSize", "badgeSpacing", "badgeOrientation", "badgeInitial")
         local function CheckUnitColour(colour, colourPath)
             CheckObject(colour, colourPath, Set("r", "g", "b", "a"))
             for _, channel in ipairs({ "r", "g", "b", "a" }) do
@@ -349,9 +365,19 @@ local function ApplyProfile(target, value, path, allowNames)
             local stylePath = path .. ".styles." .. tostring(key)
             if not S.PartKey(key) then Reject(stylePath, "is not a part name") end
             CheckObject(style, stylePath, fields)
-            for _, field in ipairs({ "boxColour", "boxBorder", "background", "borderColour" }) do
+            for _, field in ipairs({ "boxColour", "boxBorder", "background", "borderColour", "pipFill", "pipEmpty" }) do
                 if style[field] ~= nil then CheckUnitColour(style[field], stylePath .. "." .. field) end
             end
+            for field, range in pairs(S.STYLE_PIPS) do
+                if style[field] ~= nil then CheckRange(style[field], stylePath .. "." .. field, range) end
+            end
+            for field, range in pairs(S.STYLE_BADGES) do
+                if style[field] ~= nil then CheckRange(style[field], stylePath .. "." .. field, range) end
+            end
+            if style.badgeOrientation ~= nil then
+                CheckEnum(style.badgeOrientation, stylePath .. ".badgeOrientation", S.STYLE_BADGE_ORIENTATIONS)
+            end
+            if style.badgeInitial ~= nil then CheckBoolean(style.badgeInitial, stylePath .. ".badgeInitial") end
             if style.font ~= nil and not PS.Media.IsFont(style.font) then Reject(stylePath .. ".font", "has an unsupported value") end
             if style.texture ~= nil and not PS.Media.IsStatusBar(style.texture) then
                 Reject(stylePath .. ".texture", "has an unsupported value")
@@ -375,10 +401,16 @@ end
 
 local flavors = Set("forever", "retail")
 local documentFields = Set("format", "version", "addon", "client", "flavor", "settings", "profiles", "dungeonEnemy", "modules")
-local settingFields = Set("relationshipColours", "font", "stylePresets")
+-- Font choices: a built-in key or an "lsm:" reference (PS.Media.IsFont).
+local fontSettings = { "font", "blizzardNameFontFace" }
+local settingFields = Set("relationshipColours", "stylePresets")
+for _, key in ipairs(fontSettings) do settingFields[key] = true end
 for _, key in ipairs(booleanSettings) do settingFields[key] = true end
 for key in pairs(enumSettings) do settingFields[key] = true end
 for key in pairs(settingRanges) do settingFields[key] = true end
+-- Codes from before Show on plates followed the eyes carry its switches; one that is off turns
+-- its parts' eyes off in the code's layouts (Schema's ApplyLegacySwitches).
+for _, switch in ipairs(S.PART_SWITCHES) do settingFields[switch.key] = true end
 
 -- Returns a complete, normalized settings table built from defaults plus the document.
 local function BuildCandidate(document)
@@ -398,9 +430,11 @@ local function BuildCandidate(document)
     for key, range in pairs(settingRanges) do
         if settings[key] ~= nil then candidate[key] = CheckRange(settings[key], "settings." .. key, range) end
     end
-    if settings.font ~= nil then
-        if not PS.Media.IsFont(settings.font) then Reject("settings.font", "has an unsupported value") end
-        candidate.font = settings.font
+    for _, key in ipairs(fontSettings) do
+        if settings[key] ~= nil then
+            if not PS.Media.IsFont(settings[key]) then Reject("settings." .. key, "has an unsupported value") end
+            candidate[key] = settings[key]
+        end
     end
     if settings.stylePresets ~= nil then
         -- Saved styles: name -> { kind, style, rules }; the style and rules are checked as a part's.
@@ -436,7 +470,15 @@ local function BuildCandidate(document)
         ApplyProfile(dungeon, document.dungeonEnemy, "dungeonEnemy", false)
         candidate.plateProfiles.enemyDungeon = dungeon
     end
-    return NormalizeSettings(candidate)
+    local legacy = {}
+    for _, switch in ipairs(S.PART_SWITCHES) do
+        if settings[switch.key] ~= nil then legacy[switch.key] = CheckBoolean(settings[switch.key], "settings." .. switch.key) end
+    end
+    -- The tank's warning border ran under the old threat switch.
+    if legacy.threat == false and settings.tankWarning == nil then candidate.tankWarning = false end
+    -- A code whose threat switch was off also turns off its threat rules (the count is returned).
+    local disabled = S.ApplyLegacySwitches(candidate, legacy)
+    return NormalizeSettings(candidate), disabled
 end
 
 -- Unused custom parts (off, and everything else at its default) are left out: an import fills
@@ -480,6 +522,8 @@ local function ExportProfile(profile, includeNames)
         powerHeight = profile.powerHeight, nameFontSize = profile.nameFontSize,
         powerWidth = profile.powerWidth, castWidth = profile.castWidth, castHeight = profile.castHeight,
         castIcon = profile.castIcon, castTime = profile.castTime, castName = profile.castName,
+        castInterruptColours = profile.castInterruptColours, castOnTop = profile.castOnTop,
+        questProgress = profile.questProgress, questProgressFormat = profile.questProgressFormat,
         healthTexture = profile.healthTexture, healthColourMode = profile.healthColourMode,
         healthColour = ColourToHex(profile.healthColour),
         layoutVersion = S.LAYOUT_VERSION,
@@ -487,6 +531,12 @@ local function ExportProfile(profile, includeNames)
         valueSlots = {},
         auraLayouts = {},
     }
+    if profile.castColours then
+        result.castColours = {}
+        for _, key in ipairs(S.CAST_COLOUR_KEYS) do
+            if profile.castColours[key] then result.castColours[key] = ColourToHex(profile.castColours[key]) end
+        end
+    end
     result.styles = profile.styles and next(profile.styles) and Table.DeepCopy(profile.styles) or nil
     result.rules = {}
     -- A rule still being typed (its condition does not compile yet) stays in Studio but is not
@@ -505,6 +555,8 @@ local function ExportProfile(profile, includeNames)
             end
             result.rules[key][index] = { when = rule.when, set = rule.set, alpha = rule.alpha,
                 colour = rule.colour and ColourToHex(rule.colour) or nil, stops = stops }
+            -- Only a rule turned off says so (false must survive, so not an and/or).
+            if rule.enabled == false then result.rules[key][index].enabled = false end
         end
     end
     for kind, layout in pairs(profile.auraLayouts or {}) do
@@ -568,7 +620,7 @@ local function BuildDocument(db, live)
     for _, key in ipairs(booleanSettings) do settings[key] = db[key] end
     for key in pairs(enumSettings) do settings[key] = db[key] end
     for key in pairs(settingRanges) do settings[key] = db[key] end
-    settings.font = db.font
+    for _, key in ipairs(fontSettings) do settings[key] = db[key] end
     local presets = live and PS.GetState and PS.GetState().stylePresets
     settings.stylePresets = presets and next(presets) and Table.DeepCopy(presets) or nil
     for key in pairs(defaultRelationshipColours) do
@@ -623,9 +675,10 @@ local function ImportBlueprint(text, selection)
     local document, parseError = Json.Decode(text, MAX_JSON_BYTES)
     if document == nil then return false, "invalid JSON: " .. tostring(parseError) end
 
-    local modules = {}
+    local modules, disabledRules = {}, 0
     local built, candidate = pcall(function()
-        local result = BuildCandidate(document)
+        local result
+        result, disabledRules = BuildCandidate(document)
         if document.modules ~= nil then
             CheckObject(document.modules, "modules")
             -- Data for companion addons that are not installed here is skipped.
@@ -651,7 +704,7 @@ local function ImportBlueprint(text, selection)
             for _, key in ipairs(booleanSettings) do db[key] = candidate[key] end
             for key in pairs(enumSettings) do db[key] = candidate[key] end
             for key in pairs(settingRanges) do db[key] = candidate[key] end
-            db.font = candidate.font
+            for _, key in ipairs(fontSettings) do db[key] = candidate[key] end
             db.relationshipColours = candidate.relationshipColours
         end
         for _, key in ipairs(profileOrder) do
@@ -710,6 +763,9 @@ local function ImportBlueprint(text, selection)
         if PS.NamePolicy and PS.NamePolicy.Apply then PS.NamePolicy.Apply() end
     end
     PS.Refresh()
+    if disabledRules > 0 and (Selected("styles") or Selected("dungeon")) and PS.Profiles then
+        PS.Profiles.NoteMigration(PS.Profiles.Active(), { threatRulesDisabled = disabledRules })
+    end
     -- Imports across clients succeed; the third result names the other client
     -- so the caller can say some options may behave differently here.
     if document.flavor ~= nil and document.flavor ~= PS.ClientFlavor() then return true, nil, document.flavor end

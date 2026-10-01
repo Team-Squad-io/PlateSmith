@@ -41,6 +41,7 @@ local USAGE = {
     { "/ps console sample", L["Show or hide sample data in the threat windows (out of combat)."] },
     { "/ps status", L["Show the profile and any active restrictions."] },
     { "/ps diagnose [history [on|off]]", L["Open the diagnostics report."] },
+    { "/ps perf | performance", L["Watch PlateSmith's live performance (captures no report)."] },
     { "/ps mode auto|own|overlay", L["Who draws the plates."] },
     { "/ps friendly names|full|off", L["How friendly plates show outdoors."] },
     { string.format("/ps quest on|off, threat on|off, scale %s-%s, reset", SCALE[1], SCALE[2]),
@@ -58,7 +59,8 @@ local function Status()
     local profile = tostring(PS.Profiles.Active()) .. (PS.Profiles.IsDirty() and " (unsaved)" or "")
     Chat.Print(string.format("%s: profile=%s, mode=%s (%s), friendly=%s, quest=%s, threat=%s, scale=%.2f, restrictions=%s",
         tostring(PS.RUNTIME_BUILD), profile, db.mode, PS.ExternalProvider() or "native", db.friendly,
-        tostring(db.quest), tostring(db.threat), db.scale, PS.Restrictions.Summary()))
+        tostring(PS.GetPartShownState("quest")), tostring(PS.GetPartShownState("threat")), db.scale,
+        PS.Restrictions.Summary()))
 end
 
 local function Diagnose(value)
@@ -123,6 +125,8 @@ function Commands.Run(text)
         Status()
     elseif command == "diagnose" then
         Diagnose(value)
+    elseif command == "perf" or command == "performance" then
+        PS.DiagnosticUI.ShowPerformance()
     elseif command == "playerprobe" then
         PS.ProbePlayerPlate()
     elseif command == "reset" then

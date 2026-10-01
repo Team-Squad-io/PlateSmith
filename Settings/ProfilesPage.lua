@@ -47,6 +47,53 @@ end
 
 local Register = Options.RegisterControl
 
+-- "Don't switch", then every profile, for the automatic-switching rules.
+local function RuleChoices()
+    local choices = { { value = "", label = L["Don't switch"] } }
+    for _, name in ipairs(Profiles.List()) do choices[#choices + 1] = { value = name, label = name } end
+    return choices
+end
+
+-- This character's automatic switching (Core/AutoProfile.lua): saved at once, like the tank role,
+-- since it is a per-character choice rather than part of a profile's design.
+function Options:BuildAutoProfileSection(kit, flow)
+    local Auto = PS.AutoProfile
+    local section = Options.SettingsSection(kit, flow, L["Automatic switching"])
+    kit.Add(section, kit.ControlHelp(section, L["This character can change profile by itself when it enters other content "
+        .. "or changes specialization. It waits until combat ends and until unsaved changes are saved or reverted."]))
+    local dropdowns = {}
+    local function RuleRow(key, label)
+        local row, dropdown = kit.DropdownRow(section, label, {
+            choices = RuleChoices, name = "PlateSmithAutoProfile_" .. key .. "Dropdown",
+            get = function() return (Auto.Rules() or {})[key] or "" end,
+            set = function(name) Report(Auto.SetRule(key, name)) end,
+        })
+        Register(dropdown)
+        kit.Add(section, row)
+        dropdowns[key] = dropdown
+    end
+    local contentLabels = { world = L["Open world"], dungeon = L["Dungeons"], raid = L["Raids"],
+        pvp = L["Battlegrounds and arenas"] }
+    for _, key in ipairs(Auto.CONTENT) do RuleRow(key, contentLabels[key]) end
+    local specs = Auto.SpecCount()
+    for index = 1, specs do RuleRow(Auto.SPEC_KEYS[index], Auto.SpecLabel(index)) end
+    if specs > 0 then
+        local row, dropdown = kit.DropdownRow(section, L["When both apply"], {
+            choices = { { value = "content", label = L["Content decides"] },
+                { value = "spec", label = L["Specialization decides"] } },
+            name = "PlateSmithAutoProfilePrecedenceDropdown",
+            get = function() return (Auto.Rules() or {}).precedence or "content" end,
+            set = function(value) Report(Auto.SetPrecedence(value)) end,
+        })
+        Register(dropdown)
+        kit.Add(section, row)
+        dropdowns.precedence = dropdown
+    else
+        kit.Add(section, kit.ControlHelp(section, L["This client has no specializations to switch by."]))
+    end
+    Options.autoProfileDropdowns = dropdowns
+end
+
 function Options:BuildProfilesPage(page)
     local kit, flow, bar = self:NewSettingsPage(page, L["Profiles"],
         L["Each character uses one profile. Edits apply straight away but are kept only when you press Save."], true)
@@ -118,6 +165,8 @@ function Options:BuildProfilesPage(page)
     })
     Register(deleteDropdown)
     kit.Add(others, deleteRow)
+
+    Options:BuildAutoProfileSection(kit, flow)
 
     Options.profilesSaveBar = bar
     Options.profileButtons = { new = actions[1], duplicate = actions[2], rename = actions[3], delete = deleteDropdown }

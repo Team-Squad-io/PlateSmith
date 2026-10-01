@@ -7,6 +7,7 @@ local L = PS.L
 PS._CreatePlateSettings = function(context)
     local GetSettings = context.GetSettings
     local RefreshAll = context.RefreshAll
+    local Relayout = context.Relayout or RefreshAll
     local NamePolicy = assert(PS.NamePolicy, "PlateSmith NamePolicy missing")
     local defaults = S.defaults
     local profileDefaults = S.profileDefaults
@@ -281,12 +282,7 @@ PS._CreatePlateSettings = function(context)
         for key, position in pairs(layout) do
             if key ~= except and type(position) == "table" and position.parent == parentKey then keys[#keys + 1] = key end
         end
-        table.sort(keys, function(left, right)
-            local a, b = layout[left].order or 99, layout[right].order or 99
-            if a ~= b then return a < b end
-            return left < right
-        end)
-        return keys
+        return S.SortByTreeOrder(layout, keys)
     end
 
     -- Moves key under parentKey (nil: a root), before beforeKey (nil: last), without moving it
@@ -448,12 +444,7 @@ PS._CreatePlateSettings = function(context)
     local function GroupKeys(layout)
         local keys = {}
         for key in pairs(layout) do if S.IsGroupKey(key) then keys[#keys + 1] = key end end
-        table.sort(keys, function(left, right)
-            local a, b = layout[left].order or 0, layout[right].order or 0
-            if a ~= b then return a < b end
-            return left < right
-        end)
-        return keys
+        return S.SortByTreeOrder(layout, keys, 0)
     end
 
     -- A new group is an empty node at the top of the tree. Returns its key.
@@ -582,6 +573,37 @@ PS._CreatePlateSettings = function(context)
         end, true)
     end
 
+    -- A Show on plates or aura box (Schema's PART_SWITCHES): its parts' eyes, in every layout the
+    -- plate types that use them draw with now (Schema's EachLiveLayout), all on or all off. Other
+    -- layouts keep their own eyes; a deleted part stays deleted.
+    local function SetPartShownEverywhere(key, visible)
+        local db = GetSettings()
+        local switch = S.partSwitches[key]
+        if not db or not switch or type(visible) ~= "boolean" then return false end
+        local found = false
+        S.EachLiveLayout(db, switch, function(layout, profile, field)
+            local copy
+            for _, part in ipairs(switch.parts) do
+                local position = layout[part]
+                if type(position) == "table" and not position.removed then
+                    found = true
+                    if (position.visible ~= false) ~= visible then
+                        copy = copy or Table.DeepCopy(layout)
+                        copy[part].visible = visible
+                    end
+                end
+            end
+            -- A new table, never an edit in place (EditLayout says why).
+            if copy then profile[field] = copy end
+        end)
+        if not found then return false end
+        db.layout = db.plateProfiles.enemy.layout
+        RefreshAll()
+        return true
+    end
+
+    local function GetPartShownState(key) return S.PartShownState(GetSettings(), key) end
+
     -- Fractional sizes are accepted and rounded; NaN and out-of-range sizes are not.
     local function FontSizeAllowed(value)
         return type(value) == "number" and value == value
@@ -688,10 +710,110 @@ PS._CreatePlateSettings = function(context)
         end)
     end
 
+    -- Settings › Fading: a fade rule preset (ProfilePresets' fadeNonTarget, fadeOutOfRange) on every
+    -- part the enemy plates show, found again by its condition. They stay ordinary rules, so Studio
+    -- shows and edits them part by part; the shortcut only reads them back.
+    local FADE_PRESETS = { fadeNonTarget = true, fadeOutOfRange = true }
+    local function FadeRule(id)
+        local preset = FADE_PRESETS[id] and PS.ProfilePresets and PS.ProfilePresets.Rule(id)
+        return preset and preset.rules[1]
+    end
+    local function IsFade(rule, fade)
+        return type(rule) == "table" and rule.set == "alpha" and rule.when == fade.when
+    end
+    -- visit(profile, key) for each part a fade applies to, in key order: shown, not deleted, and for
+    -- a custom part one in use. The loot bag is not a part of its own in Studio, so it is left out.
+    local function EachFadePart(db, visit)
+        S.EachPlateLayout(db, S.ENEMY_PLATES, function(layout, profile)
+            local keys = {}
+            for key, position in pairs(layout) do
+                if type(position) == "table" and not S.IsGroupKey(key) and key ~= "questLoot" and not S.TurnedOff(position) then
+                    local slot = key:match("^value%d+$") and profile.valueSlots and profile.valueSlots[key]
+                    if not key:match("^value%d+$") or (type(slot) == "table" and slot.source ~= "off") then
+                        keys[#keys + 1] = key
+                    end
+                end
+            end
+            table.sort(keys)
+            for _, key in ipairs(keys) do visit(profile, key) end
+        end)
+    end
+
+    -- "all", "none" or "some" of those parts have the fade, and its opacity (the first found, else
+    -- the preset's); nil for an unknown fade or when no enemy plate shows a part.
+    local function GetFadeState(id)
+        local fade, db = FadeRule(id), GetSettings()
+        if not fade or not db then return nil end
+        local on, off, alpha = 0, 0, nil
+        EachFadePart(db, function(profile, key)
+            local found
+            for _, rule in ipairs(profile.rules and profile.rules[key] or {}) do
+                if IsFade(rule, fade) then found = rule break end
+            end
+            if found then
+                on, alpha = on + 1, alpha or found.alpha
+            else
+                off = off + 1
+            end
+        end)
+        if on + off == 0 then return nil end
+        return (on == 0 and "none") or (off == 0 and "all") or "some", alpha or fade.alpha
+    end
+
+    -- write(list) gets a copy of each part's rules and returns its new list (nil: unchanged). A
+    -- list is replaced whole, never edited in place; the plates refresh once.
+    local function EditFades(write)
+        local changed = false
+        EachFadePart(GetSettings(), function(profile, key)
+            local rules = profile.rules or {}
+            local list = write(Table.DeepCopy(rules[key] or {}))
+            if list then
+                profile.rules = rules
+                rules[key] = #list > 0 and S.NormalizePartRules(rules, key, list) or nil
+                changed = true
+            end
+        end)
+        if changed then RefreshAll() end
+        return changed
+    end
+
+    -- On: each of those parts gets the fade once, last (so it wins over the part's own opacity
+    -- rules), at the current opacity; off: the fade goes from all of them.
+    local function SetFadeEverywhere(id, enabled)
+        local fade = FadeRule(id)
+        if not fade or not GetSettings() or type(enabled) ~= "boolean" then return false end
+        local _, alpha = GetFadeState(id)
+        return EditFades(function(list)
+            local kept, removed = {}, false
+            for _, rule in ipairs(list) do
+                if IsFade(rule, fade) then removed = true else kept[#kept + 1] = rule end
+            end
+            if enabled then kept[#kept + 1] = { when = fade.when, set = "alpha", alpha = alpha or fade.alpha } end
+            if enabled or removed then return kept end
+        end)
+    end
+
+    -- The fade's opacity (0-1) on every part that has it, in place; the others are left alone.
+    local function SetFadeAlpha(id, alpha)
+        local fade = FadeRule(id)
+        if not fade or not GetSettings() or type(alpha) ~= "number" or alpha ~= alpha or alpha < 0 or alpha > 1 then
+            return false
+        end
+        return EditFades(function(list)
+            local found = false
+            for _, rule in ipairs(list) do
+                if IsFade(rule, fade) then rule.alpha, found = alpha, true end
+            end
+            if found then return list end
+        end)
+    end
+
     -- One field of a part's style (Schema's NormalizeStyles); nil clears it. Colour by health is
     -- a blend rule (SetPartRules), not a style field.
     local STYLE_FIELDS = { font = true, outline = true, shadow = true, box = true, boxColour = true, boxBorder = true,
-        padding = true, texture = true, background = true, border = true, borderColour = true }
+        padding = true, texture = true, background = true, border = true, borderColour = true,
+        pipFill = true, pipEmpty = true, pipWidth = true, pipHeight = true, pipSpacing = true,
+        badgeSize = true, badgeSpacing = true, badgeOrientation = true, badgeInitial = true }
     local function SetPartStyle(profileKey, key, field, value)
         if not S.PartKey(key) or not STYLE_FIELDS[field] then return false end
         return MutateProfile(profileKey, function(profile)
@@ -792,7 +914,9 @@ PS._CreatePlateSettings = function(context)
             service:RebuildRoster()
             service:MarkDirty()
         end
-        RefreshAll()
+        -- Not a profile setting: the plates update, but the profile is not marked changed (nothing
+        -- to compare with the saved one) and what each plate prepared for its layout is kept.
+        Relayout()
         return true
     end
 
@@ -811,6 +935,8 @@ PS._CreatePlateSettings = function(context)
         SetComponentScale = SetComponentScale,
         SetComponentAttach = SetComponentAttach,
         SetComponentVisibility = SetComponentVisibility,
+        SetPartShownEverywhere = SetPartShownEverywhere,
+        GetPartShownState = GetPartShownState,
         GetPlateProfileSettings = GetProfileSettings,
         GetDungeonEnemyOverride = function()
             local db = GetSettings()
@@ -823,6 +949,9 @@ PS._CreatePlateSettings = function(context)
         SetPlateValueSlotFields = SetValueSlotFields,
         SetPlateAuraLayout = SetProfileAuraLayout,
         SetPartRules = SetPartRules,
+        GetFadeState = GetFadeState,
+        SetFadeEverywhere = SetFadeEverywhere,
+        SetFadeAlpha = SetFadeAlpha,
         SetPartStyle = SetPartStyle,
         ResetValueSlot = ResetValueSlot,
         SaveStylePreset = SaveStylePreset,

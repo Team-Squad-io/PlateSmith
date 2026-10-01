@@ -29,6 +29,12 @@ local Controls = assert(PS.UI and PS.UI.Controls, "PlateSmith Controls missing")
 --   sectionState            the table folded sections are kept in (key -> true while folded)
 --   relayout()              lays the panel out again after a section folds or opens
 --   chevron(texture, open)  draws a section's fold arrow (default: Blizzard's list arrows)
+--   checkLabels             a check row puts its text in the label column and the bare box at the
+--                           control column's start, as Blizzard's Settings rows (default: the box
+--                           starts the control column with its text after it)
+--   ruleUnder               a section's rule runs under its title (default: a divider above it)
+--   helpAsTooltip           a row's help (ControlHelp) is its tooltip, on its label and a "?" after
+--                           the label, not a paragraph under it; its state (Note) stays under it
 local Layout = {}
 PS.UI.Layout = Layout
 
@@ -38,7 +44,7 @@ Layout.TOKENS = {
     SUB_TOP = 8, SUB_GAP = 4, CARD_PAD = 8, CARD_GAP = 8,
     LABEL_W = 96, VALUE_W = 40, CONTROL_GAP = 8,
     SWATCH = 18, SWATCH_GAP = 6, AXIS_W = 12, BUTTON_H = 26, SEGMENT_ICON = 16,
-    CHEVRON = 14, CHEVRON_GAP = 6,
+    CHEVRON = 14, CHEVRON_GAP = 6, COLUMN_GAP = 32, HELP_ICON = 14, HELP_ICON_GAP = 4,
     -- A skinned checkbox is 26 px wide with its box 4 px in; a dropdown's field starts 16 px right
     -- of the x it is given and is 20 px wider than its width (Controls.Dropdown).
     CHECK_W = 26, CHECK_INSET = 4, CHECK_TEXT_GAP = 6, DROPDOWN_INSET = 16, DROPDOWN_PADDING = 20,
@@ -46,7 +52,7 @@ Layout.TOKENS = {
 }
 
 -- Palettes: text ink by role (label, value, muted, title, sub, error, ok, hint), text shadow,
--- the section divider, cards, and segmented controls.
+-- the section divider, a check row's hover fill, cards, and segmented controls.
 -- A line on parchment: #8a6f47 at 0.7 (the parchment's own edge colour vanished against it).
 local PARCHMENT_LINE = { 0.541, 0.435, 0.278, 0.7 }
 Layout.PALETTES = {
@@ -64,6 +70,7 @@ Layout.PALETTES = {
         },
         shadow = 0,
         divider = PARCHMENT_LINE,
+        hover = { 0.42, 0.33, 0.21, 0.12 },
         card = { fill = { 0.863, 0.796, 0.659, 1 }, edge = PARCHMENT_LINE }, -- #dccba8
         segment = { edge = { 0.42, 0.33, 0.21, 1 }, fill = { 0.086, 0.067, 0.047, 1 }, hover = { 0.17, 0.13, 0.09, 1 },
             chosen = { 0.48, 0.165, 0.078, 1 }, text = { 0.75, 0.68, 0.56 }, chosenText = { 0.965, 0.906, 0.77 },
@@ -75,6 +82,7 @@ Layout.PALETTES = {
             sub = { 0.86, 0.86, 0.82 }, error = { 1, 0.5, 0.45 }, ok = { 0.55, 1, 0.55 }, hint = { 0.6, 0.6, 0.6 } },
         shadow = 1,
         divider = { 0.6, 0.6, 0.6, 1 },
+        hover = { 1, 1, 1, 0.1 },
         card = { fill = { 0.14, 0.14, 0.14, 1 }, edge = { 0.6, 0.6, 0.6, 1 } },
         segment = { edge = { 0.8, 0.8, 0.8, 1 }, fill = { 0.08, 0.08, 0.08, 1 }, hover = { 0.22, 0.22, 0.22, 1 },
             chosen = { 0.89, 0.75, 0.13, 1 }, text = { 1, 1, 1 }, chosenText = { 0, 0, 0 }, off = { 0.5, 0.5, 0.5 } },
@@ -87,6 +95,7 @@ Layout.PALETTES = {
             hint = { 0.55, 0.53, 0.5 } },
         shadow = 1,
         divider = { 0.55, 0.45, 0.28, 0.7 },
+        hover = { 1, 0.9, 0.6, 0.06 },
         card = { fill = { 0, 0, 0, 0.3 }, edge = { 0.55, 0.45, 0.28, 0.7 } },
         segment = { edge = { 0.55, 0.45, 0.28, 1 }, fill = { 0.06, 0.05, 0.04, 1 }, hover = { 0.17, 0.14, 0.1, 1 },
             chosen = { 0.55, 0.42, 0.05, 1 }, text = { 0.87, 0.85, 0.81 }, chosenText = { 1, 1, 1 }, off = { 0.45, 0.43, 0.4 } },
@@ -98,6 +107,7 @@ Layout.PALETTES = {
             sub = { 1, 0.82, 0 }, error = { 1, 0.1, 0.1 }, ok = { 0.1, 1, 0.1 }, hint = { 0.5, 0.5, 0.5 } },
         shadow = 1,
         divider = { 0.45, 0.45, 0.45, 0.8 },
+        hover = { 1, 1, 1, 0.06 },
         card = { fill = { 0, 0, 0, 0.35 }, edge = { 0.45, 0.45, 0.45, 0.8 } },
         segment = { edge = { 0.4, 0.4, 0.4, 1 }, fill = { 0.06, 0.06, 0.06, 1 }, hover = { 0.18, 0.18, 0.18, 1 },
             chosen = { 0.55, 0.42, 0.05, 1 }, text = { 1, 1, 1 }, chosenText = { 1, 1, 1 }, off = { 0.45, 0.45, 0.45 } },
@@ -107,13 +117,16 @@ Layout.PALETTES = {
 local function Paint(texture, colour) texture:SetColorTexture(colour[1], colour[2], colour[3], colour[4] or 1) end
 
 -- A hairline exactly one physical pixel tall at any UI scale (a 1-unit line vanished below 1).
-local function Hairline(texture, fallback)
+-- vertical: the line is one pixel wide instead. Sized for the scale it has now, so a panel whose
+-- scale changes after it was built (Studio's is fitted when it shows) sizes it again as it lays out:
+-- under a pixel, a line draws or not by where it falls between pixels, which scrolling changes.
+local function Hairline(texture, fallback, vertical)
     local height = fallback
     if PixelUtil and PixelUtil.GetNearestPixelSize and texture.GetEffectiveScale then
         local ok, size = pcall(PixelUtil.GetNearestPixelSize, 1, texture:GetEffectiveScale(), 1)
         if ok and type(size) == "number" and size > 0 then height = size end
     end
-    texture:SetHeight(height)
+    if vertical then texture:SetWidth(height) else texture:SetHeight(height) end
     if texture.SetSnapToPixelGrid then texture:SetSnapToPixelGrid(false) end
     if texture.SetTexelSnappingBias then texture:SetTexelSnappingBias(0) end
 end
@@ -124,6 +137,46 @@ local function DefaultChevron(texture, open)
     local atlas = open and "Options_ListExpand_Right_Expanded" or "Options_ListExpand_Right"
     if texture.SetAtlas and texture:SetAtlas(atlas) then return end
     texture:SetTexture(open and "Interface\\Buttons\\UI-MinusButton-Up" or "Interface\\Buttons\\UI-PlusButton-Up")
+end
+
+-- The kit's builders mark what a settings search can find: a section's title (kitSearchTitle), a
+-- row's or sub-heading's label (kitSearchLabel, a check's own text after its label in
+-- kitSearchExtra) and help (kitSearchHelp). SearchEntries walks a built flow (a page) in flow order
+-- and returns { frame, label, extra, help, section, item } for each section and labelled row (item:
+-- its entry in the flow that holds it); help joins the row or section above it, and help with
+-- neither above it is left out. A row's tooltip help
+-- (kitSearchHelpText, config.helpAsTooltip) is its help too. Text is read as it is now, so help set
+-- after building is found too.
+function Layout.SearchEntries(root)
+    local entries = {}
+    local function HelpText(frame)
+        local text = frame.text and frame.text.GetText and frame.text:GetText()
+        return type(text) == "string" and text ~= "" and text or nil
+    end
+    local function Walk(flow, section, owner)
+        local last = owner
+        for _, item in ipairs(flow.flowItems or {}) do
+            local frame = item.frame
+            if frame.kitSearchTitle then
+                local entry = { frame = frame, label = frame.kitSearchTitle, section = frame, item = item }
+                entries[#entries + 1] = entry
+                Walk(frame, frame, entry)
+                last = entry
+            elseif frame.kitSearchHelp then
+                local text = last and HelpText(frame)
+                if text then last.help = last.help and (last.help .. " " .. text) or text end
+            elseif frame.kitSearchLabel then
+                last = { frame = frame, label = frame.kitSearchLabel, extra = frame.kitSearchExtra, section = section,
+                    help = frame.kitSearchHelpText, item = item }
+                entries[#entries + 1] = last
+            elseif frame.flowItems then
+                last = Walk(frame, section, last)
+            end
+        end
+        return last
+    end
+    Walk(root, nil, nil)
+    return entries
 end
 
 function Layout.New(config)
@@ -214,8 +267,10 @@ function Layout.New(config)
         return frame
     end
 
-    -- visible(): whether the item shows now (nil: always).
+    -- visible(): whether the item shows now (nil: always). Help that became its row's tooltip
+    -- (ControlHelp with config.helpAsTooltip) takes no place in the flow.
     function K.Add(flow, frame, visible)
+        if frame.kitAttachedHelp then return frame end
         flow.flowItems[#flow.flowItems + 1] = { frame = frame, visible = visible }
         return frame
     end
@@ -233,7 +288,7 @@ function Layout.New(config)
     -- Places the flow's shown items from top (default 0) down; returns where the last one ends.
     -- An item with Measure() sizes itself (a nested flow, a section, wrapping text); the rest keep
     -- their height. A nested flow with nothing shown is hidden and takes no space. Each item
-    -- spans the flow's width.
+    -- spans the flow's width, and knows the shown item above it (flowAbove) when it measures.
     function K.LayoutFlow(flow, top)
         local y, first, previous = top or 0, nil, nil
         local width = flow:GetWidth()
@@ -242,6 +297,7 @@ function Layout.New(config)
             local shown = item.visible == nil or item.visible() and true or false
             local height = 0
             if shown then
+                frame.flowAbove = previous
                 SetItemWidth(frame, width)
                 height = frame.Measure and frame:Measure() or frame:GetHeight()
                 if frame.flowItems and height <= 0 then shown = false end
@@ -287,24 +343,38 @@ function Layout.New(config)
     end
 
     -- Columns: a flow whose shown items (sections) are dealt into side by side columns, as many as
-    -- fit at options.minColumnWidth (default 360) with options.gap (default PAD_X * 2) between
+    -- fit at options.minColumnWidth (default 360) with options.gap (default COLUMN_GAP) between
     -- them, at most options.maxColumns (default 2). Items keep their order, down the first column
     -- and on into the next, split where the tallest column is shortest; each stretches to its
     -- column's width. Measure() lays it out at its width, so a page laid out again after a resize
     -- (or a section folding) reflows. Add items with kit.Add as to any flow. options.firstRule = false
-    -- drops the divider above each column's first section (when the page's heading has its own).
+    -- drops the divider above each column's first section (when the page's heading has its own; a
+    -- rule under a title always shows). options.divider draws a hairline down the middle of each gap.
     function K.Columns(parent, options)
         options = options or {}
-        local minimum, gap = options.minColumnWidth or 360, options.gap or K.PAD_X * 2
+        local minimum, gap = options.minColumnWidth or 360, options.gap or K.COLUMN_GAP
         local most = math.max(1, options.maxColumns or 2)
         local frame = K.Flow(CreateFrame("Frame", nil, parent), options.rowGap)
         frame:SetSize(K.WIDTH, 1)
-        frame.columns = {}
+        frame.columns, frame.dividers = {}, {}
         for index = 1, most do
             local column = K.Flow(CreateFrame("Frame", nil, frame), options.rowGap)
             column:SetSize(K.WIDTH, 1)
             frame.columns[index] = column
+            if options.divider and index > 1 then
+                local line = frame:CreateTexture(nil, "ARTWORK")
+                Hairline(line, K.RULE_H, true)
+                line:Hide()
+                frame.dividers[index - 1] = line
+            end
         end
+        function frame:Paint()
+            local colour = K.Palette().divider
+            for _, line in ipairs(self.dividers) do
+                line:SetColorTexture(colour[1], colour[2], colour[3], (colour[4] or 1) * 0.6)
+            end
+        end
+        frame:Paint()
         -- How many columns fit in width.
         function frame:ColumnCount(width)
             width = width or self.kitWidth or K.WIDTH
@@ -362,7 +432,8 @@ function Layout.New(config)
                     for position = starts[index], stop do column.flowItems[#column.flowItems + 1] = { frame = shown[position] } end
                     for position, item in ipairs(column.flowItems) do
                         local rule = item.frame.rule
-                        if rule and (options.firstRule ~= false or position > 1) then rule:Show() elseif rule then rule:Hide() end
+                        local keep = item.frame.ruleUnder or options.firstRule ~= false or position > 1
+                        if rule then rule:SetShown(keep) end
                     end
                 end
                 column:ClearAllPoints()
@@ -373,7 +444,15 @@ function Layout.New(config)
                 column:SetShown(index <= count)
                 tallest = math.max(tallest, height)
             end
-            self.columnCount, self.columnWidth = count, each
+            -- Each divider runs the full height of the columns, centred in its gap.
+            for index, line in ipairs(self.dividers) do
+                Hairline(line, K.RULE_H, true)
+                line:ClearAllPoints()
+                line:SetPoint("TOPLEFT", self, "TOPLEFT", index * (each + gap) - math.floor(gap / 2), 0)
+                line:SetHeight(math.max(1, tallest))
+                line:SetShown(index < count)
+            end
+            self.columnCount, self.columnWidth, self.columnGap = count, each, gap
             self:SetHeight(math.max(1, tallest))
             return tallest
         end
@@ -388,19 +467,23 @@ function Layout.New(config)
         if config.relayout then config.relayout() end
     end
 
-    -- A section: SECTION_TOP above its divider, then its title band, SECTION_TITLE_GAP, its items.
-    -- options: collapsible (config.collapsible for every section), key (its fold state; default
-    -- the title), summary() (shown at the band's right while folded). A foldable band is a
-    -- button with a chevron before the title; the actions at its right keep their own clicks.
-    -- Folded, the body is hidden and takes no space.
+    -- A section: SECTION_TOP above its divider, then its title band, SECTION_TITLE_GAP, its items
+    -- (config.ruleUnder: the band, then the rule under it across the section's width, which
+    -- shows on every section alike). options: collapsible (config.collapsible for every section),
+    -- key (its fold state; default the title), summary() (shown at the band's right while
+    -- folded). A foldable band is a button with a chevron before the title; the actions at its
+    -- right keep their own clicks. Folded, the body is hidden and takes no space.
     function K.Section(parent, title, options)
         options = options or {}
         local section = K.Flow(CreateFrame("Frame", nil, parent))
         section:SetSize(K.WIDTH, 1)
         section.flowBefore = K.SECTION_TOP
+        section.ruleUnder = config.ruleUnder and true or nil
+        local ruleY = section.ruleUnder and -(K.SECTION_TITLE_H + K.SECTION_RULE_GAP) or 0
+        local bandY = section.ruleUnder and 0 or -(K.RULE_H + K.SECTION_RULE_GAP)
         section.rule = section:CreateTexture(nil, "ARTWORK", nil, 7)
-        section.rule:SetPoint("TOPLEFT", section, "TOPLEFT", 0, 0)
-        section.rule:SetPoint("TOPRIGHT", section, "TOPRIGHT", 0, 0)
+        section.rule:SetPoint("TOPLEFT", section, "TOPLEFT", 0, ruleY)
+        section.rule:SetPoint("TOPRIGHT", section, "TOPRIGHT", 0, ruleY)
         section.rule:SetWidth(K.WIDTH)
         Hairline(section.rule, K.RULE_H)
         Paint(section.rule, K.Palette().divider)
@@ -409,12 +492,13 @@ function Layout.New(config)
         local band = CreateFrame(collapsible and "Button" or "Frame", nil, section)
         band:SetHeight(K.SECTION_TITLE_H)
         band:SetWidth(K.WIDTH)
-        band:SetPoint("TOPLEFT", section, "TOPLEFT", 0, -(K.RULE_H + K.SECTION_RULE_GAP))
-        band:SetPoint("TOPRIGHT", section, "TOPRIGHT", 0, -(K.RULE_H + K.SECTION_RULE_GAP))
+        band:SetPoint("TOPLEFT", section, "TOPLEFT", 0, bandY)
+        band:SetPoint("TOPRIGHT", section, "TOPRIGHT", 0, bandY)
         section.band = band
         section.title = K.Text(band, title, "title")
         section.title:SetPoint("LEFT", band, "LEFT", collapsible and K.CHEVRON + K.CHEVRON_GAP or 0, 0)
         section.foldKey = collapsible and (options.key or title) or nil
+        section.kitSearchTitle = title
         section.summaryOf = options.summary
         if collapsible then
             section.chevron = band:CreateTexture(nil, "ARTWORK")
@@ -446,6 +530,7 @@ function Layout.New(config)
         end
         local head = K.RULE_H + K.SECTION_RULE_GAP + K.SECTION_TITLE_H
         function section:Measure()
+            Hairline(self.rule, K.RULE_H)
             self:RefreshHeader()
             if K.IsFolded(self.foldKey) then
                 for _, item in ipairs(self.flowItems) do item.frame:Hide() end
@@ -480,6 +565,7 @@ function Layout.New(config)
         frame.flowBefore, frame.flowAfter = K.SUB_TOP, K.SUB_GAP
         frame.text = K.Text(frame, text, "sub")
         frame.text:SetPoint("LEFT", frame, "LEFT", 0, 0)
+        frame.kitSearchLabel = text
         return frame
     end
 
@@ -490,6 +576,7 @@ function Layout.New(config)
         row:SetSize(K.WIDTH, K.ROW_H)
         row.inset = inset or 0
         row.right = K.WIDTH - row.inset
+        if label and label ~= "" then row.kitSearchLabel = label end
         if label then
             row.label = K.Text(row, label, "label")
             row.label:SetPoint("LEFT", row, "LEFT", row.inset, 0)
@@ -580,6 +667,9 @@ function Layout.New(config)
         text:SetJustifyH("LEFT")
         if text.SetWordWrap then text:SetWordWrap(true) end
         K.Ink(text, "label")
+        if spec.text and spec.text ~= "" then
+            if row.kitSearchLabel then row.kitSearchExtra = spec.text else row.kitSearchLabel = spec.text end
+        end
         function row:Measure()
             local height = math.max(K.ROW_H, (text:GetText() or "") == "" and 0 or TextHeight(text, width))
             self:SetHeight(height)
@@ -589,7 +679,73 @@ function Layout.New(config)
         return checkbox
     end
 
+    -- config.checkLabels: the check's text (spec.text, else label) is the row's label, wrapping in
+    -- the label column, and the bare box starts the control column where every other row's control
+    -- does. The label clicks the box too; pointing at either lights the row. checkbox.label is the
+    -- label, so callers dim or recolour it as before.
+    local function LabelledCheck(parent, label, spec)
+        local row = K.Row(parent, nil, spec.inset)
+        local words = spec.text
+        if words == nil or words == "" then words = label or "" end
+        spec.label, spec.x, spec.y = words, K.CONTROL_X - K.CHECK_INSET, 0
+        spec.labelTemplate = "GameFontHighlightSmall"
+        local checkbox = Controls.Checkbox(row, spec)
+        checkbox:ClearAllPoints()
+        checkbox:SetPoint("LEFT", row, "LEFT", spec.x, 0)
+        local text = checkbox.label
+        if text.SetParent then text:SetParent(row) end
+        text:SetFont(K.FONT_PATH, K.FONT)
+        text:ClearAllPoints()
+        text:SetPoint("LEFT", row, "LEFT", row.inset, 0)
+        row.labelWidth = K.LABEL_W - row.inset
+        text:SetWidth(row.labelWidth)
+        text:SetJustifyH("LEFT")
+        if text.SetWordWrap then text:SetWordWrap(true) end
+        K.Ink(text, "label")
+        row.label = text
+        if words ~= "" then row.kitSearchLabel = words end
+        row.hover = row:CreateTexture(nil, "BACKGROUND")
+        row.hover:SetAllPoints(row)
+        row.hover:Hide()
+        local function Hover(on)
+            local lit = on and checkbox:IsEnabled() and true or false
+            Paint(row.hover, K.Palette().hover or { 1, 1, 1, 0.06 })
+            row.hover:SetShown(lit)
+            if lit then
+                local colour = K.Palette().ink.value
+                text:SetTextColor(colour[1], colour[2], colour[3], 1)
+            else
+                K.Ink(text, text.studioInk or "label")
+            end
+            if checkbox.KitHover then checkbox:KitHover(lit) end
+        end
+        -- The label column up to the box: a click there is a click on the box.
+        local hit = CreateFrame("Button", nil, row)
+        hit:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+        hit:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+        hit:SetWidth(spec.x)
+        hit:SetScript("OnClick", function()
+            if checkbox:IsEnabled() then checkbox:Click() end
+        end)
+        hit:SetScript("OnEnter", function() Hover(true) end)
+        hit:SetScript("OnLeave", function() Hover(false) end)
+        if checkbox.HookScript then
+            checkbox:HookScript("OnEnter", function() Hover(true) end)
+            checkbox:HookScript("OnLeave", function() Hover(false) end)
+        end
+        row.labelButton = hit
+        row.kitLabelledCheck = true
+        function row:Measure()
+            local height = math.max(K.ROW_H, (text:GetText() or "") == "" and 0 or TextHeight(text, self.labelWidth))
+            self:SetHeight(height)
+            return height
+        end
+        row.control = checkbox
+        return row, checkbox
+    end
+
     function K.CheckRow(parent, label, spec)
+        if config.checkLabels then return LabelledCheck(parent, label, spec) end
         local row = K.Row(parent, label, spec.inset)
         return row, K.RowCheck(row, spec)
     end
@@ -609,6 +765,7 @@ function Layout.New(config)
         if label then
             row.label = K.Text(row, label, "label")
             row.label:SetPoint("LEFT", row, "LEFT", row.inset + K.SWATCH + K.SWATCH_GAP, 0)
+            row.kitSearchLabel = label
         end
         local slider = swatch.alphaSlider
         if slider then
@@ -635,8 +792,19 @@ function Layout.New(config)
         label:SetWidth(K.WIDTH - x)
         if label.SetWordWrap then label:SetWordWrap(true) end
         frame.text = label
+        frame.kitSearchHelp = true
         function frame:Measure()
             local width = (self.kitWidth or K.WIDTH) - x
+            if self.underControl then
+                -- Under the control of the row above (past any help between them); under a labelled
+                -- check row that is its label, so the help starts at the label column.
+                local above = self.flowAbove
+                while above and above.underControl do above = above.flowAbove end
+                local start = above and above.kitLabelledCheck and above.inset or x
+                width = (self.kitWidth or K.WIDTH) - start
+                label:ClearAllPoints()
+                label:SetPoint("TOPLEFT", self, "TOPLEFT", start, 0)
+            end
             label:SetWidth(width)
             local height = TextHeight(label, width)
             self:SetHeight(height)
@@ -645,11 +813,103 @@ function Layout.New(config)
         return frame
     end
 
-    -- Help under the control of the row above it: in the control column, ROW_GAP / 2 below.
-    function K.ControlHelp(parent, text)
+    -- A line under the control of the row above it: in the control column (under a labelled check
+    -- row, from the label column), ROW_GAP / 2 below. For a row's state ("has no effect here"),
+    -- which stays in view where help may be a tooltip.
+    function K.Note(parent, text)
         local help = K.Help(parent, text, K.CONTROL_X)
         help.flowBefore = math.floor(K.ROW_GAP / 2)
+        help.underControl = true
         return help
+    end
+
+    -- config.helpAsTooltip: a row's help is its tooltip. The "?" sits just after the label's text
+    -- (at the label column's end when the text fills it), centred on the row, gold and faint until
+    -- pointed at; pointing at it or the label shows the label and the help.
+    local HELP_ICON_FILE = "Interface\\RaidFrame\\ReadyCheck-Waiting"
+    local HELP_ALPHA, HELP_ALPHA_LIT = 0.55, 1
+    local function PlaceHelpIcon(row)
+        local icon, label = row.helpIcon, row.label
+        local room = K.LABEL_W - row.inset
+        local textWidth = label.GetStringWidth and label:GetStringWidth() or 0
+        local width = room
+        if textWidth + K.HELP_ICON_GAP + K.HELP_ICON > room then width = room - K.HELP_ICON_GAP - K.HELP_ICON end
+        label:SetWidth(width)
+        row.labelWidth = width
+        local x = row.inset + math.min(textWidth, width) + K.HELP_ICON_GAP
+        icon:ClearAllPoints()
+        icon:SetPoint("LEFT", row, "LEFT", x, 0)
+        if row.helpZone then row.helpZone:SetWidth(x + K.HELP_ICON) end
+    end
+    local function ShowRowHelp(row)
+        if row.helpIcon then row.helpIcon.art:SetAlpha(HELP_ALPHA_LIT) end
+        if not GameTooltip then return end
+        GameTooltip:SetOwner(row.helpIcon or row.button, "ANCHOR_RIGHT")
+        GameTooltip:SetText(row.kitSearchLabel or "", 1, 1, 1)
+        for _, line in ipairs(row.helpLines) do GameTooltip:AddLine(line, 1, 0.82, 0.45, true) end
+        GameTooltip:Show()
+    end
+    local function HideRowHelp(row)
+        if row.helpIcon then row.helpIcon.art:SetAlpha(HELP_ALPHA) end
+        if GameTooltip then GameTooltip:Hide() end
+    end
+    local function Hover(frame, row)
+        frame:HookScript("OnEnter", function() ShowRowHelp(row) end)
+        frame:HookScript("OnLeave", function() HideRowHelp(row) end)
+    end
+
+    -- Makes text the tooltip of row (a labelled row, or a button row: its button); more help adds
+    -- lines. false for anything else, whose help then stays under it.
+    function K.AttachHelp(row, text)
+        if type(text) ~= "string" or text == "" or type(row) ~= "table" then return false end
+        if row.helpLines then
+            row.helpLines[#row.helpLines + 1] = text
+            row.kitSearchHelpText = table.concat(row.helpLines, " ")
+            return true
+        end
+        local labelled = row.label and (row.label:GetText() or "") ~= ""
+        if not row.kitSearchLabel or row.flowItems or not (labelled or row.button) then return false end
+        row.helpLines, row.kitSearchHelpText = { text }, text
+        if not labelled then
+            Hover(row.button, row)
+            return true
+        end
+        local icon = CreateFrame("Button", nil, row)
+        icon:SetSize(K.HELP_ICON, K.HELP_ICON)
+        icon.art = icon:CreateTexture(nil, "ARTWORK")
+        icon.art:SetAllPoints(icon)
+        -- Blizzard's ready-check "?": gold of its own.
+        icon.art:SetTexture(HELP_ICON_FILE)
+        icon.art:SetAlpha(HELP_ALPHA)
+        Hover(icon, row)
+        row.helpIcon = icon
+        -- A labelled check's label already takes the pointer (it clicks the box); another row's
+        -- label gets a zone of its own, up to the "?".
+        local zone = row.labelButton
+        if not zone then
+            zone = CreateFrame("Frame", nil, row)
+            zone:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+            zone:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+            zone:EnableMouse(true)
+            row.helpZone = zone
+        end
+        Hover(zone, row)
+        local measure = row.Measure
+        function row:Measure()
+            PlaceHelpIcon(self)
+            if measure then return measure(self) end
+            return self:GetHeight()
+        end
+        PlaceHelpIcon(row)
+        return true
+    end
+
+    -- Help for the row above it: under its control, or (config.helpAsTooltip) that row's tooltip.
+    function K.ControlHelp(parent, text)
+        local items = config.helpAsTooltip and parent.flowItems
+        local row = items and items[#items] and items[#items].frame
+        if row and K.AttachHelp(row, text) then return { kitAttachedHelp = row, text = text } end
+        return K.Note(parent, text)
     end
 
     -- A row of mutually exclusive choices, equal widths from the control column. spec: choices
@@ -836,6 +1096,7 @@ function Layout.New(config)
         button:SetPoint("LEFT", row, "LEFT", x or 0, 0)
         if not width then K.OnWidth(row, function(rowWidth) button:SetWidth(rowWidth - (x or 0)) end) end
         row.button = button
+        row.kitSearchLabel = text
         return row, button
     end
 
@@ -843,15 +1104,17 @@ function Layout.New(config)
     -- the row has no label). buttons: { { text, width, onClick }, ... }; returns the row and them.
     function K.ButtonsRow(parent, label, buttons)
         local row = K.Row(parent, label)
-        local x, made = label and K.CONTROL_X or 0, {}
+        local x, made, words = label and K.CONTROL_X or 0, {}, {}
         for index, spec in ipairs(buttons) do
             local button = MakeButton(row, spec[1], spec[2])
             button:SetPoint("LEFT", row, "LEFT", x, 0)
             if spec[3] then button:SetScript("OnClick", spec[3]) end
             x = x + spec[2] + K.CONTROL_GAP
             made[index] = button
+            words[index] = spec[1]
         end
         row.buttons = made
+        if not row.kitSearchLabel and #words > 0 then row.kitSearchLabel = table.concat(words, " / ") end
         return row, made
     end
 

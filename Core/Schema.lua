@@ -5,7 +5,7 @@ local Table = assert(PS.Table, "PlateSmith Table missing")
 local Media = assert(PS.Media, "PlateSmith Media missing")
 
 local defaults = {
-    schemaVersion = 25,
+    schemaVersion = 26,
     enabled = true,
     mode = "auto",       -- auto, own, overlay
     friendly = "names",  -- names, full, off
@@ -16,32 +16,48 @@ local defaults = {
     restrictedFriendlyClassColour = false,
     experimentalDungeonFriendlyText = false,
     showPlayerSurnames = true,
+    -- A cast on a names-only plate: a slim bar under the name, namesOnlyCastWidth wide. Friendly:
+    -- names-only friendly plates; enemy: enemy plates whose layout hides the health and cast bars.
+    namesOnlyCastFriendly = false, namesOnlyCastEnemy = false, namesOnlyCastWidth = 90,
     showGroupIcon = true,
     showGuildIcon = true,
-    showClassification = true,
     classificationStyle = "icon", -- icon (Blizzard's nameplate icons), words, letters
-    quest = true,
     -- Whose quest icons show: auto (Questie's when Questie shows nameplate icons, else
     -- PlateSmith's), platesmith, or questie (PlateSmith's step aside while Questie is loaded).
     questIcons = "auto",
-    threat = true,
-    showTagged = true,
+    -- An enemy plate's health bar edge turns red while you tank and lose that mob.
+    tankWarning = true,
     -- The target-of-target name hides while that unit targets you (it would say your name).
     targetNameHideSelf = true,
-    showBuffs = true,
-    showDebuffs = true,
     buffSource = "all",       -- all, mine
     debuffSource = "mine",   -- all, mine
+    -- Blizzard's own plate names, drawn with its shared nameplate font objects (Nameplates/NativeFonts.lua):
+    -- readable outdoors (nativeNameFont), and the opt-in chosen font where blizzardNameFontScope says.
     nativeNameFont = true,
+    blizzardNameFont = false,
+    blizzardNameFontScope = "instances", -- instances (dungeons and raids), everywhere
+    blizzardNameFontSize = 12,
+    blizzardNameFontOutline = "outline", -- none, outline, thick
+    blizzardNameFontFace = "default", -- default (each object's own Blizzard face) or a PS.Media font
     scale = 1,
     width = 112,
     healthHeight = 10,
-    nameFontSize = 12,
+    nameFontSize = 14,
+    -- Every PlateSmith text on every plate type drawn at this times its own size.
+    textScale = 1,
     threatSpotlightStyle = "glow", -- glow, arrow, sides, box, both
     targetHighlightStyle = "border", -- off, border, halo
     threatSpotlightOthersAlpha = 0.55,
     threatSpotlightDuration = 3,
     threatPalette = "auto", -- auto (follows the colorblindMode CVar), standard, colourblind
+    threatTextFormat = "gap", -- the plates' threat text: gap (% and signed gap), percent, detailed (lead % and raw)
+    -- A gap read through a borrowed token (target, hover, focus...) is kept once it moves on: for
+    -- threatKeptHold seconds ("until": while the same mob lives), dimmed, fading with age or grey
+    -- (threatKeptStyle), with its age after it while threatKeptAge is on.
+    threatKeptHold = "5", threatKeptStyle = "dim", threatKeptAge = false,
+    -- Settings › Experimental: tests of what the game allows, each off by default.
+    experimentalSoftTargetThreat = false, experimentalTargetOfTargetThreat = false,
+    experimentalSoloCurveGap = false, experimentalOutsideHolderRow = false,
     font = "default", -- default (Blizzard's multilingual nameplate font) or lsm:<name>
 }
 
@@ -66,9 +82,9 @@ local valueLayers = { back = true, front = true }
 local missingAnchorModes = { fallback = true, hide = true }
 local valueFontRange = { 7, 18, true }
 local WHITE = { r = 1, g = 1, b = 1 }
--- An unused custom part: off, white 9 pt text on the health bar. Blueprints leave slots like
+-- An unused custom part: off, white 11 pt text on the health bar. Blueprints leave slots like
 -- this out.
-local DEFAULT_VALUE_SLOT = { source = "off", anchor = "health", layer = "front", whenMissing = "fallback", fontSize = 9,
+local DEFAULT_VALUE_SLOT = { source = "off", anchor = "health", layer = "front", whenMissing = "fallback", fontSize = 11,
     colour = WHITE }
 local function DefaultValueSlot() return Table.DeepCopy(DEFAULT_VALUE_SLOT) end
 
@@ -97,7 +113,7 @@ local function NormalizeValueTemplate(text)
     return text
 end
 
--- Rules: per part, an ordered list of { when = condition, set = what, colour | alpha | stops },
+-- Rules: per part, an ordered list of { when = condition, set = what, colour | alpha | stops[, enabled] },
 -- read top to bottom: the last rule that holds sets each property (Core/Template.lua compiles
 -- the conditions). "blend" colours the part by health %, between its stops ({ at = 0-100,
 -- colour }, 2-5 of them, sorted); an empty condition always holds.
@@ -145,6 +161,8 @@ local function NormalizeRules(rules, limit)
             if type(rule) == "table" and RULE_SETS[rule.set] and #list < MAX_RULES_PER_PART and total < limit then
                 local when = type(rule.when) == "string" and TemplateText(rule.when) or ""
                 local entry = { when = when, set = rule.set }
+                -- enabled: on unless false. A rule turned off stays in the list and never applies.
+                if rule.enabled == false then entry.enabled = false end
                 if rule.set == "colour" then
                     entry.colour = RuleColour(rule.colour)
                 elseif rule.set == "alpha" then
@@ -223,9 +241,9 @@ local profileOrder = { "enemy", "friendlyPlayer", "friendlyNPC" }
 -- or a rule; a wider pinned gap (raidIcon 22 px right of a names-only name) keeps room for the
 -- icon that may show before it.
 local FULL_POSITIONS = {
-    -- The name 18 px up: the quest mark (16 px) beside it stays clear of the raid mark (18 px)
-    -- beside the bar under any name length.
-    name = { 0, 18 }, health = { 0, 0 }, cast = { 0, -13 },
+    -- The name 19 px up: the quest mark (18 px at the 14 pt name) beside it stays clear of the raid
+    -- mark (20 px) beside the bar under any name length.
+    name = { 0, 19 }, health = { 0, 0 }, cast = { 0, -13 },
     -- Under the bars in the Bars stack (AddTemplateStacks), closing up while a bar is idle.
     guild = { 0, -26 }, threat = { 0, -26 }, targetName = { 0, -40 },
     level = { -3, 0, "name", "left" }, quest = { -2, 0, "level", "left" }, pvpIcon = { -2, 0, "level", "left" },
@@ -235,15 +253,21 @@ local FULL_POSITIONS = {
     -- on a mob without one it takes the mark's place beside the bar.
     tagged = { 4, 0, "classification", "right" },
     -- Above the name in the Auras stack: debuffs nearest, buffs above them.
-    debuffs = { 0, 36 }, buffs = { 0, 56 },
+    debuffs = { 0, 37 }, buffs = { 0, 57 },
+    -- Combo points (your target's plate only) on the health bar's top edge, clear of the target
+    -- border and under the name.
+    combo = { 0, 2, "health", "top" },
+    -- "Targeted by" badges (off by default): beside the bar, left of the raid mark (meeting the bar
+    -- when there is none), on the bar's line, clear of the name line above it.
+    targetedBy = { -2, 0, "raidIcon", "left" },
 }
 local NAMES_POSITIONS = {
-    -- 3 px: clear of an 18 px raid mark beside a short name, over the guild line's wider text.
+    -- 3 px: clear of a 20 px raid mark beside a short name, over the guild line's wider text.
     name = { 0, 0 }, guild = { 0, -3, "name", "bottom" },
     level = { -3, 0, "name", "left" }, quest = { -2, 0, "level", "left" }, pvpIcon = { -2, 0, "level", "left" },
     relationshipIcon = { 3, 0, "name", "right" }, raidIcon = { 22, 0, "name", "right" },
     classification = { 43, 0, "name", "right" }, tagged = { 64, 0, "name", "right" },
-    health = { 0, -29 }, cast = { 0, -42 }, threat = { 0, -55 }, targetName = { 0, -27 },
+    health = { 0, -29 }, cast = { 0, -42 }, threat = { 0, -55 }, targetName = { 0, -30 },
     debuffs = { 0, 19 }, buffs = { 0, 39 },
 }
 
@@ -265,7 +289,7 @@ local function NamesLayout(shown, overrides) return BuildLayout(NAMES_POSITIONS,
 
 -- The enemy template, and the fallback for any layout entry that is missing.
 local defaultLayout = FullLayout({ name = true, health = true, cast = true, threat = true, tagged = true, quest = true,
-    raidIcon = true, classification = true, level = true, buffs = true, debuffs = true })
+    raidIcon = true, classification = true, level = true, buffs = true, debuffs = true, combo = true })
 
 -- The entries every layout has beyond the grid: the power bar (hidden) and the custom parts,
 -- which sit on the health bar.
@@ -278,13 +302,13 @@ end
 
 local profileDefaults = {
     enemy = {
-        scale = 1, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 12,
+        scale = 1, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 14,
         healthTexture = "blizzard", healthColourMode = "automatic",
         healthColour = { r = 0.85, g = 0.12, b = 0.1 },
         layout = defaultLayout,
     },
     friendlyPlayer = {
-        scale = 1, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 12,
+        scale = 1, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 14,
         healthTexture = "blizzard", healthColourMode = "automatic",
         healthColour = { r = 0.25, g = 1, b = 0.45 },
         layout = FullLayout({ name = true, health = true, cast = true, raidIcon = true,
@@ -295,7 +319,7 @@ local profileDefaults = {
             level = true, guild = true }),
     },
     friendlyNPC = {
-        scale = 1, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 12,
+        scale = 1, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 14,
         healthTexture = "blizzard", healthColourMode = "automatic",
         healthColour = { r = 0.35, g = 0.9, b = 1 },
         layout = FullLayout({ name = true, health = true, cast = true, quest = true, raidIcon = true,
@@ -308,11 +332,24 @@ local profileDefaults = {
 
 -- The cast bar's own parts, on every plate type: the spell's icon (left or right of the bar, or
 -- off), the time left inside the bar's right end, and the spell's name.
-local castOptions = { castIcon = { left = true, right = true, off = true }, castTime = "boolean", castName = "boolean" }
-local castDefaults = { castIcon = "left", castTime = true, castName = true }
+-- castInterruptColours colours the bar by your interrupt (castColours); castOnTop draws a casting
+-- plate over its neighbours (under the target and focus). The quest mark's progress text ("3/8" or
+-- "50%") rides here too: off, beside the mark, or in its place, as a count or a percentage.
+local castOptions = { castIcon = { left = true, right = true, off = true }, castTime = "boolean", castName = "boolean",
+    castInterruptColours = "boolean", castOnTop = "boolean",
+    questProgress = { off = true, beside = true, instead = true }, questProgressFormat = { count = true, percent = true } }
+local castDefaults = { castIcon = "left", castTime = true, castName = true, castInterruptColours = false, castOnTop = false,
+    questProgress = "off", questProgressFormat = "count" }
+-- The cast bar's own colour, and Colour by interrupt's: ready (it can be interrupted and your
+-- interrupt is ready), cooldown (it can, but yours is on cooldown or you have none), locked (it cannot).
+local CAST_COLOUR = { r = 0.95, g = 0.68, b = 0.16 }
+local CAST_COLOUR_KEYS = { "ready", "cooldown", "locked" }
+local castColourDefaults = { ready = { r = 0.25, g = 0.85, b = 0.35 }, cooldown = { r = 0.9, g = 0.3, b = 0.2 },
+    locked = { r = 0.55, g = 0.55, b = 0.55 } }
 
 for profileKey, profile in pairs(profileDefaults) do
     for key, value in pairs(castDefaults) do profile[key] = value end
+    profile.castColours = Table.DeepCopy(castColourDefaults)
     AddBarEntries(profile.layout)
     if profile.namesLayout then
         AddBarEntries(profile.namesLayout)
@@ -343,8 +380,13 @@ local validAuraSources = { all = true, mine = true }
 local validClassificationStyles = { icon = true, words = true, letters = true }
 local validQuestIcons = { auto = true, platesmith = true, questie = true }
 local validThreatPalettes = { auto = true, standard = true, colourblind = true }
+local validThreatTextFormats = { gap = true, percent = true, detailed = true }
+local validThreatKeptHolds = { ["5"] = true, ["10"] = true, ["15"] = true, ["30"] = true, ["until"] = true }
+local validThreatKeptStyles = { dim = true, fade = true, grey = true }
 local validThreatSpotlightStyles = { glow = true, arrow = true, sides = true, box = true, both = true }
 local validTargetHighlightStyles = { off = true, border = true, halo = true }
+local validBlizzardNameFontScopes = { instances = true, everywhere = true }
+local validBlizzardNameFontOutlines = { none = true, outline = true, thick = true }
 
 -- Numeric bounds shared by normalization and Blueprint validation; true = whole number.
 local profileRanges = {
@@ -358,7 +400,8 @@ local optionalProfileRanges = {
 }
 -- The general settings' own numbers. (scale, width, healthHeight and nameFontSize at the top
 -- level are copies of the enemy profile's.)
-local settingRanges = { threatSpotlightOthersAlpha = { 0.3, 1 }, threatSpotlightDuration = { 1, 8, true } }
+local settingRanges = { threatSpotlightOthersAlpha = { 0.3, 1 }, threatSpotlightDuration = { 1, 8, true },
+    textScale = { 0.8, 1.5 }, blizzardNameFontSize = { 8, 20, true }, namesOnlyCastWidth = { 50, 160, true } }
 local ENEMY_ALIASES = { scale = true, width = true, healthHeight = true, nameFontSize = true }
 -- Component positions on the preview canvas, and per-component scale.
 local layoutRanges = { x = { -280, 280, true }, y = { -105, 105, true }, scale = { 0.5, 2 } }
@@ -368,25 +411,30 @@ local layoutRanges = { x = { -280, 280, true }, y = { -105, 105, true }, scale =
 local booleanSettings = {
     "enabled", "hideUnstyledFriendlyNames", "friendlyRelationshipColours", "restrictedFriendlyNamesOnly",
     "restrictedFriendlyClassColour", "experimentalDungeonFriendlyText", "showPlayerSurnames", "showGroupIcon",
-    "showGuildIcon", "showClassification", "quest", "threat", "showTagged", "showBuffs", "showDebuffs",
-    "nativeNameFont", "targetNameHideSelf",
+    "showGuildIcon", "nativeNameFont", "targetNameHideSelf", "tankWarning", "blizzardNameFont",
+    "threatKeptAge", "experimentalSoftTargetThreat", "experimentalTargetOfTargetThreat", "experimentalSoloCurveGap",
+    "experimentalOutsideHolderRow", "namesOnlyCastFriendly", "namesOnlyCastEnemy",
 }
 local enumSettings = {
     mode = validModes, friendly = validFriendlyModes, friendlyPvpStyle = validFriendlyPvpStyles,
     buffSource = validAuraSources, debuffSource = validAuraSources, classificationStyle = validClassificationStyles,
     questIcons = validQuestIcons, targetHighlightStyle = validTargetHighlightStyles,
     threatSpotlightStyle = validThreatSpotlightStyles, threatPalette = validThreatPalettes,
+    threatTextFormat = validThreatTextFormats, threatKeptHold = validThreatKeptHolds, threatKeptStyle = validThreatKeptStyles,
+    blizzardNameFontScope = validBlizzardNameFontScopes,
+    blizzardNameFontOutline = validBlizzardNameFontOutlines,
 }
 local isBooleanSetting = {}
 for _, key in ipairs(booleanSettings) do isBooleanSetting[key] = true end
 
--- The first candidate that converts to a number, clamped to range (and
+-- The first candidate that converts to a number (not NaN), clamped to range (and
 -- rounded for whole-number ranges). The last candidate is always a default.
 local function Bounded(range, ...)
     local value
     for index = 1, select("#", ...) do
         value = tonumber((select(index, ...)))
-        if value then break end
+        if value and value == value then break end
+        value = nil
     end
     value = math.max(range[1], math.min(range[2], value or range[1]))
     return range[3] and math.floor(value + 0.5) or value
@@ -396,6 +444,13 @@ end
 local function InRange(range, value)
     return type(value) == "number" and value == value and value >= range[1] and value <= range[2]
         and (not range[3] or value == math.floor(value))
+end
+
+-- A plate text's drawn size: its own size times the profile's text size (textScale), in whole
+-- points within DRAWN_FONT_RANGE.
+local DRAWN_FONT_RANGE = { 6, 32, true }
+local function ScaledFontSize(size, textScale)
+    return Bounded(DRAWN_FONT_RANGE, (tonumber(size) or 12) * Bounded(settingRanges.textScale, textScale, 1))
 end
 
 -- Component scale snaps to 5% steps.
@@ -464,6 +519,18 @@ local function PinTarget(layout, key, absent)
     return target
 end
 
+-- Sorts keys (entries of layout) in place into tree order: by each entry's order (unset:
+-- fallback, 99 by default), then by key. Returns keys.
+local function SortByTreeOrder(layout, keys, fallback)
+    fallback = fallback or 99
+    table.sort(keys, function(left, right)
+        local a, b = layout[left].order or fallback, layout[right].order or fallback
+        if a ~= b then return a < b end
+        return left < right
+    end)
+    return keys
+end
+
 -- key -> { x, y, scale } drawn from the plate's centre, for every entry of layout. measure(key),
 -- when given, returns a part's width and height in its own units (nil: not stacked); without
 -- it stacks are not applied. absent(key), when given, says a part has nothing to show on this
@@ -474,24 +541,22 @@ local function LayoutTransforms(layout, measure, absent)
         if stacks[parentKey] then return stacks[parentKey] end
         local offsets, parent = {}, layout[parentKey]
         stacks[parentKey] = offsets
-        local children = {}
+        local keys, children = {}, {}
         for key, position in pairs(layout) do
             if type(position) == "table" and position.parent == parentKey and not position.free
                 and position.visible ~= false and not position.removed then
-                -- measure(key) -> width, height[, hidden[, boxX, boxY]]: box* is the drawn box's
-                -- centre from the part's own centre (an aura grid's further lines), own units.
-                local width, height, hidden, boxX, boxY = measure(key)
-                if width and height then
-                    children[#children + 1] = { key = key, width = width, height = height, hidden = hidden,
-                        boxX = tonumber(boxX) or 0, boxY = tonumber(boxY) or 0 }
-                end
+                keys[#keys + 1] = key
             end
         end
-        table.sort(children, function(left, right)
-            local a, b = layout[left.key].order or 99, layout[right.key].order or 99
-            if a ~= b then return a < b end
-            return left.key < right.key
-        end)
+        for _, key in ipairs(SortByTreeOrder(layout, keys)) do
+            -- measure(key) -> width, height[, hidden[, boxX, boxY]]: box* is the drawn box's
+            -- centre from the part's own centre (an aura grid's further lines), own units.
+            local width, height, hidden, boxX, boxY = measure(key)
+            if width and height then
+                children[#children + 1] = { key = key, width = width, height = height, hidden = hidden,
+                    boxX = tonumber(boxX) or 0, boxY = tonumber(boxY) or 0 }
+            end
+        end
         local direction, gap = parent.stack, tonumber(parent.gap) or 0
         local vertical = direction == "down" or direction == "up"
         local sign = (direction == "down" or direction == "left") and -1 or 1
@@ -595,13 +660,7 @@ local function DrawOrder(layout)
             children[parent][#children[parent] + 1] = key
         end
     end
-    for _, list in pairs(children) do
-        table.sort(list, function(left, right)
-            local a, b = layout[left].order or 99, layout[right].order or 99
-            if a ~= b then return a < b end
-            return left < right
-        end)
-    end
+    for _, list in pairs(children) do SortByTreeOrder(layout, list) end
     local sequence, effective = {}, {}
     -- Front to back: a part's children before the part itself (they draw on it, as a value on
     -- its bar), and higher siblings, with everything under them, before lower ones.
@@ -632,7 +691,7 @@ end
 -- inside their group.
 local DEFAULT_GROUPS = {
     { name = "Text", members = { "name", "level", "guild", "threat", "tagged", "targetName" } },
-    { name = "Bars", members = { "health", "power", "cast" }, stack = "down", gap = 4 },
+    { name = "Bars", members = { "health", "power", "cast" }, stack = "down", gap = 5 },
     { name = "Markers", members = { "quest", "raidIcon", "relationshipIcon", "pvpIcon", "classification" } },
     { name = "Auras", members = { "buffs", "debuffs" } },
 }
@@ -900,19 +959,41 @@ local function NormalizeColour(colour, fallback)
     return normalized
 end
 
+-- Colour by interrupt's three colours, each made valid (a new table; fallback: the profile's defaults).
+local function NormalizeCastColours(colours, fallback)
+    colours = type(colours) == "table" and colours or {}
+    fallback = type(fallback) == "table" and fallback or castColourDefaults
+    local normalized = {}
+    for _, key in ipairs(CAST_COLOUR_KEYS) do
+        normalized[key] = NormalizeColour(colours[key], fallback[key] or castColourDefaults[key])
+    end
+    return normalized
+end
+
 -- Styles: per part, how it is drawn beyond position and size. Text parts: font (a media key;
 -- nil is the plates' font), outline, shadow, and an optional box behind the text (fill,
--- border, padding). Bars: texture, background, border. Everything is optional; nil keeps the
+-- border, padding). Bars: texture, background, border. Pips (combo points): the filled and empty
+-- colours, each pip's size and the gap between them. Everything is optional; nil keeps the
 -- part as it draws today. Colour by health is a blend rule: an older style's gradient becomes
 -- one (GradientRules) and is not kept.
 local STYLE_OUTLINES = { none = true, outline = true, thick = true }
 local STYLE_PADDING, STYLE_BORDER = { 0, 12, true }, { 0, 4, true }
+-- Pips (combo points): each pip's width and height and the gap between them, in pixels.
+local STYLE_PIPS = { pipWidth = { 4, 24, true }, pipHeight = { 2, 12, true }, pipSpacing = { 0, 8, true } }
+-- Badges ("Targeted by"): each badge's size and the gap, in pixels; the row's direction; and whether
+-- a badge shows its member's initial (nil: yes).
+local STYLE_BADGES = { badgeSize = { 6, 20, true }, badgeSpacing = { 0, 8, true } }
+local STYLE_BADGE_ORIENTATIONS = { horizontal = true, vertical = true }
 -- What an unset field draws as, on the plates, in Studio's preview and in the inspector. Read only.
 local STYLE_DEFAULTS = {
     boxColour = { r = 0, g = 0, b = 0, a = 0.65 },
     boxBorder = { r = 0.78, g = 0.62, b = 0.3, a = 1 },
     padding = 3,
     background = { r = 0.025, g = 0.025, b = 0.025, a = 0.92 },
+    pipFill = { r = 1, g = 0.8, b = 0.1, a = 1 },
+    pipEmpty = { r = 0.12, g = 0.12, b = 0.12, a = 0.8 },
+    pipWidth = 10, pipHeight = 4, pipSpacing = 2,
+    badgeSize = 10, badgeSpacing = 2, badgeOrientation = "horizontal", badgeInitial = true,
 }
 local function StyleColour(value, alpha)
     if type(value) ~= "table" then return nil end
@@ -936,9 +1017,19 @@ local function NormalizeStyles(styles)
                 background = StyleColour(style.background),
                 border = tonumber(style.border) and Bounded(STYLE_BORDER, style.border) or nil,
                 borderColour = StyleColour(style.borderColour),
+                pipFill = StyleColour(style.pipFill),
+                pipEmpty = StyleColour(style.pipEmpty),
             }
+            for field, range in pairs(STYLE_PIPS) do
+                entry[field] = tonumber(style[field]) and Bounded(range, style[field]) or nil
+            end
+            for field, range in pairs(STYLE_BADGES) do
+                entry[field] = tonumber(style[field]) and Bounded(range, style[field]) or nil
+            end
+            entry.badgeOrientation = STYLE_BADGE_ORIENTATIONS[style.badgeOrientation] and style.badgeOrientation or nil
             -- On, off, or nil for the plates' own shadow (false must survive, so not an and/or).
             if type(style.shadow) == "boolean" then entry.shadow = style.shadow end
+            if type(style.badgeInitial) == "boolean" then entry.badgeInitial = style.badgeInitial end
             if next(entry) then result[key] = entry end
         end
     end
@@ -972,9 +1063,9 @@ local function GradientRules(rules, styles)
     return rules
 end
 
--- Saved styles: at most 40, named (at most 24 characters), for text or bar parts. A preset holds
--- a style (NormalizeStyles) and optionally rules (NormalizeRules).
-local PRESET_KINDS, MAX_PRESETS, PRESET_NAME_LENGTH = { text = true, bar = true }, 40, 24
+-- Saved styles: at most 40, named (at most 24 characters), for text, bar or pip parts. A preset
+-- holds a style (NormalizeStyles) and optionally rules (NormalizeRules).
+local PRESET_KINDS, MAX_PRESETS, PRESET_NAME_LENGTH = { text = true, bar = true, pips = true, badges = true }, 40, 24
 local function PresetName(name) return CleanName(name, PRESET_NAME_LENGTH) end
 local function NormalizeStylePresets(presets)
     local result, count = {}, 0
@@ -999,7 +1090,7 @@ end
 
 local function IsProfileOption(key)
     return profileRanges[key] ~= nil or optionalProfileRanges[key] ~= nil or key == "healthTexture"
-        or key == "healthColourMode" or castOptions[key] ~= nil
+        or key == "healthColourMode" or key == "castColours" or castOptions[key] ~= nil
 end
 
 -- One profile option made valid for profile (fallback: its defaults). NormalizeProfile checks
@@ -1017,6 +1108,7 @@ local function ProfileOptionValue(profile, key, value, fallback)
     end
     if key == "healthTexture" then return Media.IsStatusBar(value) and value or fallback.healthTexture end
     if key == "healthColourMode" then return value == "custom" and "custom" or "automatic" end
+    if key == "castColours" then return NormalizeCastColours(value, fallback.castColours) end
     local choices = castOptions[key]
     if choices then
         if choices == "boolean" and type(value) == "boolean" then return value end
@@ -1040,6 +1132,7 @@ local function NormalizeProfile(profile, fallback, legacy)
     end
     for key in pairs(castOptions) do profile[key] = ProfileOptionValue(profile, key, profile[key], fallback) end
     profile.healthColour = NormalizeColour(profile.healthColour, fallback.healthColour)
+    profile.castColours = NormalizeCastColours(profile.castColours, fallback.castColours)
     profile.valueSlots = type(profile.valueSlots) == "table" and profile.valueSlots or {}
     local base = DEFAULT_VALUE_SLOT
     for index = 1, VALUE_SLOT_COUNT do
@@ -1092,6 +1185,9 @@ local function CopyEnemyProfile(source)
         powerWidth = source.powerWidth, castWidth = source.castWidth, castHeight = source.castHeight,
         healthTexture = source.healthTexture, healthColourMode = source.healthColourMode,
         castIcon = source.castIcon, castTime = source.castTime, castName = source.castName,
+        castInterruptColours = source.castInterruptColours, castOnTop = source.castOnTop,
+        castColours = NormalizeCastColours(source.castColours),
+        questProgress = source.questProgress, questProgressFormat = source.questProgressFormat,
         healthColour = NormalizeColour(source.healthColour, profileDefaults.enemy.healthColour),
         layout = NormalizeLayout(source.layout, profileDefaults.enemy.layout),
         auraLayouts = NormalizeAuraLayouts(source.auraLayouts),
@@ -1113,6 +1209,250 @@ local function NormalizeProfiles(profiles, legacy)
         profiles.enemyDungeon = nil
     end
     return profiles
+end
+
+-- Settings' Show on plates and Aura defaults boxes are shortcuts over the tree's eyes, not settings
+-- of their own: each names its parts (the first is the one Studio's tree shows) and the plate
+-- types that use them. The box reads those parts' eyes in the layouts those plate types use now
+-- (EachLiveLayout, PartShownState) and sets them there (Settings' SetPartShownEverywhere); the
+-- other layouts keep their own eyes. The aura rows are full-plate parts (names-only plates show
+-- none by default, as Blizzard's do), so their boxes leave the names-only layouts alone.
+local PLATE_LAYOUT_FIELDS = {
+    { "enemy", { "layout" } }, { "enemyDungeon", { "layout" } },
+    { "friendlyPlayer", { "layout", "namesLayout", "dungeonNamesLayout" } },
+    { "friendlyNPC", { "layout", "namesLayout", "dungeonNamesLayout" } },
+}
+local ENEMY_PLATES = { enemy = true, enemyDungeon = true }
+local THREAT_SOURCES = { threatPercent = true, leadPercent = true, rawThreat = true, differential = true }
+-- sources: custom parts showing one of these values were kept off by the switch too.
+local PART_SWITCHES = {
+    { key = "quest", parts = { "quest", "questLoot" }, plates = { enemy = true, enemyDungeon = true, friendlyNPC = true } },
+    { key = "showTagged", parts = { "tagged" }, plates = ENEMY_PLATES },
+    { key = "threat", parts = { "threat" }, plates = ENEMY_PLATES, sources = THREAT_SOURCES },
+    { key = "showClassification", parts = { "classification" }, plates = ENEMY_PLATES },
+    { key = "showBuffs", parts = { "buffs" }, fullOnly = true,
+        plates = { enemy = true, enemyDungeon = true, friendlyPlayer = true, friendlyNPC = true } },
+    { key = "showDebuffs", parts = { "debuffs" }, fullOnly = true,
+        plates = { enemy = true, enemyDungeon = true, friendlyPlayer = true, friendlyNPC = true } },
+}
+local partSwitches = {}
+for _, switch in ipairs(PART_SWITCHES) do partSwitches[switch.key] = switch end
+
+-- visit(layout, profile, field, profileKey) for each stored layout of plates (nil: every plate
+-- type). The dungeon override has a layout only once it exists; until then the enemy's is used.
+local function EachPlateLayout(settings, plates, visit)
+    local profiles = type(settings) == "table" and type(settings.plateProfiles) == "table" and settings.plateProfiles or {}
+    for _, entry in ipairs(PLATE_LAYOUT_FIELDS) do
+        local profile = profiles[entry[1]]
+        if type(profile) == "table" and (not plates or plates[entry[1]]) then
+            for _, field in ipairs(entry[2]) do
+                if type(profile[field]) == "table" then visit(profile[field], profile, field, entry[1]) end
+            end
+        end
+    end
+end
+
+-- The layouts a switch's plate types draw with now, as Lifecycle's ApplyLayout picks them: the
+-- enemy's and the dungeon override (once it exists); a friendly type's full or names-only layout
+-- by the friendly setting (none while friendly plates are off), and its dungeon layout while the
+-- dungeon overlay is on. visit(layout, profile, field).
+local function EachLiveLayout(settings, switch, visit)
+    local profiles = type(settings) == "table" and type(settings.plateProfiles) == "table" and settings.plateProfiles or {}
+    for _, entry in ipairs(PLATE_LAYOUT_FIELDS) do
+        local profileKey, profile = entry[1], profiles[entry[1]]
+        if type(profile) == "table" and switch.plates[profileKey] then
+            local fields
+            if ENEMY_PLATES[profileKey] then
+                fields = { "layout" }
+            else
+                fields = {}
+                if settings.friendly == "full" then fields[1] = "layout"
+                elseif settings.friendly == "names" and not switch.fullOnly then fields[1] = "namesLayout" end
+                if settings.experimentalDungeonFriendlyText == true and not switch.fullOnly then
+                    fields[#fields + 1] = "dungeonNamesLayout"
+                end
+            end
+            for _, field in ipairs(fields) do
+                if type(profile[field]) == "table" then visit(profile[field], profile, field) end
+            end
+        end
+    end
+end
+
+-- "all" when a switch's part is shown in every live layout that has it, "none" when in none,
+-- "some" when they differ; nil for an unknown switch or when none has it (deleted, or no plate
+-- type uses it now).
+local function PartShownState(settings, key)
+    local switch = partSwitches[key]
+    if not switch then return nil end
+    local shown, hidden = 0, 0
+    EachLiveLayout(settings, switch, function(layout)
+        local position = layout[switch.parts[1]]
+        if type(position) == "table" and not position.removed then
+            if position.visible == false then hidden = hidden + 1 else shown = shown + 1 end
+        end
+    end)
+    if shown + hidden == 0 then return nil end
+    if hidden == 0 then return "all" end
+    return shown == 0 and "none" or "some"
+end
+
+-- Whether a rule reads threat: its condition names a token of TemplateReaders' threat kind
+-- (threat.* and tanking). role.tank alone does not; it reads the player's role, not the threat
+-- service. A condition that does not compile is read as text.
+local function ConditionReadsThreat(node, depth)
+    if type(node) ~= "table" or depth > 64 then return false end
+    local token = node.token
+    if type(token) == "string" and (token == "tanking" or token:sub(1, 7) == "threat.") then return true end
+    local pair = node.both or node.either
+    if type(pair) == "table" and (ConditionReadsThreat(pair[1], depth + 1) or ConditionReadsThreat(pair[2], depth + 1)) then
+        return true
+    end
+    return ConditionReadsThreat(node.negate, depth + 1) or ConditionReadsThreat(node.truth, depth + 1)
+        or ConditionReadsThreat(node.left, depth + 1) or ConditionReadsThreat(node.right, depth + 1)
+end
+local function RuleReadsThreat(rule)
+    local when = type(rule) == "table" and rule.when
+    if type(when) ~= "string" or not when:find("%S") then return false end
+    local tree = Template.CompileCondition(when)
+    if tree then return ConditionReadsThreat(tree, 0) end
+    return when:find("threat.", 1, true) ~= nil or when:find("tanking", 1, true) ~= nil
+end
+
+-- With 1.0.3's threat switch off, rules reading threat had no threat to read and never held.
+-- They are turned off (enabled = false), not removed, in every plate type. Returns how many.
+local function DisableThreatRules(settings)
+    local count = 0
+    local profiles = type(settings.plateProfiles) == "table" and settings.plateProfiles or {}
+    for _, profile in pairs(profiles) do
+        for _, list in pairs(type(profile) == "table" and type(profile.rules) == "table" and profile.rules or {}) do
+            for _, rule in ipairs(type(list) == "table" and list or {}) do
+                if rule.enabled ~= false and RuleReadsThreat(rule) then
+                    rule.enabled = false
+                    count = count + 1
+                end
+            end
+        end
+    end
+    return count
+end
+
+-- Schema 25 and older kept each box as a setting of its own, which kept its parts off whatever
+-- their eyes said. One that was off (source[key] == false) turns its parts' eyes off in every
+-- layout of settings (and those of custom parts showing its values); the keys then go. Returns
+-- how many threat rules it turned off (DisableThreatRules).
+local function ApplyLegacySwitches(settings, source)
+    local disabled = 0
+    if type(source) == "table" and source.threat == false then disabled = DisableThreatRules(settings) end
+    for _, switch in ipairs(PART_SWITCHES) do
+        if type(source) == "table" and source[switch.key] == false then
+            EachPlateLayout(settings, nil, function(layout, profile)
+                for _, part in ipairs(switch.parts) do
+                    if type(layout[part]) == "table" then layout[part].visible = false end
+                end
+                for key, slot in pairs(switch.sources and type(profile.valueSlots) == "table" and profile.valueSlots or {}) do
+                    if type(slot) == "table" and switch.sources[slot.source] and type(layout[key]) == "table" then
+                        layout[key].visible = false
+                    end
+                end
+            end)
+        end
+        settings[switch.key] = nil
+    end
+    return disabled
+end
+
+-- Whether a shown custom part, or any rule, of these plate types reads a word (a template token
+-- or condition naming it; plain text naming it counts too, so this errs towards true). sources:
+-- value sources that read it.
+local function PlatesRead(settings, plates, words, sources)
+    local function Names(text)
+        if type(text) ~= "string" then return false end
+        for _, word in ipairs(words) do if text:find(word, 1, true) then return true end end
+        return false
+    end
+    local found = false
+    EachPlateLayout(settings, plates, function(layout, profile)
+        if found then return end
+        for key, slot in pairs(type(profile.valueSlots) == "table" and profile.valueSlots or {}) do
+            local position = layout[key]
+            if type(slot) == "table" and type(position) == "table" and not TurnedOff(position)
+                and ((sources and sources[slot.source]) or (slot.source == "template" and Names(slot.template))) then
+                found = true
+                return
+            end
+        end
+        for _, list in pairs(type(profile.rules) == "table" and profile.rules or {}) do
+            for _, rule in ipairs(type(list) == "table" and list or {}) do
+                if type(rule) == "table" and rule.enabled ~= false and Names(rule.when) then
+                    found = true
+                    return
+                end
+            end
+        end
+    end)
+    return found
+end
+
+-- What the plates need at all, from what their layouts show: the threat service runs while an
+-- enemy layout shows threat or reads it (a custom part or rule; the tank's role too), or shows
+-- the health bar the tank's warning border is drawn on while that warning is on; quest lookups
+-- run while a layout shows the quest marker or reads it.
+local HEALTH_BAR = { plates = ENEMY_PLATES }
+local function ThreatNeeded(settings)
+    local state = PartShownState(settings, "threat")
+    if state == "all" or state == "some" then return true end
+    if type(settings) == "table" and settings.tankWarning ~= false then
+        local bar = false
+        EachLiveLayout(settings, HEALTH_BAR, function(layout)
+            bar = bar or (type(layout.health) == "table" and not TurnedOff(layout.health))
+        end)
+        if bar then return true end
+    end
+    return PlatesRead(settings, ENEMY_PLATES, { "threat", "tank" }, THREAT_SOURCES)
+end
+local function QuestNeeded(settings)
+    local state = PartShownState(settings, "quest")
+    if state == "all" or state == "some" then return true end
+    return PlatesRead(settings, nil, { "quest" })
+end
+-- Quest progress is read while a plate type shows it by its quest mark or reads its tokens.
+local function QuestProgressNeeded(settings)
+    local shown = false
+    EachPlateLayout(settings, nil, function(layout, profile)
+        shown = shown or (profile.questProgress ~= nil and profile.questProgress ~= "off"
+            and type(layout.quest) == "table" and not TurnedOff(layout.quest))
+    end)
+    return shown or PlatesRead(settings, nil, { "quest.progress", "quest.percent" })
+end
+-- The range checks run only while an enemy plate's rule or text reads inrange.
+local function RangeNeeded(settings)
+    return PlatesRead(settings, ENEMY_PLATES, { "inrange", "inRange" })
+end
+-- Combo points are read while a layout shows the part or a custom part or rule reads {combo}.
+local function ComboNeeded(settings)
+    local shown = false
+    EachPlateLayout(settings, nil, function(layout)
+        shown = shown or (type(layout.combo) == "table" and not TurnedOff(layout.combo))
+    end)
+    return shown or PlatesRead(settings, nil, { "combo" })
+end
+-- The "Targeted by" badges are read while an enemy layout shows them.
+local function TargetedByNeeded(settings)
+    local shown = false
+    EachPlateLayout(settings, ENEMY_PLATES, function(layout)
+        shown = shown or (type(layout.targetedBy) == "table" and not TurnedOff(layout.targetedBy))
+    end)
+    return shown
+end
+
+-- What a migration did that the player should hear about, by settings table, until the loader
+-- takes it (TakeMigrationNote): Profiles.Load names the profile in chat once.
+local migrationNotes = setmetatable({}, { __mode = "k" })
+local function TakeMigrationNote(settings)
+    local note = migrationNotes[settings]
+    migrationNotes[settings] = nil
+    return note
 end
 
 local settingsMigrations = {
@@ -1280,6 +1620,16 @@ local settingsMigrations = {
         end
         settings.schemaVersion = 25
     end,
+    [25] = function(settings)
+        -- The Show on plates and aura switches became shortcuts over the eyes: a switch that was
+        -- off leaves its parts' eyes off in every layout.
+        -- The tank's warning border ran under the threat switch: it keeps that switch's state.
+        settings.plateProfiles = NormalizeProfiles(settings.plateProfiles, settings)
+        if settings.tankWarning == nil then settings.tankWarning = settings.threat ~= false end
+        local disabled = ApplyLegacySwitches(settings, settings)
+        if disabled > 0 then migrationNotes[settings] = { threatRulesDisabled = disabled } end
+        settings.schemaVersion = 26
+    end,
 }
 
 local function MigrateSettings(settings)
@@ -1302,7 +1652,7 @@ local function SettingValue(key, value)
     end
     local allowed = enumSettings[key]
     if allowed then return allowed[value] and value or defaults[key] end
-    if key == "font" then return Media.IsFont(value) and value or defaults.font end
+    if key == "font" or key == "blizzardNameFontFace" then return Media.IsFont(value) and value or defaults[key] end
     local range = settingRanges[key]
     if range then return Bounded(range, value, defaults[key]) end
     return nil
@@ -1393,6 +1743,8 @@ local function NormalizeSettings(settings)
     -- migrations run only on saved data from an older one.
     if settings.schemaVersion == nil then settings.schemaVersion = defaults.schemaVersion end
     local schemaVersion = MigrateSettings(settings)
+    -- The old switches are never read; one left over (a table stamped by another build) goes.
+    for _, switch in ipairs(PART_SWITCHES) do settings[switch.key] = nil end
     CopyDefaults(settings, defaults)
     for key in pairs(defaults) do
         local value = SettingValue(key, settings[key])
@@ -1431,6 +1783,8 @@ local stateDefaults = {
     sectionFolds = {},
     -- The other-nameplate-addon notice: dismissed[set of addon folder names, "A+B"] = true.
     conflictNotice = { dismissed = {} },
+    -- The most nameplates this client has had plates at once (Lifecycle's spares follow it).
+    platePeak = 0,
 }
 local studioScaleRange = { 0.6, 1.3 }
 
@@ -1442,9 +1796,27 @@ local function NormalizeState(state)
     end
     if type(state.threatWindows) ~= "table" then state.threatWindows = {} end
     if state.cvarRestore ~= nil and type(state.cvarRestore) ~= "table" then state.cvarRestore = nil end
+    -- CVars whose original was lost (NamePolicy): restore key -> { CVar name -> true }.
+    local lost, lostCount = {}, 0
+    for key, names in pairs(type(state.cvarOriginalsMissing) == "table" and state.cvarOriginalsMissing or {}) do
+        if type(key) == "string" and #key <= 64 and type(names) == "table" then
+            local kept = {}
+            for name, value in pairs(names) do
+                if type(name) == "string" and #name <= 64 and value == true and lostCount < 64 then
+                    kept[name], lostCount = true, lostCount + 1
+                end
+            end
+            if next(kept) then lost[key] = kept end
+        end
+    end
+    state.cvarOriginalsMissing = next(lost) and lost or nil
     -- Studio no longer has themes: an older saved choice is dropped.
     state.editorTheme = nil
     state.studioScale = Bounded(studioScaleRange, state.studioScale, stateDefaults.studioScale)
+    local peak = state.platePeak
+    if type(peak) ~= "number" or peak < 0 or peak > 1000 or peak ~= math.floor(peak) then
+        state.platePeak = stateDefaults.platePeak
+    end
     state.stylePresets = NormalizeStylePresets(state.stylePresets)
     local folds, count = {}, 0
     if type(state.sectionFolds) == "table" then
@@ -1476,8 +1848,30 @@ local characterDefaults = {
 }
 local validTankRoles = { adaptive = true, always = true, never = true }
 
+-- autoProfile (Core/AutoProfile.lua): a profile name per content type and specialization index; a
+-- missing key is "Don't switch". precedence says which wins when both apply. Kept in place, so the
+-- table's identity survives normalising.
+local autoProfileRuleKeys = { world = true, dungeon = true, raid = true, pvp = true,
+    spec1 = true, spec2 = true, spec3 = true, spec4 = true }
+local autoProfilePrecedence = { content = true, spec = true }
+
+local function NormalizeAutoProfile(rules)
+    rules = type(rules) == "table" and rules or {}
+    for key, value in pairs(rules) do
+        if key == "precedence" then
+            if not autoProfilePrecedence[value] then rules[key] = nil end
+        elseif not autoProfileRuleKeys[key] or type(value) ~= "string" or value == "" or #value > 32
+            or value:find("[%c|]") then
+            rules[key] = nil
+        end
+    end
+    if rules.precedence == nil then rules.precedence = "content" end
+    return rules
+end
+
 local function NormalizeCharacterSettings(settings)
     settings = type(settings) == "table" and settings or {}
+    settings.autoProfile = NormalizeAutoProfile(settings.autoProfile)
     -- alwaysTank (saved by a tick box before tankRole) = true reads as always.
     if settings.tankRole == nil and settings.alwaysTank == true then settings.tankRole = "always" end
     settings.alwaysTank = nil
@@ -1493,6 +1887,9 @@ PS.ProfileSchema = {
     profileRanges = profileRanges,
     optionalProfileRanges = optionalProfileRanges,
     castOptions = castOptions,
+    CAST_COLOUR = CAST_COLOUR,
+    CAST_COLOUR_KEYS = CAST_COLOUR_KEYS,
+    NormalizeCastColours = NormalizeCastColours,
     layoutRanges = layoutRanges,
     valueFontRange = valueFontRange,
     auraLayoutRanges = auraLayoutRanges,
@@ -1501,12 +1898,15 @@ PS.ProfileSchema = {
     Bounded = Bounded,
     InRange = InRange,
     ComponentScale = ComponentScale,
+    ScaledFontSize = ScaledFontSize,
+    DRAWN_FONT_RANGE = DRAWN_FONT_RANGE,
     characterDefaults = characterDefaults,
     validTankRoles = validTankRoles,
     stateDefaults = stateDefaults,
     studioScaleRange = studioScaleRange,
     NormalizeState = NormalizeState,
     NormalizeCharacterSettings = NormalizeCharacterSettings,
+    NormalizeAutoProfile = NormalizeAutoProfile,
     defaultLayout = defaultLayout,
     VALUE_SLOT_COUNT = VALUE_SLOT_COUNT,
     valueKinds = valueKinds,
@@ -1525,6 +1925,7 @@ PS.ProfileSchema = {
     IsGroupKey = IsGroupKey,
     AddDefaultGroups = AddDefaultGroups,
     LayoutTransforms = LayoutTransforms,
+    SortByTreeOrder = SortByTreeOrder,
     PinTarget = PinTarget,
     TurnedOff = TurnedOff,
     STACK_DIRECTIONS = STACK_DIRECTIONS,
@@ -1555,6 +1956,9 @@ PS.ProfileSchema = {
     STYLE_OUTLINES = STYLE_OUTLINES,
     STYLE_PADDING = STYLE_PADDING,
     STYLE_BORDER = STYLE_BORDER,
+    STYLE_PIPS = STYLE_PIPS,
+    STYLE_BADGES = STYLE_BADGES,
+    STYLE_BADGE_ORIENTATIONS = STYLE_BADGE_ORIENTATIONS,
     STYLE_DEFAULTS = STYLE_DEFAULTS,
     RULE_SETS = RULE_SETS,
     MAX_RULES_PER_PART = MAX_RULES_PER_PART,
@@ -1583,4 +1987,19 @@ PS.ProfileSchema = {
     stackingPresetNames = stackingPresetNames,
     StackingValue = StackingValue,
     NormalizeStacking = NormalizeStacking,
+    PART_SWITCHES = PART_SWITCHES,
+    partSwitches = partSwitches,
+    EachPlateLayout = EachPlateLayout,
+    EachLiveLayout = EachLiveLayout,
+    PartShownState = PartShownState,
+    ApplyLegacySwitches = ApplyLegacySwitches,
+    RuleReadsThreat = RuleReadsThreat,
+    TakeMigrationNote = TakeMigrationNote,
+    ThreatNeeded = ThreatNeeded,
+    QuestNeeded = QuestNeeded,
+    QuestProgressNeeded = QuestProgressNeeded,
+    RangeNeeded = RangeNeeded,
+    ComboNeeded = ComboNeeded,
+    TargetedByNeeded = TargetedByNeeded,
+    ENEMY_PLATES = ENEMY_PLATES,
 }

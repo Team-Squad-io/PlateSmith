@@ -1,5 +1,5 @@
 -- Part styles and layering on owned plates: fonts, text boxes, bar borders, rule and blend
--- colours, and each part's frame level from the layout's drawing order.
+-- colours, the cast bar's own colour, and each part's frame level from the layout's drawing order.
 local _, PS = ...
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
 
@@ -259,10 +259,16 @@ PS._CreatePlateStyles = function(context)
         local readable = ok and IsReadable(cr) and IsReadable(cg) and IsReadable(cb) and type(cr) == "number"
             and type(cg) == "number" and type(cb) == "number"
         local applied = region.plateSmithRuleColour
+        local own = region.plateSmithOwnColour
         if r then
             if readable and not Near(cr, cg, cb, applied) then
                 local base = region.plateSmithBaseColour or region.plateSmithBaseSpare or {}
                 base[1], base[2], base[3] = cr, cg, cb
+                region.plateSmithBaseColour = base
+            elseif own and not applied then
+                -- A protected own colour cannot be read back: the one OwnColour wrote is kept.
+                local base = region.plateSmithBaseColour or region.plateSmithBaseSpare or {}
+                base[1], base[2], base[3] = own[1], own[2], own[3]
                 region.plateSmithBaseColour = base
             end
             if not (readable and math.abs(cr - r) < 0.003 and math.abs(cg - g) < 0.003 and math.abs(cb - b) < 0.003) then
@@ -275,10 +281,47 @@ PS._CreatePlateStyles = function(context)
             applied[1], applied[2], applied[3] = r, g, b
         elseif applied then
             local base = region.plateSmithBaseColour
-            if base and readable and Near(cr, cg, cb, applied) then set(region, base[1], base[2], base[3]) end
+            -- With an own colour (OwnColour), only the rule has written the region since, so it
+            -- goes back even when the colour cannot be read.
+            if base and (own or (readable and Near(cr, cg, cb, applied))) then
+                pcall(set, region, base[1], base[2], base[3])
+            end
             region.plateSmithRuleColour, region.plateSmithRuleSpare = nil, applied
             region.plateSmithBaseColour, region.plateSmithBaseSpare = nil, base or region.plateSmithBaseSpare
         end
+    end
+
+    -- A part's own colour that may be protected (the cast bar's Colour by interrupt): written at
+    -- once, or, while a rule's colour holds, kept as the colour to go back to. RuleColour never
+    -- reads it back, so a protected colour is only ever passed to the setter.
+    function Styles.OwnColour(region, r, g, b)
+        local own = region.plateSmithOwnColour or {}
+        own[1], own[2], own[3] = r, g, b
+        region.plateSmithOwnColour = own
+        if region.plateSmithRuleColour then
+            local base = region.plateSmithBaseColour or region.plateSmithBaseSpare or {}
+            base[1], base[2], base[3] = r, g, b
+            region.plateSmithBaseColour = base
+        else
+            pcall(region.SetStatusBarColor, region, r, g, b)
+        end
+    end
+
+    -- A casting bar's colour: Colour by interrupt (Interrupt.CastColour), or the bar's own colour
+    -- again once that no longer applies.
+    function Styles.CastColour(data)
+        local profile, interrupt = data.profile or EMPTY, PS.Interrupt
+        local ok, r, g, b
+        if data.casting and profile.castInterruptColours == true and interrupt then
+            ok, r, g, b = interrupt.CastColour(profile.castColours, data.castNotInterruptible)
+        end
+        if not ok then
+            if not data.castColoured then return end
+            local own = S.CAST_COLOUR
+            r, g, b = own.r, own.g, own.b
+        end
+        data.castColoured = ok or nil
+        Styles.OwnColour(data.cast, r, g, b)
     end
 
     return Styles

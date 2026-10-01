@@ -88,7 +88,7 @@ function Options:IsEditorComponentRelevant(key, settings, includeRemoved)
     end
     if friendlyMode == "off" or not friendlyMode then return false end
     if key == "health" or key == "power" or key == "cast" then return friendlyMode == "full" end
-    if key == "threat" or key == "tagged" then return false end
+    if key == "threat" or key == "tagged" or key == "combo" or key == "targetedBy" then return false end
     if self.editorProfile == "friendlyPlayer" then
         return key ~= "quest" and key ~= "questLoot" and key ~= "classification"
     end
@@ -219,9 +219,10 @@ function Options:ApplyEditorPreviewPartRules(profile)
         if component and component:IsShown() then
             local colour, alpha, hide
             for _, rule in ipairs(list) do
+                -- A rule turned off never applies, not even as if its condition held.
                 local always = rule.when == ""
                 local tree = not always and PS.Template.CompileCondition(rule.when)
-                if always or (tree and (forced or PS.Template.Test(tree, Read))) then
+                if rule.enabled ~= false and (always or (tree and (forced or PS.Template.Test(tree, Read)))) then
                     if rule.set == "colour" then colour = rule.colour
                     elseif rule.set == "blend" and rule.stops then colour = BlendColour(rule.stops, percent)
                     elseif rule.set == "alpha" then alpha = rule.alpha
@@ -344,12 +345,8 @@ function Options:RefreshEditorAppearance(settings, light)
         end
         local position = self.editorLayout and self.editorLayout[key]
         local relevant = self:IsEditorComponentRelevant(key, settings)
-        local globallyEnabled = relevant and ((key ~= "quest" and key ~= "questLoot") or settings.quest)
-            and (key ~= "threat" or settings.threat)
-            and (key ~= "buffs" or settings.showBuffs)
-            and (key ~= "debuffs" or settings.showDebuffs)
+        local globallyEnabled = relevant
             and (key ~= "pvpIcon" or settings.friendlyPvpStyle == "icon" or settings.friendlyPvpStyle == "both")
-            and (key ~= "classification" or settings.showClassification)
         component.targetPreviewVisible = globallyEnabled and position and position.visible ~= false
         component.previewFitVisible = component.targetPreviewVisible
         component:SetShown(relevant)
@@ -479,7 +476,12 @@ function Options:SetEditorProfile(profileKey)
     elseif self.LayoutEditorSettingsPanels then
         self:LayoutEditorSettingsPanels() -- the context decides Settings' categories
     end
-    self:SelectEditorComponent(self.selectedComponent or "name")
+    -- The Plate row (and its Quick layout) stays selected across plate types.
+    if self.editorInspectingPlate and not self.selectedComponent then
+        self:SelectEditorPlate()
+    else
+        self:SelectEditorComponent(self.selectedComponent or "name")
+    end
     return true
 end
 

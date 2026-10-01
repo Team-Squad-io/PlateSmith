@@ -112,14 +112,16 @@ end
 
 function Source:GetActiveAttackerCount(unit)
     local entry = Sample.enemyByUnit and Sample.enemyByUnit[unit]
-    return entry and entry.activeAttackerCount or 0
+    local count = entry and entry.activeAttackerCount or 0
+    return count, count > 0 and "confirmed" or "none"
 end
 
 function Source:GetActiveAttacker(unit, index) return Named(unit, "activeAttackerNames", index) end
 
 function Source:GetTargeterCount(unit)
     local entry = Sample.enemyByUnit and Sample.enemyByUnit[unit]
-    return entry and #entry.targeterNames or 0
+    local count = entry and #entry.targeterNames or 0
+    return count, count > 0 and "confirmed" or "none"
 end
 
 function Source:GetTargeter(unit, index) return Named(unit, "targeterNames", index) end

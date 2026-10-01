@@ -49,6 +49,106 @@ local function ClearRestore(key)
     if next(state.cvarRestore) == nil then state.cvarRestore = nil end
 end
 
+-- The client's default for a CVar as text (GetCVarInfo's default, else GetCVarDefault), or nil
+-- when the client reports none.
+function NamePolicy.Default(name)
+    local info = C_CVar and C_CVar.GetCVarInfo
+    if type(info) == "function" then
+        local ok, _, default = pcall(info, name)
+        if ok and default ~= nil then return tostring(default) end
+    end
+    local getDefault = (C_CVar and C_CVar.GetCVarDefault) or GetCVarDefault
+    if type(getDefault) == "function" then
+        local ok, default = pcall(getDefault, name)
+        if ok and default ~= nil then return tostring(default) end
+    end
+    return nil
+end
+
+-- A lost original: the record of what a CVar was before PlateSmith changed it is gone (the saved
+-- file was deleted or reset while the change stood). Two ways to know: PlateSmith changed it this
+-- session (changed), or at login the CVar held PlateSmith's value with no record (marked in
+-- state.cvarOriginalsMissing[key][name] until it is restored). Such a CVar goes back to the client's
+-- default instead of staying as PlateSmith left it.
+local changed, reported = {}, {}
+
+local function Missing(create)
+    local state = State()
+    if not state then return nil end
+    if type(state.cvarOriginalsMissing) ~= "table" then
+        if not create then return nil end
+        state.cvarOriginalsMissing = {}
+    end
+    return state.cvarOriginalsMissing
+end
+
+local function Mark(key, name)
+    local missing = Missing(true)
+    if not missing then return end
+    missing[key] = type(missing[key]) == "table" and missing[key] or {}
+    missing[key][name] = true
+end
+
+local function Changed(key, name)
+    changed[key] = changed[key] or {}
+    changed[key][name] = true
+end
+
+local function Lost(key, name)
+    local missing = Missing(false)
+    return (changed[key] and changed[key][name]) or (missing and type(missing[key]) == "table" and missing[key][name])
+        or false
+end
+
+-- Forgets that name (nil: every CVar) under key was changed or lost: it has been put back.
+local function Forget(key, name)
+    if changed[key] then
+        if name == nil then changed[key] = nil else changed[key][name] = nil end
+    end
+    local missing = Missing(false)
+    if not missing or type(missing[key]) ~= "table" then return end
+    if name == nil then missing[key] = {} else missing[key][name] = nil end
+    if next(missing[key]) == nil then missing[key] = nil end
+    if next(missing) == nil then State().cvarOriginalsMissing = nil end
+end
+
+-- The value to put name back to when key's record has none: the client's default for a lost
+-- original, else nil (PlateSmith never changed it). No default: it is left and reported once.
+local function Fallback(key, name)
+    if not Lost(key, name) then return nil end
+    local default = NamePolicy.Default(name)
+    if default == nil and not reported[name] then
+        reported[name] = true
+        if PS.Chat then
+            PS.Chat.Print(string.format(PS.L["%s was left as it is: PlateSmith has no record of its earlier value and "
+                .. "the game reports no default."], name))
+        end
+    end
+    return default
+end
+
+-- What to record as name's original before PlateSmith changes it: its value now, or the client's
+-- default when the value now may be PlateSmith's own (a lost original).
+local function OriginalFor(key, name)
+    if Lost(key, name) then return NamePolicy.Default(name) end
+    return NamePolicy.Read(name)
+end
+
+-- The original of name under key was lost (found at login): it is marked, and the client's default
+-- stands in for it. Returns that default, or nil when the client reports none.
+local function MarkLost(key, name)
+    Mark(key, name)
+    return NamePolicy.Default(name)
+end
+
+-- Whether any original under key (nil: any key) is known to be lost.
+function NamePolicy.OriginalsMissing(key)
+    local missing = Missing(false)
+    if not missing then return false end
+    if key == nil then return next(missing) ~= nil end
+    return type(missing[key]) == "table" and next(missing[key]) ~= nil
+end
+
 -- In a dungeon or raid, where Blizzard owns friendly plates and enemies use the dungeon profile.
 -- Every plate asks as it arrives, so the answer is read once per zone (NamePolicy.ZoneChanged on
 -- PLAYER_ENTERING_WORLD and ZONE_CHANGED_NEW_AREA).
@@ -98,13 +198,22 @@ end
 -- A set of CVars another owner manages (Stacking), under one cvarRestore key: each CVar's
 -- original is captured once, before its first write, and put back by RestoreGroup. A CVar the
 -- client does not have is never written.
-function NamePolicy.WriteCaptured(group, name, value, immediate)
-    local current = NamePolicy.Read(name)
-    if current == nil then return false end
+local function GroupRecord(group)
     local restores = RestoreTable()
     local record = type(restores[group]) == "table" and restores[group] or {}
     restores[group] = record
-    if record[name] == nil then record[name] = current end
+    return record
+end
+
+function NamePolicy.WriteCaptured(group, name, value, immediate)
+    if NamePolicy.Read(name) == nil then return false end
+    local record = GroupRecord(group)
+    if record[name] == nil then
+        -- Changed this session and the record is gone: the value now is PlateSmith's own.
+        if changed[group] and changed[group][name] then Mark(group, name) end
+        record[name] = OriginalFor(group, name)
+    end
+    Changed(group, name)
     return NamePolicy.Write(name, value, immediate)
 end
 
@@ -115,25 +224,69 @@ function NamePolicy.CapturedGroup(group)
     return record
 end
 
--- Puts back one captured CVar of group (name), or all of them (name nil), and forgets them.
-function NamePolicy.RestoreGroup(group, name, immediate)
+-- Every CVar of group PlateSmith has to put back: captured, changed this session or lost (name -> true).
+function NamePolicy.GroupNames(group)
+    local names = {}
     local record = Captured(group)
-    if type(record) ~= "table" then return end
-    for key, value in pairs(record) do
-        if name == nil or key == name then
-            NamePolicy.Write(key, value, immediate)
-            record[key] = nil
-        end
+    if type(record) == "table" then for name in pairs(record) do names[name] = true end end
+    for name in pairs(changed[group] or {}) do names[name] = true end
+    local missing = Missing(false)
+    if missing and type(missing[group]) == "table" then
+        for name in pairs(missing[group]) do names[name] = true end
     end
-    if next(record) == nil then ClearRestore(group) end
+    return names
 end
 
+-- Records value as name's original under group, replacing any capture (a reset to the client's
+-- defaults), and forgets that it was lost.
+function NamePolicy.SetOriginal(group, name, value)
+    GroupRecord(group)[name] = value
+    Forget(group, name)
+end
+
+-- At login: name held PlateSmith's value under group with no record of its original, so the client's
+-- default stands in for it. False when the client reports no default (restoring it then reports it).
+function NamePolicy.MarkLost(group, name)
+    local default = MarkLost(group, name)
+    if default == nil then return false end
+    GroupRecord(group)[name] = default
+    return true
+end
+
+-- Puts back one CVar of group (name), or all of them (name nil), and forgets them: its captured
+-- original, else the client's default when the original was lost.
+function NamePolicy.RestoreGroup(group, name, immediate)
+    local record = Captured(group)
+    record = type(record) == "table" and record or nil
+    for key in pairs(NamePolicy.GroupNames(group)) do
+        if name == nil or key == name then
+            local value = record and record[key]
+            if value == nil then value = Fallback(group, key) end
+            if value ~= nil then NamePolicy.Write(key, value, immediate) end
+            if record then record[key] = nil end
+            Forget(group, key)
+        end
+    end
+    if record and next(record) == nil then ClearRestore(group) end
+end
+
+local RESTRICTED_NAMES, CLASS_COLOUR, FRIENDLY_NAMES = "restrictedFriendlyNames", "restrictedFriendlyClassColour",
+    "friendlyNames"
+
 local function RestoreRestrictedNames(clear)
-    local restore = Captured("restrictedFriendlyNames")
+    local restore = Captured(RESTRICTED_NAMES)
     if type(restore) == "table" and restore.name and restore.value ~= nil then
         NamePolicy.Write(restore.name, restore.value)
+    else
+        for _, name in ipairs(restrictedFriendlyNameCVars) do
+            local value = Fallback(RESTRICTED_NAMES, name)
+            if value ~= nil then NamePolicy.Write(name, value) end
+        end
     end
-    if clear then ClearRestore("restrictedFriendlyNames") end
+    if clear then
+        ClearRestore(RESTRICTED_NAMES)
+        Forget(RESTRICTED_NAMES)
+    end
 end
 
 local function ApplyRestrictedNames(settings, restricted)
@@ -146,46 +299,78 @@ local function ApplyRestrictedNames(settings, restricted)
     if type(restore) ~= "table" then
         -- Clients expose one of two names for the same setting.
         for _, name in ipairs(restrictedFriendlyNameCVars) do
-            local value = NamePolicy.Read(name)
-            if value ~= nil then
-                restore = { name = name, value = value }
+            if NamePolicy.Read(name) ~= nil then
+                restore = { name = name, value = OriginalFor(RESTRICTED_NAMES, name) }
                 restores.restrictedFriendlyNames = restore
                 break
             end
         end
     end
-    if restore and restore.name then NamePolicy.Write(restore.name, "1") end
+    if restore and restore.name then
+        Changed(RESTRICTED_NAMES, restore.name)
+        NamePolicy.Write(restore.name, "1")
+    end
 end
 
 local function ApplyClassColour(settings, restricted)
-    local restore = Captured("restrictedFriendlyClassColour")
+    local restore = Captured(CLASS_COLOUR)
     if not restricted or not settings.restrictedFriendlyClassColour then
+        if restore == nil then restore = Fallback(CLASS_COLOUR, CLASS_COLOUR_CVAR) end
         if restore ~= nil then NamePolicy.Write(CLASS_COLOUR_CVAR, restore) end
-        ClearRestore("restrictedFriendlyClassColour")
+        ClearRestore(CLASS_COLOUR)
+        Forget(CLASS_COLOUR)
         return
     end
-    local current = NamePolicy.Read(CLASS_COLOUR_CVAR)
-    if current == nil then return end
+    if NamePolicy.Read(CLASS_COLOUR_CVAR) == nil then return end
     local restores = RestoreTable()
-    if restores.restrictedFriendlyClassColour == nil then restores.restrictedFriendlyClassColour = current end
+    if restores.restrictedFriendlyClassColour == nil then
+        restores.restrictedFriendlyClassColour = OriginalFor(CLASS_COLOUR, CLASS_COLOUR_CVAR)
+    end
+    Changed(CLASS_COLOUR, CLASS_COLOUR_CVAR)
     NamePolicy.Write(CLASS_COLOUR_CVAR, "1")
 end
 
 local function RestoreFriendlyNames(clear)
-    local restore = Captured("friendlyNames")
-    if type(restore) == "table" then
-        for _, name in ipairs(friendlyNameCVars) do
-            if restore[name] ~= nil then NamePolicy.Write(name, restore[name]) end
-        end
+    local restore = Captured(FRIENDLY_NAMES)
+    restore = type(restore) == "table" and restore or {}
+    for _, name in ipairs(friendlyNameCVars) do
+        local value = restore[name]
+        if value == nil then value = Fallback(FRIENDLY_NAMES, name) end
+        if value ~= nil then NamePolicy.Write(name, value) end
     end
-    if clear then ClearRestore("friendlyNames") end
+    if clear then
+        ClearRestore(FRIENDLY_NAMES)
+        Forget(FRIENDLY_NAMES)
+    end
 end
 
+-- Once a session, before the first change: with hiding unstyled names on, every friendly-name CVar
+-- at PlateSmith's "0" and no original recorded means the record was lost (docs/STACKING.md, "Lost
+-- originals"); one the player shows is theirs, so nothing is marked. The dungeon names-only and
+-- class colour CVars are single switches a player sets too, so they are not guessed at; the restore
+-- button (RestoreDefaults) covers them.
+local checked = false
+local function CheckLost(settings)
+    if checked or not State() then return end
+    checked = true
+    if not settings.hideUnstyledFriendlyNames or Captured(FRIENDLY_NAMES) ~= nil then return end
+    local hidden = {}
+    for _, name in ipairs(friendlyNameCVars) do
+        local value = NamePolicy.Read(name)
+        if value ~= nil and value ~= "0" then return end
+        if value ~= nil and NamePolicy.Default(name) ~= "0" then hidden[#hidden + 1] = name end
+    end
+    if #hidden == 0 then return end
+    local record = {}
+    for _, name in ipairs(hidden) do record[name] = MarkLost(FRIENDLY_NAMES, name) end
+    RestoreTable().friendlyNames = record
+end
 -- Outdoors: optionally hide Blizzard's unstyled friendly names. In dungeons
 -- and raids, Blizzard owns friendly plates, so apply its names-only option.
 function NamePolicy.Apply()
     local settings = Settings()
     if not settings then return end
+    CheckLost(settings)
     local restricted = InRestrictedInstance()
     if not settings.hideUnstyledFriendlyNames or restricted then
         RestoreFriendlyNames(false)
@@ -199,7 +384,8 @@ function NamePolicy.Apply()
     local restore = type(restores.friendlyNames) == "table" and restores.friendlyNames or {}
     restores.friendlyNames = restore
     for _, name in ipairs(friendlyNameCVars) do
-        if restore[name] == nil then restore[name] = NamePolicy.Read(name) end
+        if restore[name] == nil then restore[name] = OriginalFor(FRIENDLY_NAMES, name) end
+        Changed(FRIENDLY_NAMES, name)
         NamePolicy.Write(name, "0")
     end
 end
@@ -210,4 +396,47 @@ function NamePolicy.RestoreAll()
     RestoreFriendlyNames(true)
     RestoreRestrictedNames(true)
     ApplyClassColour(settings, false)
+end
+
+-- Behaviour & display › Plates' "Restore Blizzard nameplate settings": every CVar NamePolicy changes
+-- goes back to the client's default (queued in combat), and those defaults become the originals, so
+-- an option still on applies over them and turning it off leaves the default. Returns the CVars the
+-- client reports no default for, left as they are.
+function NamePolicy.RestoreDefaults()
+    local settings = Settings() or {}
+    local left = {}
+    local function Reset(name)
+        if NamePolicy.Read(name) == nil then return nil end
+        local default = NamePolicy.Default(name)
+        if default == nil then
+            left[#left + 1] = name
+        else
+            NamePolicy.Write(name, default)
+        end
+        return default
+    end
+    local friendly = {}
+    for _, name in ipairs(friendlyNameCVars) do friendly[name] = Reset(name) end
+    local restricted
+    for _, name in ipairs(restrictedFriendlyNameCVars) do
+        local default = Reset(name)
+        if default ~= nil and not restricted then restricted = { name = name, value = default } end
+    end
+    local classColour = Reset(CLASS_COLOUR_CVAR)
+    for _, key in ipairs({ FRIENDLY_NAMES, RESTRICTED_NAMES, CLASS_COLOUR }) do
+        ClearRestore(key)
+        Forget(key)
+    end
+    local restores = RestoreTable()
+    if settings.hideUnstyledFriendlyNames and next(friendly) then restores.friendlyNames = friendly end
+    if settings.restrictedFriendlyNamesOnly then restores.restrictedFriendlyNames = restricted end
+    if settings.restrictedFriendlyClassColour then restores.restrictedFriendlyClassColour = classColour end
+    if next(restores) == nil then State().cvarRestore = nil end
+    NamePolicy.Apply()
+    return left
+end
+
+-- For the suites: a new session (nothing changed yet, the login check to run again).
+function NamePolicy._Reset()
+    changed, reported, checked = {}, {}, false
 end

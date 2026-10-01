@@ -236,7 +236,24 @@ PS._CreatePlateIdentity = function(context)
         return "friendlyPlayer"
     end
 
+    -- Writes a plate text (name, level) unless the region already shows that readable value, as a
+    -- reused frame for the same unit, a level or a social update often does. region.plateSmithText
+    -- is the readable value last written; the caller is the region's only writer. A protected value
+    -- goes to the sink every time and clears the record. Returns whether the region shows value.
+    local function SetPlateText(region, value)
+        if not IsReadable(value) then
+            region.plateSmithText = nil
+            return pcall(region.SetText, region, value)
+        end
+        if value == nil then value = "" end
+        if region.plateSmithText == value then return true end
+        local ok = pcall(region.SetText, region, value)
+        region.plateSmithText = ok and value or nil
+        return ok
+    end
+
     return {
+        SetPlateText = SetPlateText,
         ReadUnitName = ReadUnitName,
         UnitDisplayNameValue = UnitDisplayNameValue,
         FriendlyRelationship = FriendlyRelationship,

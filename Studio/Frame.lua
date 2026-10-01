@@ -170,7 +170,8 @@ local function CreatePlateRow(content)
     row:SetScript("OnEnter", function(instance) Paint(instance, "hover") end)
     row:SetScript("OnLeave", function(instance) Paint(instance, "normal") end)
     row:SetScript("OnClick", function() Options:SelectEditorPlate() end)
-    PS.UI.Controls.AttachTooltip(row, L["Plate"], { L["The whole plate's scale, for this plate type."] })
+    PS.UI.Controls.AttachTooltip(row, L["Plate"], { L["The whole plate's scale, for this plate type."],
+        L["Quick layout: place parts by position (top, bottom, left, right, centre)."] })
     Paint(row, "normal")
     return row
 end
@@ -550,7 +551,7 @@ function PS.CreateVisualEditor()
     Options.editorTestButton = testButton
     -- It takes the pointer only over its own rectangle; drags elsewhere reach the preview.
     local testPanel = CreateFrame("Frame", nil, canvas)
-    testPanel:SetSize(300, 362)
+    testPanel:SetSize(300, 386)
     testPanel:SetFrameLevel(canvas:GetFrameLevel() + 30)
     testPanel:EnableMouse(true)
     local testArt = chrome.CreatePanelArt(testPanel, "dark")
@@ -593,10 +594,11 @@ function PS.CreateVisualEditor()
     -- Each flag shows in the preview (and in rules and custom text): tagged the indicator, elite,
     -- rare and boss the mark, casting and interruptible the cast bar, combat and tanking the
     -- threat text, targeted the glow, quest the marker, friendly, hostile and player the name.
-    -- The role and threat-state flags are for rules (the threat colour presets).
-    local flags = { "tagged", "elite", "rare", "boss", "casting", "interruptible", "combat", "tanking", "targeted",
-        "quest", "friendly", "hostile", "player", "role.tank", "threat.holding", "threat.losing", "threat.pulling",
-        "threat.other", "threat.offtank" }
+    -- interruptReady colours the cast bar with Colour by interrupt. The role and threat-state flags
+    -- are for rules (the threat colour presets), hastarget and inrange for the fades.
+    local flags = { "tagged", "elite", "rare", "boss", "casting", "interruptible", "interruptReady", "combat", "tanking",
+        "targeted", "quest", "friendly", "hostile", "player", "role.tank", "threat.holding", "threat.losing",
+        "threat.pulling", "threat.other", "threat.offtank", "hastarget", "inrange" }
     for index, flag in ipairs(flags) do
         local column, row = (index - 1) % 2, math.floor((index - 1) / 2)
         local checkbox = PS.UI.Controls.Checkbox(testPanel, {
@@ -736,13 +738,14 @@ function PS.CreateVisualEditor()
     local categories = Panel(editor, "dark", base + 3)
     Options.editorSettingsCategoriesPanel = categories
     Options.editorSettingsCategoryRows = {}
-    for index = 1, 7 do
+    for index = 1, 8 do
         local row = CreateStudioButton(categories, "", 282, 44, "category")
         row:SetScript("OnClick", function(instance)
             if instance.categoryKey then Options:SetSettingsCategory(instance.categoryKey) end
         end)
         Options.editorSettingsCategoryRows[index] = row
     end
+    Options:BuildSettingsSearch(categories)
     categories:Hide()
 
     -- Footer: Studio's Reset layout, Import and Export, or Settings' Reset settings; Revert and Save.
@@ -793,6 +796,7 @@ function PS.CreateVisualEditor()
     saveBar.status:Hide() -- The dirty notice sits in the footer's middle.
     footerLayout[#footerLayout + 1] = { button = saveBar, x = 365, right = true }
     Options.editorSaveBar = saveBar
+    Options:BuildEditorCpuReadout(editor, base + 6)
     Options.editorFooterLayout = footerLayout
     Options.editorStudioFooterButtons = { resetLayout, import, export }
     Options.editorSettingsFooterButtons = { resetAll }

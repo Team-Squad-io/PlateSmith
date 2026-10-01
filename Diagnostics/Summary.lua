@@ -117,10 +117,13 @@ end
 -- The short summary players paste into a bug report: plain text (no colour codes), one line per
 -- topic, and a bounded list of problems found by real checks on the report.
 local TICK_BUDGET_MS, FRAME_BUDGET_MS, MAX_PROBLEMS = 1, 2, 6
+-- Entries that do idle work on purpose: plates.spares builds half a plate per run, only out of
+-- combat, in a frame with no plate adds, until the spares are ready; then it stops.
+local TICK_BUDGETS = { ["plates.spares"] = 4 }
 Summary.tickBudgetMs, Summary.frameBudgetMs, Summary.maxProblems = TICK_BUDGET_MS, FRAME_BUDGET_MS, MAX_PROBLEMS
 -- Report paths a named check below already explains; the generic walk skips them.
 local EXPLAINED = { "^questProviders", "^protectedAction", "^dungeonFriendlyOverlay", "^target%.debuffs%.nativeContainerError",
-    "^conflicts", "^addons", "^modules" }
+    "^conflicts", "^addons", "^modules", "^stacking%.originals" }
 
 local function Field(value, ...)
     for index = 1, select("#", ...) do
@@ -167,6 +170,9 @@ end
 -- Plain names for the events the plate runtime times; others show as the event itself.
 Summary.eventNames = {
     NAME_PLATE_UNIT_ADDED = L["plate added"], NAME_PLATE_UNIT_REMOVED = L["plate removed"],
+    ["NAME_PLATE_UNIT_ADDED (new)"] = L["plate added (new frame)"],
+    ["NAME_PLATE_UNIT_ADDED (reused)"] = L["plate added (reused frame)"],
+    ["NAME_PLATE_UNIT_ADDED (queued)"] = L["plate added (queued)"],
     UNIT_AURA = L["auras"], UNIT_HEALTH = L["health"], UNIT_MAXHEALTH = L["max health"],
     UNIT_NAME_UPDATE = L["name update"], UNIT_FACTION = L["faction"], UNIT_FLAGS = L["unit flags"],
     PLAYER_TARGET_CHANGED = L["target changed"], UNIT_THREAT_LIST_UPDATE = L["threat list"],
@@ -280,12 +286,32 @@ local function TargetText(target)
     return string.format(L["Target: %s %s · %s · %s"], side, who, layout, highlightText)
 end
 
+-- nil for a report without a stacking section (a capture from an older build).
+local function StackingText(stacking)
+    if type(stacking) ~= "table" then return nil end
+    if stacking.state then return string.format(L["Stacking: %s"], Text(stacking.state)) end
+    if stacking.managed ~= true then return L["Stacking: not managed"] end
+    local text = string.format(L["Stacking: managed, preset %s"], Text(stacking.preset))
+    if Field(stacking, "options", "combatStacking") == true then
+        text = string.format(L["%s · combat stacking %s"], text, Text(stacking.combatSwitch))
+    end
+    if stacking.originals == "missing" then text = string.format(L["%s · earlier settings lost"], text) end
+    return text
+end
+
 -- The other nameplate addons the report found: their names as one list, and how many.
 local function ConflictNames(report)
     local addons = Field(report, "conflicts", "addons")
     if type(addons) ~= "table" or #addons == 0 then return nil, 0 end
     local join = PS.Conflicts and PS.Conflicts.JoinNames
     return join and join(addons) or table.concat(addons, ", "), #addons
+end
+
+-- The client debug settings a report's performance section shows on (taintLog, scriptProfile).
+function Summary.DebugSettingsOn(report)
+    local settings = Field(report, "performance", "debugSettings")
+    if type(settings) ~= "table" or not PS.Performance then return {} end
+    return PS.Performance.DebugSettingsOn(settings)
 end
 
 -- Plain-language problems, most specific first. extras: historyErrors, lastError, entry.
@@ -300,6 +326,16 @@ function Summary.Problems(report, extras)
     if type(studio) == "string" and type(active) == "string" and studio ~= "" and studio ~= "none"
         and studio ~= "nil" and studio ~= active then
         Add(string.format(L["Studio is editing profile \"%s\", but the plates use \"%s\"."], studio, active))
+    end
+    -- The report's stacking section, else (a live report, not a saved capture) the engine's own.
+    local stacking = report.stacking
+    if type(stacking) ~= "table" and not extras.entry and PS.Stacking and PS.Stacking.Report then
+        local ok, live = pcall(PS.Stacking.Report)
+        stacking = ok and live or nil
+    end
+    if Field(stacking, "managed") == true and Field(stacking, "originals") == "missing" then
+        Add(L["Stacking is managed, but PlateSmith has no record of your earlier stacking settings; turning "
+            .. "management off restores Blizzard's defaults."])
     end
     local conflictNames, conflictCount = ConflictNames(report)
     if conflictCount >= 2 then
@@ -338,6 +374,10 @@ function Summary.Problems(report, extras)
         Add(string.format(sessionErrors == 1 and L["%d PlateSmith error this session: %s"]
             or L["%d PlateSmith errors this session; latest: %s"], sessionErrors, latest))
     end
+    for _, name in ipairs(Summary.DebugSettingsOn(report)) do
+        Add(string.format(L["The client's %s setting is on (%s); it costs frame time. /console %s 0 turns it off."], name,
+            Text(Field(report, "performance", "debugSettings", name)), name))
+    end
     local average = Field(report, "performance", "profiler", "recentAverageMs")
     if type(average) == "number" and average > FRAME_BUDGET_MS then
         Add(string.format(L["PlateSmith averages %.2f ms per frame (budget %.1f ms)."], average, FRAME_BUDGET_MS))
@@ -347,9 +387,10 @@ function Summary.Problems(report, extras)
         for _, id in ipairs(SortedKeys(ticker)) do
             local entry = ticker[id]
             local cost = Field(entry, "recentAverageMs") or Field(entry, "averageMs")
-            if type(cost) == "number" and cost > TICK_BUDGET_MS then
+            local budget = TICK_BUDGETS[id] or TICK_BUDGET_MS
+            if type(cost) == "number" and cost > budget then
                 Add(string.format(L["Ticker %s averages %.2f ms per run (budget %.1f ms)."], tostring(id), cost,
-                    TICK_BUDGET_MS))
+                    budget))
             end
         end
     end
@@ -403,6 +444,8 @@ function Summary.Short(report, extras)
     end
     lines[#lines + 1] = string.format(L["Restrictions: %s · Quest: %s"], RestrictionText(report.restrictions),
         QuestText(report))
+    local stackingText = StackingText(report.stacking)
+    if stackingText then lines[#lines + 1] = stackingText end
     lines[#lines + 1] = PerformanceText(report.performance)
     lines[#lines + 1] = TargetText(report.target)
     local problems = Summary.Problems(report, extras)

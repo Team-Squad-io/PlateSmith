@@ -42,6 +42,11 @@ local FRAME = {
 }
 -- The inspector's parchment starts inside its rail; the scroll bar's lane is at its right.
 local INSPECTOR = { width = FRAME.inspector, rail = 8, lane = 32 }
+-- The footer's CPU readout: right-aligned, its right end this far from Studio's right edge (just
+-- left of Revert), refreshed every interval seconds while Studio shows.
+local CPU_READOUT = { right = 381, width = 200, height = 22, gap = 16, interval = 3, ticker = "studio.cpu-readout" }
+-- Settings' categories panel: the search box across its top, then a row per category.
+local CATEGORIES = { top = 12, searchX = 12, searchH = 34, searchGap = 12, rowStep = 46 }
 
 -- Button families: the variant picks the kit's colour (red actions, gold Save, dark utility)
 -- and the height its 26, 28 or 32 px set; labels are drawn by the addon.
@@ -245,6 +250,11 @@ local function CreateStudioScrollBar(scroll, parent)
         self:SetMinMaxValues(0, range)
         local position = math.min(range, scroll:GetVerticalScroll() or 0)
         ScrollTo(position)
+        -- The frame is scrolled here too: when the bar's value comes out unchanged (the old page
+        -- scrolled to its end has value 0, as has a page that does not scroll) the client sends no
+        -- OnValueChanged, and the offset would stay past the new page's top, hiding its headings.
+        local snapped = Snap(position)
+        if (scroll:GetVerticalScroll() or 0) ~= snapped then scroll:SetVerticalScroll(snapped) end
         Theme.Place(self.trackArt[1], "scroll-track-normal-top", self, 0, 0)
         Theme.Repeat(self.trackArt[2], "scroll-track-normal-mid", self, 0, SCROLL.cap, math.max(1, height - 2 * SCROLL.cap), "y")
         Theme.Place(self.trackArt[3], "scroll-track-normal-bottom", self, 0, height - SCROLL.cap)
@@ -253,6 +263,16 @@ local function CreateStudioScrollBar(scroll, parent)
         self:SetShown(shown)
         self.up:SetShown(shown)
         self.down:SetShown(shown)
+    end
+
+    -- Scrolls to offset (clamped, and snapped to a row when the list snaps) with the thumb there,
+    -- whether or not the client sends OnValueChanged for the new value.
+    function bar:ScrollToOffset(offset)
+        self:Sync()
+        local position = Snap(math.max(0, math.min(self.range or 0, offset or 0)))
+        ScrollTo(position)
+        scroll:SetVerticalScroll(position)
+        self:PlaceThumbArt(position)
     end
 
     scroll:SetScript("OnScrollRangeChanged", function() bar:Sync() end)
@@ -482,6 +502,10 @@ local function SkinCheckbox(checkbox)
         checkbox:HookScript("OnEnter", function(instance) Theme.Place(instance.kitBox, "checkbox-empty-hover", instance, 0, 0) end)
         checkbox:HookScript("OnLeave", function(instance) Theme.Place(instance.kitBox, "checkbox-empty-normal", instance, 0, 0) end)
     end
+    -- The kit lights the box while its row's label is pointed at (Layout's labelled check rows).
+    function checkbox:KitHover(on)
+        Theme.Place(self.kitBox, on and "checkbox-empty-hover" or "checkbox-empty-normal", self, 0, 0)
+    end
 end
 
 local function SkinSlider(slider)
@@ -612,11 +636,15 @@ end
 -- are the panels built by the inspector (their keys), in the order shown.
 local SETTINGS_CATEGORIES = {
     { key = "plate", label = L["Behaviour & display"], summary = L["Shared settings for the active profile."] },
-    -- Hidden from the list until it is ready (SetSettingsCategory still opens it by key).
-    { key = "stacking", hidden = true, label = L["Stacking & distance"],
+    { key = "stacking", label = L["Stacking & distance"],
         summary = L["How Blizzard stacks, spaces, scales and fades plates, and which draws on top."] },
     { key = "auras", label = L["Aura defaults"], summary = L["Which buffs and debuffs the plates show."] },
     { key = "relations", label = L["Relationships"], summary = L["How friendly players are marked outdoors."] },
+    -- tooltip: the page header's "?" (Options.editorSettingsHelp).
+    { key = "experimental", label = L["Experimental"], summary = L["Tests of what the game allows. Each is off by default."],
+        tooltip = L["Each option here tests something the game may or may not allow on this client. They are off by "
+            .. "default and cost nothing while off. Turn one on, play, then run /ps diagnose: its experimental section "
+            .. "says whether each one worked."] },
     { key = "studio", label = L["Studio"], summary = L["Studio's size and accessibility. Personal; never needs Save."] },
     { key = "help", label = L["Help"], summary = L["How Blueprint Studio works, and PlateSmith's commands."] },
 }
@@ -632,7 +660,19 @@ function Options:SettingsCategoryList()
     return list
 end
 
+-- A category's key, label and summary, listed now or not (Dungeon friendlies).
+function Options:SettingsCategoryInfo(key)
+    if key == DUNGEON_CATEGORY.key then return DUNGEON_CATEGORY end
+    for _, category in ipairs(SETTINGS_CATEGORIES) do
+        if category.key == key then return category end
+    end
+    return nil
+end
+
 function Options:SetSettingsCategory(key)
+    -- Picking a category (or leaving Settings) ends a search: its rows go back to their pages.
+    local search = self.settingsSearch
+    if search and search.IsBusy() then search.Clear() end
     local found
     for _, category in ipairs(self:SettingsCategoryList()) do
         if category.key == key then found = category end
@@ -641,9 +681,19 @@ function Options:SetSettingsCategory(key)
         if not found and category.key == key then found = category end
     end
     found = found or SETTINGS_CATEGORIES[1]
+    -- Another category opens at its top, as Blizzard's Settings do.
+    local viewport = self.editorSettingsViewport
+    if found.key ~= self.editorSettingsCategory and viewport and viewport.SetVerticalScroll then
+        viewport:SetVerticalScroll(0)
+    end
     self.editorSettingsCategory = found.key
     if self.editorSettingsTitle then self.editorSettingsTitle:SetText(found.label) end
     if self.editorSettingsSummary then self.editorSettingsSummary:SetText(found.summary) end
+    local help = self.editorSettingsHelp
+    if help then
+        help.helpTitle, help.helpText = found.label, found.tooltip
+        help:SetShown(found.tooltip ~= nil)
+    end
     self:LayoutEditorSettingsPanels()
     return true
 end
@@ -655,23 +705,31 @@ function Options:LayoutEditorSettingsPanels()
     content:SetWidth(width)
     local current = self.editorSettingsCategory or "plate"
     local settingsOpen = self.editorWorkspacePage == "settings"
+    -- Search results replace the category's page (which is not laid out: it lent them its rows).
+    local search = self.settingsSearch
+    local searching = search and search.IsActive() or false
     -- The shown page is laid out at the page's width (its sections in one or two columns).
     for _, panel in ipairs(self.editorSettingsPanels or {}) do
         panel:ClearAllPoints()
         panel:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
-        local shown = settingsOpen and panel.settingsKey == current
+        local shown = settingsOpen and not searching and panel.settingsKey == current
         panel:SetShown(shown)
         if shown and panel.Relayout then panel:Relayout(width) end
     end
     local page = pages[current]
-    content:SetHeight(math.max(1, page and page:GetHeight() or 1))
+    local height = page and page:GetHeight() or 1
+    if search then
+        local found = search.LayoutResults(width, settingsOpen)
+        if searching then height = found end
+    end
+    content:SetHeight(math.max(1, height))
     for index, row in ipairs(self.editorSettingsCategoryRows or {}) do
         local category = self:SettingsCategoryList()[index]
         row:SetShown(category ~= nil)
         if category then
             row.categoryKey = category.key
             row.label:SetText(category.label)
-            SetStudioButtonState(row, category.key == current)
+            SetStudioButtonState(row, not searching and category.key == current)
         end
     end
     if self.editorSettingsScrollBar then self.editorSettingsScrollBar:Sync() end
@@ -773,10 +831,18 @@ function Options:ReflowVisualEditor()
         entry.button:ClearAllPoints()
         entry.button:SetPoint("TOPLEFT", editor, "TOPLEFT", entry.right and width - entry.x or entry.x, -footerY)
     end
+    -- The CPU readout sits just left of Revert; the unsaved-changes notice takes the middle before it.
+    local readout = self.editorCpuReadout
+    if readout then
+        readout:ClearAllPoints()
+        readout:SetPoint("RIGHT", editor, "TOPLEFT", width - CPU_READOUT.right, -(footerY + 16))
+        readout:SetSize(CPU_READOUT.width, CPU_READOUT.height)
+    end
     if self.editorProfileNotice then
         self.editorProfileNotice:ClearAllPoints()
         self.editorProfileNotice:SetPoint("LEFT", editor, "TOPLEFT", 520, -(footerY + 16))
-        self.editorProfileNotice:SetWidth(math.max(1, width - 520 - 380))
+        local reserved = readout and CPU_READOUT.right + CPU_READOUT.width + CPU_READOUT.gap or 380
+        self.editorProfileNotice:SetWidth(math.max(1, width - 520 - reserved))
     end
 
     self:LayoutEditorTree()
@@ -917,6 +983,10 @@ function Options:LayoutEditorSettingsPage()
     if self.editorSettingsTitle then
         self.editorSettingsTitle:ClearAllPoints()
         self.editorSettingsTitle:SetPoint("TOPLEFT", page, "TOPLEFT", 22, -18)
+        if self.editorSettingsHelp then
+            self.editorSettingsHelp:ClearAllPoints()
+            self.editorSettingsHelp:SetPoint("LEFT", self.editorSettingsTitle, "RIGHT", 8, 0)
+        end
     end
     if self.editorSettingsSummary then
         self.editorSettingsSummary:ClearAllPoints()
@@ -937,9 +1007,20 @@ function Options:LayoutEditorSettingsPage()
         self.editorSettingsScrollBar:SetPoint("TOPLEFT", page, "TOPLEFT", w - 28, -35)
         self.editorSettingsScrollBar:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", w - 28, 35)
     end
+    -- The search box tops the categories panel; the categories follow under it.
+    local categories, search = self.editorSettingsCategoriesPanel, self.editorSettingsSearch
+    local rowsTop = CATEGORIES.top
+    if search and categories then
+        search:ClearAllPoints()
+        search:SetPoint("TOPLEFT", categories, "TOPLEFT", CATEGORIES.searchX, -CATEGORIES.top)
+        search:SetSize(categories:GetWidth() - 2 * CATEGORIES.searchX, CATEGORIES.searchH)
+        search.field:Layout()
+        Theme.Place(search.icon, "search-icon-normal", search, 8, 5)
+        rowsTop = CATEGORIES.top + CATEGORIES.searchH + CATEGORIES.searchGap
+    end
     for index, row in ipairs(self.editorSettingsCategoryRows or {}) do
         row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", self.editorSettingsCategoriesPanel, "TOPLEFT", 8, -(12 + (index - 1) * 46))
+        row:SetPoint("TOPLEFT", categories, "TOPLEFT", 8, -(rowsTop + (index - 1) * CATEGORIES.rowStep))
     end
     self:LayoutEditorSettingsPanels()
 end
@@ -1088,6 +1169,64 @@ local function CreateVisibilityEye(parent, onClick, title, lines)
     if title then PS.UI.Controls.AttachTooltip(eye, title, lines) end
     SkinCheckbox(eye)
     return eye
+end
+
+-- The footer's line of PlateSmith's own CPU cost: the client profiler's recent average per frame
+-- and its share of a frame at the current frame rate. Its ticker entry runs only while it shows.
+function Options:RefreshEditorCpuReadout()
+    local readout = self.editorCpuReadout
+    if not readout then return end
+    if not readout:IsVisible() then
+        PS.Ticker.SetEnabled(CPU_READOUT.ticker, false)
+        return
+    end
+    local Performance = PS.Performance
+    local ms, share
+    if Performance and Performance.RecentCost then ms, share = Performance.RecentCost() end
+    local text, over = L["PlateSmith CPU: no profiler data"], false
+    if ms and share then
+        text = string.format(L["PlateSmith %.2f ms · %.1f%% of frame"], ms, share)
+    elseif ms then
+        text = string.format(L["PlateSmith %.2f ms per frame"], ms)
+    end
+    local budget = PS.DiagnosticSummary and PS.DiagnosticSummary.frameBudgetMs
+    if ms and budget then over = ms > budget end
+    readout.text:SetText(text)
+    if over then readout.text:SetTextColor(1, 0.45, 0.38)
+    elseif ms then readout.text:SetTextColor(0.72, 0.70, 0.66)
+    else readout.text:SetTextColor(0.50, 0.48, 0.45) end
+    readout.lastText = text
+end
+
+PS.Ticker.Register(CPU_READOUT.ticker, CPU_READOUT.interval, function() Options:RefreshEditorCpuReadout() end)
+PS.Ticker.SetEnabled(CPU_READOUT.ticker, false)
+
+function Options:BuildEditorCpuReadout(editor, level)
+    local readout = CreateFrame("Button", nil, editor)
+    readout:SetFrameLevel(level)
+    readout:SetSize(CPU_READOUT.width, CPU_READOUT.height)
+    local text = readout:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    text:SetFont(FONT, 12)
+    text:SetJustifyH("RIGHT")
+    text:SetPoint("RIGHT", readout, "RIGHT", 0, 0)
+    text:SetShadowColor(0, 0, 0, 1)
+    text:SetShadowOffset(1, -1)
+    if text.SetWordWrap then text:SetWordWrap(false) end
+    readout.text = text
+    readout:SetScript("OnShow", function()
+        PS.Ticker.SetEnabled(CPU_READOUT.ticker, true)
+        Options:RefreshEditorCpuReadout()
+    end)
+    readout:SetScript("OnHide", function() PS.Ticker.SetEnabled(CPU_READOUT.ticker, false) end)
+    readout:SetScript("OnClick", function() PS.DiagnosticUI.ShowPerformance() end)
+    PS.UI.Controls.AttachTooltip(readout, L["PlateSmith's CPU time"], {
+        L["The time PlateSmith's code took per frame, on average over the last few seconds (the client's addon "
+            .. "profiler), and that as a share of one frame at your current frame rate."],
+        { string.format(L["Refreshed every %d s while Studio is open. Click for the live Performance view (/ps perf)."],
+            CPU_READOUT.interval), 0.86, 0.86, 0.86 },
+    })
+    self.editorCpuReadout = readout
+    return readout
 end
 
 -- Studio's frame skins the kit's controls as they are made inside it (Controls' skinControl);

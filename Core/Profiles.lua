@@ -59,8 +59,46 @@ end
 
 -- IsDirty compares the whole working copy with the saved profile, so its answer is kept until
 -- something can change it (an edit, a load or a save) and each Notify asks at most once.
+-- lastDifference: the keys to where the last comparison found the copies differ. Edits come in runs
+-- on one setting (a slider drag), so that place is compared first: a difference there is a
+-- difference in the whole, and only when it is gone is the whole walked again.
 local dirtyKnown, dirty = false, false
+local lastDifference, scratchPath = { length = 0 }, { length = 0 }
 local function Invalidate() dirtyKnown = false end
+
+-- For the tests: IsDirty's comparisons, and the values they compared.
+Profiles.comparisons, Profiles.comparedNodes = 0, 0
+
+-- Whether two plain tables differ; if they do, path holds the keys to the first difference.
+local function FindDifference(left, right, path, depth)
+    Profiles.comparedNodes = Profiles.comparedNodes + 1
+    if type(left) ~= "table" or type(right) ~= "table" then
+        if left == right then return false end
+        path.length = depth - 1
+        return true
+    end
+    for key, child in pairs(left) do
+        path[depth] = key
+        if FindDifference(child, right[key], path, depth + 1) then return true end
+    end
+    for key in pairs(right) do
+        if left[key] == nil then
+            path[depth], path.length = key, depth
+            return true
+        end
+    end
+    return false
+end
+
+-- Whether the values at path differ (where the shapes part, the values there are compared).
+local function DiffersAt(left, right, path)
+    for index = 1, path.length do
+        if type(left) ~= "table" or type(right) ~= "table" then break end
+        local key = path[index]
+        left, right = left[key], right[key]
+    end
+    return FindDifference(left, right, scratchPath, 1)
+end
 
 local function OwnerShown(owner)
     if owner.IsVisible then return owner:IsVisible() end
@@ -105,6 +143,14 @@ function Profiles.MarkChanged()
     end
 end
 
+-- Tells the player once what a migration (or an old Blueprint) changed in profile name.
+function Profiles.NoteMigration(name, note)
+    if type(note) == "table" and (note.threatRulesDisabled or 0) > 0 then
+        PS.Chat.Print(string.format(PS.L["Threat rules in %s were turned off because Show threat details was off in "
+            .. "1.0.3. Turn them on in Studio › Rules."], tostring(name)))
+    end
+end
+
 function Profiles.Load()
     store = type(PlateSmithDB) == "table" and PlateSmithDB or {}
     PlateSmithDB = store
@@ -119,6 +165,7 @@ function Profiles.Load()
             store.profiles[name] = nil
         else
             S.NormalizeSettings(settings)
+            Profiles.NoteMigration(name, S.TakeMigrationNote(settings))
         end
     end
     if next(store.profiles) == nil then store.profiles[Profiles.DEFAULT] = Defaults() end
@@ -148,7 +195,10 @@ end
 function Profiles.IsDirty()
     if not working then return false end
     if not dirtyKnown then
-        dirty = not Table.DeepEqual(working, store.profiles[Profiles.Active()])
+        local saved = store.profiles[Profiles.Active()]
+        Profiles.comparisons = Profiles.comparisons + 1
+        dirty = (dirty and DiffersAt(working, saved, lastDifference))
+            or FindDifference(working, saved, lastDifference, 1)
         dirtyKnown = true
     end
     return dirty
@@ -265,6 +315,7 @@ function Profiles.Rename(name)
     for key, value in pairs(store.profileKeys) do
         if value == old then store.profileKeys[key] = clean end
     end
+    if PS.AutoProfile then PS.AutoProfile.ProfileRenamed(old, clean) end
     Profiles.Notify()
     return true
 end
@@ -277,6 +328,7 @@ function Profiles.Delete(name)
     for key, value in pairs(store.profileKeys) do
         if value == name then store.profileKeys[key] = nil end
     end
+    if PS.AutoProfile then PS.AutoProfile.ProfileDeleted(name) end
     Profiles.Notify()
     return true
 end

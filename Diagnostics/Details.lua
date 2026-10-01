@@ -23,7 +23,9 @@ local ROUTES = {
     { "profile", "profile" }, { "settings", "profile", L["Settings"] },
     { "performance", "performance" }, { "performance.profiler", "performance", L["Profiler"] },
     { "performance.ticker", "performance", skip = true }, { "performance.events", "performance", skip = true },
-    { "performance.recentEvents", "performance", skip = true },
+    { "performance.recentEvents", "performance", skip = true }, { "performance.plateAdds", "performance", skip = true },
+    { "performance.addPhases", "performance", skip = true },
+    { "performance.debugSettings", "performance", L["Client debug settings"] },
     { "target", "target" }, { "raid", "target", L["Raid marker"] },
     { "target.buffs", "auras", L["Buffs"] }, { "target.debuffs", "auras", L["Debuffs"] },
     { "target.blizzardAuras", "auras", L["Blizzard aura frames"] },
@@ -44,6 +46,15 @@ local NAMES = {
     ticksOver50Ms = L["Frames over 50 ms"], recentWindowSeconds = L["Recent window"], state = L["State"],
     display = L["Display"], pvp = L["PvP name"], legacy = L["Legacy name"], names = L["Names"],
     identity = L["Identity"], plate = L["Plate"], highlight = L["Highlight"], shownValues = L["Shown values"],
+}
+
+-- The kinds of plate add and the phases of one (Performance.PLATE_ADDED, Performance.ADD_PHASES).
+Details.PLATE_ADD_NAMES = { new = L["New frame"], reused = L["Reused frame"], queued = L["Queued"] }
+Details.PHASE_NAMES = {
+    build = L["Build frame"], layout = L["Layout"], styles = L["Styles and fonts"], text = L["Name, level, guild"],
+    quest = L["Quest relevance"], bars = L["Bars, cast, raid mark"], auras = L["Auras"], threat = L["Threat"],
+    placement = L["Placement and stacks"], values = L["Custom parts"], rules = L["Rules"], flush = L["First flush"],
+    other = L["Other"],
 }
 
 -- The field that names an entry of a list (a list of actors reads "party1", not "#2").
@@ -225,6 +236,9 @@ local function PerformanceTables(section, performance)
         Flag(section, "problem", L["Frame cost"], string.format(L["PlateSmith averages %.2f ms per frame (budget %.1f ms)."],
             average, Summary.frameBudgetMs))
     end
+    for _, name in ipairs(Summary.DebugSettingsOn({ performance = performance })) do
+        Flag(section, "problem", name, string.format(L["on (%s): costs frame time"], tostring(performance.debugSettings[name])))
+    end
     local ticker = {}
     for id, entry in pairs(type(performance.ticker) == "table" and performance.ticker or {}) do
         if type(entry) == "table" then
@@ -253,6 +267,23 @@ local function PerformanceTables(section, performance)
         end
         Table(section, list[2], { L["Event"], list[3], L["Peak ms"], L["Calls"] }, rows)
     end
+    -- Plate adds by kind, and the time each phase of an add took (most time first).
+    local adds = {}
+    for kind, entry in pairs(type(performance.plateAdds) == "table" and performance.plateAdds or {}) do
+        if type(entry) == "table" then
+            adds[#adds + 1] = { name = Details.PLATE_ADD_NAMES[kind] or tostring(kind), sort = Number(entry.averageMs),
+                cells = { Ms(entry.averageMs), Ms(entry.peakMs), Count(entry.calls) } }
+        end
+    end
+    Table(section, L["Plate adds"], { L["Kind"], L["Average ms"], L["Peak ms"], L["Calls"] }, adds)
+    local phases = {}
+    for _, entry in ipairs(type(performance.addPhases) == "table" and performance.addPhases or {}) do
+        if type(entry) == "table" then
+            phases[#phases + 1] = { name = Details.PHASE_NAMES[entry.phase] or tostring(entry.phase or "?"),
+                sort = Number(entry.totalMs), cells = { Ms(entry.averageMs), Ms(entry.peakMs), Count(entry.calls) } }
+        end
+    end
+    Table(section, L["Plate add phases"], { L["Phase"], L["Average ms"], L["Peak ms"], L["Calls"] }, phases)
 end
 
 -- report: a diagnostic report; entry (optional): the History capture it came from.

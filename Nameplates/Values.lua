@@ -7,7 +7,7 @@ local ThreatText = assert(PS.ThreatText, "PlateSmith ThreatText missing")
 
 PS._CreatePlateValues = function(context)
     local IsReadable, HasValue = PS.Secret.IsReadable, PS.Secret.HasValue
-    local GetSettings, Readers, Styles = context.GetSettings, context.Readers, context.Styles
+    local Readers, Styles = context.Readers, context.Styles
     local IsDisplayNumber, ReadPercent = Readers.IsDisplayNumber, Readers.ReadPercent
     local VALUE_SLOT_COUNT = S.VALUE_SLOT_COUNT
     local VALUE_KEYS, EMPTY = Styles.VALUE_KEYS, Styles.EMPTY
@@ -53,9 +53,10 @@ PS._CreatePlateValues = function(context)
         end
     end
 
+    -- A plate holds no threat record while no layout needs threat (Lifecycle's PlateNeeds).
     local function RenderThreatValue(data, key, source, region)
         local info = data.threatInfo
-        if not data.own or data.friendly or data.namesOnly or not GetSettings().threat
+        if not data.own or data.friendly or data.namesOnly
             or data.layout[key].visible == false or not info or not info.engaged then
             region:Hide()
             return
@@ -63,18 +64,21 @@ PS._CreatePlateValues = function(context)
         -- A readable number or nil (ThreatText.Gap), read once.
         local gap
         if source == "leadPercent" then gap = ThreatText.Gap(data.unit) end
+        -- A kept gap is marked "~" (with its age when the profile shows it: ThreatText.MarkKept).
         if source == "differential" then
             if IsReadable(info.lead) and type(info.lead) == "number" then
-                region:SetText(ThreatText.Readable(nil, info.lead))
+                region:SetText(ThreatText.MarkKept(info, ThreatText.Readable(nil, info.lead)))
                 region:Show()
             else
                 region:Hide()
             end
         elseif gap then
-            -- The signed gap the threat windows show, coloured by state like the threat text. When
-            -- the numbers are protected there is no gap: the protected lead percentage shows (below).
-            region:SetTextColor(ThreatText.StateColour(info))
-            DisplayValue(region, "%+.0f", gap)
+            -- The signed gap the threat windows show, coloured by state like the threat text (grey
+            -- or fading when kept, as the profile says). When the numbers are protected there is
+            -- no gap: the protected lead percentage shows (below).
+            ThreatText.ApplyStateColour(region, info)
+            region:SetText(ThreatText.MarkKept(info, string.format("%+.0f", gap)))
+            region:Show()
         elseif source == "rawThreat" then
             local raw, hasRaw = ThreatText.SinkRawThreat(info)
             if hasRaw then DisplayValue(region, "%s", raw) else region:Hide() end
@@ -159,22 +163,25 @@ PS._CreatePlateValues = function(context)
             local slot = slots[key]
             local source = slot.source
             local region = values[key]
-            if slot.kind then
-                RenderGraphic(data, key, slot, region)
-            elseif source == "template" then
-                if not data.own or data.namesOnly or data.layout[key].visible == false or not slot.template then
+            -- No region: a part this plate's layout does not use, never made (Lifecycle).
+            if region then
+                if slot.kind then
+                    RenderGraphic(data, key, slot, region)
+                elseif source == "template" then
+                    if not data.own or data.namesOnly or data.layout[key].visible == false or not slot.template then
+                        region:Hide()
+                    elseif everyTemplate or TemplateChanged(slotReads[key], kinds) then
+                        region:SetShown(PS.Template.Apply(region, slot.template, Readers.Get(data)))
+                    end
+                elseif THREAT_SOURCES[source] then
+                    if threat then RenderThreatValue(data, key, source, region) end
+                elseif HEALTH_SOURCES[source] then
+                    if health then RenderResource(data, key, source, region) end
+                elseif POWER_SOURCES[source] then
+                    if power then RenderResource(data, key, source, region) end
+                elseif resources then
                     region:Hide()
-                elseif everyTemplate or TemplateChanged(slotReads[key], kinds) then
-                    region:SetShown(PS.Template.Apply(region, slot.template, Readers.Get(data)))
                 end
-            elseif THREAT_SOURCES[source] then
-                if threat then RenderThreatValue(data, key, source, region) end
-            elseif HEALTH_SOURCES[source] then
-                if health then RenderResource(data, key, source, region) end
-            elseif POWER_SOURCES[source] then
-                if power then RenderResource(data, key, source, region) end
-            elseif resources then
-                region:Hide()
             end
         end
     end

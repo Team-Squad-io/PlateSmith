@@ -97,11 +97,26 @@ PS._CreatePlateAuras = function(context)
         pcall(container.Hide, container)
     end
 
+    -- row.nativeAuraBound: the unit the row's current container was pointed at and enabled for;
+    -- cleared whenever it is put away, so the next use points it again.
+    local function DisableRowContainer(row, container)
+        row.nativeAuraBound = nil
+        DisableContainer(container)
+    end
+
     -- Each icon has a cooldown swipe that chips away as the aura runs out, and optionally its
-    -- remaining time in the corner (the client's own short format: 9, 1m, 2h).
+    -- remaining time in the corner (the client's own short format: 9, 1m, 2h). A row's icons are made
+    -- the first time it has a readable aura to show (BuildIcons), so a plate that never shows one (no
+    -- auras, rows off, or reads the client protects, as in a dungeon) makes none.
     local function CreateAuraRow(parent)
         local row = CreateFrame("Frame", nil, parent)
         local icons = {}
+        LayoutAuraRow(row, icons, DEFAULT_LAYOUT)
+        row:Hide()
+        return row, icons
+    end
+
+    local function BuildIcons(row, icons)
         for index = 1, AURA_ICON_COUNT do
             local icon = row:CreateTexture(nil, "OVERLAY")
             icon:Hide()
@@ -118,8 +133,8 @@ PS._CreatePlateAuras = function(context)
             icons[index] = icon
         end
         LayoutAuraRow(row, icons, DEFAULT_LAYOUT)
-        row:Hide()
-        return row, icons
+        -- Laid out again for the row's own shape (PlaceRow).
+        row.plateSmithPlacedFor, row.plateSmithCount = nil, nil
     end
 
     -- Swipes run only from readable, positive durations; anything protected shows no swipe
@@ -130,7 +145,7 @@ PS._CreatePlateAuras = function(context)
         local hideNumbers = layout.showDuration == false
         for index = 1, math.max(shown, previous or AURA_ICON_COUNT) do
             local icon = icons[index]
-            local swipe = icon.swipe
+            local swipe = icon and icon.swipe
             if swipe then
                 local duration, expiration
                 if index <= shown then duration, expiration = icon.auraDuration, icon.auraExpiration end
@@ -159,7 +174,7 @@ PS._CreatePlateAuras = function(context)
                     swipe.plateSmithShown = false
                 end
             end
-            icon.auraDuration, icon.auraExpiration = nil, nil
+            if icon then icon.auraDuration, icon.auraExpiration = nil, nil end
         end
         return soonest
     end
@@ -182,14 +197,14 @@ PS._CreatePlateAuras = function(context)
     local function HideIcons(icons, from, to)
         for index = from, to do
             local icon = icons[index]
-            if icon.plateSmithShown ~= false then
+            if icon and icon.plateSmithShown ~= false then
                 icon:Hide()
                 icon.plateSmithShown = false
             end
         end
     end
 
-    local function PopulateAuraIconsByIndex(api, unit, filter, icons, limit)
+    local function PopulateAuraIconsByIndex(api, unit, filter, icons, limit, row)
         if type(api) ~= "function" then return 0, "missing" end
         local shown = 0
         for index = 1, limit do
@@ -207,6 +222,7 @@ PS._CreatePlateAuras = function(context)
             if not durationOK then duration = nil end
             local expirationOK, expiration = pcall(Field, aura, "expirationTime")
             if not expirationOK then expiration = nil end
+            if not icons[1] then BuildIcons(row, icons) end
             if not ShowIcon(icons[index], icon, duration, expiration) then
                 return shown, "texture-error"
             end
@@ -216,25 +232,26 @@ PS._CreatePlateAuras = function(context)
     end
 
     -- AuraUtil.ForEachAura's callback, made once: the row being filled is held here meanwhile.
-    local slotIcons, slotLimit, slotShown = nil, 0, 0
+    local slotIcons, slotRow, slotLimit, slotShown = nil, nil, 0, 0
     local function SlotCallback(_, icon, _, _, duration, expiration)
+        if HasValue(icon) and not slotIcons[1] then BuildIcons(slotRow, slotIcons) end
         if HasValue(icon) and ShowIcon(slotIcons[slotShown + 1], icon, duration, expiration) then
             slotShown = slotShown + 1
         end
         return slotShown >= slotLimit
     end
 
-    local function PopulateAuraIconsBySlots(unit, filter, icons, limit)
+    local function PopulateAuraIconsBySlots(unit, filter, icons, limit, row)
         local iterate = AuraUtil and AuraUtil.ForEachAura
         if type(iterate) ~= "function" then return 0, "missing" end
-        slotIcons, slotLimit, slotShown = icons, limit, 0
+        slotIcons, slotRow, slotLimit, slotShown = icons, row, limit, 0
         local ok = pcall(iterate, unit, filter, limit, SlotCallback)
         local shown = slotShown
-        slotIcons = nil
+        slotIcons, slotRow = nil, nil
         return shown, not ok and "error" or shown > 0 and "shown" or "none"
     end
 
-    local function PopulateAuraIconsLegacy(kind, unit, filter, icons, limit)
+    local function PopulateAuraIconsLegacy(kind, unit, filter, icons, limit, row)
         local api = kind == "buffs" and UnitBuff or UnitDebuff
         if type(api) ~= "function" then return 0, "missing" end
         -- UnitBuff/UnitDebuff already imply HELPFUL/HARMFUL; their optional filter
@@ -246,6 +263,7 @@ PS._CreatePlateAuras = function(context)
             if not ok then return shown, "error" end
             if not HasValue(name) then break end
             if not HasValue(icon) then break end
+            if not icons[1] then BuildIcons(row, icons) end
             if not ShowIcon(icons[index], icon, duration, expiration) then return shown, "texture-error" end
             shown = index
         end
@@ -262,7 +280,7 @@ PS._CreatePlateAuras = function(context)
         local shown, indexState = 0, "error"
         if not (errorKey and data[errorKey]) then
             local api = C_UnitAuras and C_UnitAuras.GetAuraDataByIndex
-            shown, indexState = PopulateAuraIconsByIndex(api, unit, filter, icons, limit)
+            shown, indexState = PopulateAuraIconsByIndex(api, unit, filter, icons, limit, data[kind])
             if errorKey and shown == 0 and indexState == "error" and Secret.InCombat() then data[errorKey] = true end
         end
         if shown > 0 then return shown, "indexed" end
@@ -272,10 +290,10 @@ PS._CreatePlateAuras = function(context)
             return 0, indexedRoutes[indexState]
         end
         local slotState
-        shown, slotState = PopulateAuraIconsBySlots(unit, filter, icons, limit)
+        shown, slotState = PopulateAuraIconsBySlots(unit, filter, icons, limit, data[kind])
         if shown > 0 then return shown, "slots" end
         local legacyState
-        shown, legacyState = PopulateAuraIconsLegacy(kind, unit, filter, icons, limit)
+        shown, legacyState = PopulateAuraIconsLegacy(kind, unit, filter, icons, limit, data[kind])
         if shown > 0 then return shown, "legacy" end
         return 0, FailedRoute(indexState, slotState, legacyState)
     end
@@ -311,16 +329,22 @@ PS._CreatePlateAuras = function(context)
         return signature
     end
 
-    local function BuildContainer(container, row, filter, layout, unit)
-        local corner, growX, growY, pin = FlowOf(layout)
+    -- A row's full line for the layout, as LayoutAuraRow sizes it.
+    local function RowSize(layout)
+        return layout.columns * layout.size + (layout.columns - 1) * layout.spacing, layout.size
+    end
+
+    -- Everything but the unit and the row: a container made ahead (the pool) is made this far,
+    -- and one made on first use goes on to AttachContainer at once.
+    local function PrepareContainer(container, filter, layout)
+        local corner, growX, growY = FlowOf(layout)
+        local width, height = RowSize(layout)
         container:SetEnabled(false)
-        container:SetSize(row:GetWidth(), row:GetHeight())
-        container:SetPoint(pin, row, pin, 0, 0)
+        container:SetSize(width, height)
         if container.SetIgnoreParentScale then container:SetIgnoreParentScale(false) end
-        container:SetFrameStrata(row:GetFrameStrata())
         if container.SetFlowLayoutAnchorPoint then container:SetFlowLayoutAnchorPoint(corner) end
         if container.SetFlowLayoutGrowthDirection then container:SetFlowLayoutGrowthDirection(growX, growY) end
-        if container.SetFlowLayoutMaximumLineSize then container:SetFlowLayoutMaximumLineSize(row:GetWidth()) end
+        if container.SetFlowLayoutMaximumLineSize then container:SetFlowLayoutMaximumLineSize(width) end
         container:AddAuraGroup("platesmith", filter, {
             maxFrameCount = layout.count,
             layout = { elementSpacing = layout.spacing, elementWidth = layout.size, elementHeight = layout.size },
@@ -342,9 +366,13 @@ PS._CreatePlateAuras = function(context)
                 if button.SetDurationCooldown then button:SetDurationCooldown(swipe) end
             end,
         })
-        container:SetUnit(unit)
-        container:SetEnabled(true)
-        container:Show()
+        container:Hide()
+    end
+
+    -- A prepared container goes to its row: its strata here, its unit (RefreshContainer) and its
+    -- place (Reanchor, as for any container new to the row) next.
+    local function AttachContainer(container, row)
+        container:SetFrameStrata(row:GetFrameStrata())
     end
 
     local function RefreshContainer(container, row, filter, unit)
@@ -355,6 +383,109 @@ PS._CreatePlateAuras = function(context)
         end
         container:SetEnabled(true)
         container:Show()
+        row.nativeAuraBound = unit
+    end
+
+    -- Pointed at this unit, enabled and shown since: the container follows the unit's auras by
+    -- itself, so pointing it again (the client reads all the unit's auras again) is skipped.
+    local function StillBound(container, row, filter, unit)
+        if row.nativeAuraBound ~= unit or row.nativeAuraFilter ~= filter then return false end
+        local ok, shown = pcall(container.IsShown, container)
+        return ok and IsReadable(shown) and shown == true
+    end
+
+    -- Containers made ahead, out of combat (Lifecycle's spares entry calls pool.Build): each layout
+    -- shape a row fell back to this session, and in a group instance the enemy plates' debuff row,
+    -- keeps up to POOL_PER_SHAPE ready, so a row falling back mid-pull takes one instead of paying
+    -- for its creation then. pool.shapes: signature -> { layout, filter }, at most POOL_SHAPES
+    -- (the oldest gives way); pool.ready: signature -> list of { container, filter }.
+    local POOL_PER_SHAPE, POOL_SHAPES, POOL_RETRY = 12, 2, 10
+    local pool = { shapes = {}, order = {}, ready = {}, retryAt = 0, built = 0, taken = 0 }
+    if context.Work then context.Work.containers = pool end
+
+    local function NoteShape(signature, layout, filter)
+        local shape = pool.shapes[signature]
+        if shape then
+            shape.layout, shape.filter = layout, filter
+            return
+        end
+        if #pool.order >= POOL_SHAPES then
+            pool.shapes[table.remove(pool.order, 1)] = nil
+        end
+        pool.shapes[signature] = { layout = layout, filter = filter }
+        pool.order[#pool.order + 1] = signature
+    end
+
+    -- The shape (and filter) the enemy plates' debuff row would fall back to in a group instance.
+    local function InstanceShape(db)
+        local policy = PS.NamePolicy
+        if not (db and policy and policy.InGroupInstance()) then return nil end
+        local profiles = db.plateProfiles
+        local profile = profiles and (profiles.enemyDungeon or profiles.enemy)
+        local position = profile and profile.layout and profile.layout.debuffs
+        local layout = profile and profile.auraLayouts and profile.auraLayouts.debuffs
+        if not layout or not position or position.visible == false or position.removed then return nil end
+        return layout, FILTERS.debuffs[db.debuffSource == "mine" and "mine" or "all"]
+    end
+
+    local function ShortOf(signature)
+        local ready = pool.ready[signature]
+        return (ready and #ready or 0) < POOL_PER_SHAPE
+    end
+
+    -- A shape with fewer than POOL_PER_SHAPE ready, or nil.
+    local function WantedShape()
+        local layout, filter = InstanceShape(GetSettings())
+        if layout then
+            local signature = LayoutSignature(layout)
+            if ShortOf(signature) then return signature, layout, filter end
+        end
+        for index = 1, #pool.order do
+            local signature = pool.order[index]
+            if ShortOf(signature) then
+                local shape = pool.shapes[signature]
+                return signature, shape.layout, shape.filter
+            end
+        end
+    end
+
+    -- After a failed build nothing is wanted for POOL_RETRY seconds (the spares entry then stops
+    -- until something starts it again); rows still make their own as before.
+    function pool.Wanted(now)
+        return (now or 0) >= pool.retryAt and WantedShape() ~= nil
+    end
+
+    -- Makes one container for a shape short of ready ones. Returns whether it made one.
+    function pool.Build(now)
+        if (now or 0) < pool.retryAt then return false end
+        local signature, layout, filter = WantedShape()
+        if not signature then return false end
+        local created, container = pcall(CreateFrame, "AuraContainer", nil, UIParent, "CustomAuraContainerTemplate")
+        if not created or not container or type(container.AddAuraGroup) ~= "function" then
+            pool.retryAt = (now or 0) + POOL_RETRY
+            return false
+        end
+        if not pcall(PrepareContainer, container, filter, layout) then
+            DisableContainer(container)
+            pool.retryAt = (now or 0) + POOL_RETRY
+            return false
+        end
+        local ready = pool.ready[signature] or {}
+        pool.ready[signature] = ready
+        ready[#ready + 1] = { container = container, filter = filter }
+        pool.built = pool.built + 1
+        return true
+    end
+
+    -- A ready container for the shape, and the filter it was made with; nil when none is.
+    local function TakePooled(signature)
+        local ready = pool.ready[signature]
+        local entry = ready and ready[#ready]
+        if not entry then return nil end
+        ready[#ready] = nil
+        pool.taken = pool.taken + 1
+        if context.PoolTaken then context.PoolTaken() end
+        return entry.container, entry.filter
     end
 
     -- The row resizes with the layout after the container is built. A centred row's container keeps
@@ -371,7 +502,7 @@ PS._CreatePlateAuras = function(context)
         local signature = LayoutSignature(layout)
         local container = row.nativeAuraContainer
         if container and row.nativeAuraSignature ~= signature then
-            DisableContainer(container)
+            DisableRowContainer(row, container)
             container = row.nativeAuraContainers and row.nativeAuraContainers[signature]
             row.nativeAuraContainer, row.nativeAuraAttempted = container, false
             if container then
@@ -379,22 +510,34 @@ PS._CreatePlateAuras = function(context)
             end
         end
         if not container then
-            -- A failed creation is retried after a while, not on every aura update.
-            local now = type(GetTime) == "function" and GetTime() or 0
-            if row.nativeAuraAttempted and now < (row.nativeAuraRetryAt or 0) then return false end
-            row.nativeAuraAttempted, row.nativeAuraRetryAt = true, now + 10
-            -- Owned by UIParent and pinned to the row, never inside the nameplate: other addons
-            -- (OmniCC GODMODE) sweep every nameplate's frame tree and hide any aura container
-            -- they find there. Scale, alpha and visibility follow the row.
-            local created, result = pcall(CreateFrame, "AuraContainer", nil, UIParent, "CustomAuraContainerTemplate")
-            if not created or not result or type(result.AddAuraGroup) ~= "function" then
-                row.nativeAuraState = "create-error"
-                row.nativeAuraError = created and "AddAuraGroup unavailable" or tostring(result):sub(1, 160)
-                return false
+            -- One made ahead is taken first; it only needs its row and unit.
+            local pooled, pooledFilter = TakePooled(signature)
+            if not pooled then
+                -- A failed creation is retried after a while, not on every aura update.
+                local now = type(GetTime) == "function" and GetTime() or 0
+                if row.nativeAuraAttempted and now < (row.nativeAuraRetryAt or 0) then return false end
+                row.nativeAuraAttempted, row.nativeAuraRetryAt = true, now + 10
+                -- Owned by UIParent and pinned to the row, never inside the nameplate: other addons
+                -- (OmniCC GODMODE) sweep every nameplate's frame tree and hide any aura container
+                -- they find there. Scale, alpha and visibility follow the row.
+                local created, result = pcall(CreateFrame, "AuraContainer", nil, UIParent, "CustomAuraContainerTemplate")
+                if not created or not result or type(result.AddAuraGroup) ~= "function" then
+                    row.nativeAuraState = "create-error"
+                    row.nativeAuraError = created and "AddAuraGroup unavailable" or tostring(result):sub(1, 160)
+                    return false
+                end
+                local prepared, failure = pcall(PrepareContainer, result, filter, layout)
+                if not prepared then
+                    DisableContainer(result)
+                    row.nativeAuraState = "configure-error"
+                    row.nativeAuraError = tostring(failure):sub(1, 160)
+                    return false
+                end
+                pooled, pooledFilter = result, filter
             end
-            container = result
-            local configured, failure = pcall(BuildContainer, container, row, filter, layout, data.unit)
-            if not configured then
+            container = pooled
+            local attached, failure = pcall(AttachContainer, container, row)
+            if not attached then
                 DisableContainer(container)
                 row.nativeAuraState = "configure-error"
                 row.nativeAuraError = tostring(failure):sub(1, 160)
@@ -403,19 +546,23 @@ PS._CreatePlateAuras = function(context)
             row.nativeAuraContainers = row.nativeAuraContainers or {}
             row.nativeAuraFilters = row.nativeAuraFilters or {}
             row.nativeAuraContainers[signature] = container
-            row.nativeAuraContainer, row.nativeAuraFilter, row.nativeAuraSignature = container, filter, signature
+            row.nativeAuraContainer, row.nativeAuraFilter, row.nativeAuraSignature = container, pooledFilter, signature
+            row.nativeAuraBound = nil
+            -- This client makes containers and rows of this shape fall back to them: keep some ready.
+            NoteShape(signature, layout, filter)
             -- Not the row's child, so it leaves with the row explicitly.
             if not row.nativeAuraHooked then
                 row.nativeAuraHooked = true
                 row:HookScript("OnHide", function()
                     local current = row.nativeAuraContainer
-                    if current then DisableContainer(current) end
+                    if current then DisableRowContainer(row, current) end
                 end)
             end
-        else
+        end
+        if not StillBound(container, row, filter, data.unit) then
             local configured, failure = pcall(RefreshContainer, container, row, filter, data.unit)
             if not configured then
-                DisableContainer(container)
+                DisableRowContainer(row, container)
                 row.nativeAuraState = "update-error"
                 row.nativeAuraError = tostring(failure):sub(1, 160)
                 return false
@@ -475,14 +622,11 @@ PS._CreatePlateAuras = function(context)
         if row:IsShown() ~= shown then row:SetShown(shown) end
     end
 
-    -- Whether the plate shows this row at all: off in the settings, turned off in the layout, or on
-    -- a plate PlateSmith does not draw, it reads nothing.
+    -- Whether the plate shows this row at all: turned off in the layout, or on a plate PlateSmith
+    -- does not draw, it reads nothing.
     local function RowWanted(data, kind)
-        local db = GetSettings()
-        local enabled = db.showDebuffs
-        if kind == "buffs" then enabled = db.showBuffs end
         local position = data.layout and data.layout[kind]
-        return data.own and enabled and position ~= nil and position.visible ~= false and not position.removed
+        return data.own and position ~= nil and position.visible ~= false and not position.removed
             and not (data.restrictedFriendly and not data.restrictedOverlayEnabled)
             and data.overlay:IsShown() or false
     end
@@ -498,7 +642,7 @@ PS._CreatePlateAuras = function(context)
             -- Put away once; a row that stays off costs nothing on later updates.
             if row.plateSmithActive ~= false then
                 row.plateSmithActive = false
-                if row.nativeAuraContainer then DisableContainer(row.nativeAuraContainer) end
+                if row.nativeAuraContainer then DisableRowContainer(row, row.nativeAuraContainer) end
                 row:Hide()
             end
             return false
@@ -528,7 +672,7 @@ PS._CreatePlateAuras = function(context)
         -- filter for auras already matched), so unreadable buffs stay hidden instead.
         local container = row.nativeAuraContainer
         if shown > 0 then
-            if container then DisableContainer(container) end
+            if container then DisableRowContainer(row, container) end
         elseif kind == "debuffs" and (route:find("index=error", 1, true) or route == "indexed-protected") then
             -- The native aura widget only lays out while its row is visible.
             PlaceRow(row, icons, layout, 0)
@@ -542,7 +686,7 @@ PS._CreatePlateAuras = function(context)
                 return true
             end
         elseif container then
-            DisableContainer(container)
+            DisableRowContainer(row, container)
         end
         if shown == 0 and row.nativeAuraState and row.nativeAuraState ~= "ready" then
             route = ContainerRoute(route, row.nativeAuraState)

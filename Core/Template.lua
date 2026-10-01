@@ -33,16 +33,20 @@ Template.tokens = {
     ["health"] = "number", ["health.max"] = "number", ["health.percent"] = "percent", ["health.missing"] = "number",
     ["power"] = "number", ["power.max"] = "number", ["power.percent"] = "percent",
     ["threat.percent"] = "percent", ["threat.lead"] = "signed", ["threat.raw"] = "number",
+    ["threat.leadpercent"] = "percent",
     ["level"] = "number", ["name"] = "text", ["target"] = "text",
     ["tagged"] = "flag", ["elite"] = "flag", ["rare"] = "flag", ["boss"] = "flag", ["casting"] = "flag",
     ["combat"] = "flag", ["tanking"] = "flag", ["targeted"] = "flag", ["player"] = "flag",
     ["focus"] = "flag", ["quest"] = "flag", ["friendly"] = "flag",
     ["level.smart"] = "text", ["level.diff"] = "signed", ["classification"] = "text", ["guild"] = "text",
     ["cast.name"] = "text", ["threat.hold"] = "text",
-    ["hostile"] = "flag", ["neutral"] = "flag", ["interruptible"] = "flag", ["questdrop"] = "flag",
+    ["hostile"] = "flag", ["neutral"] = "flag", ["interruptible"] = "flag", ["interruptReady"] = "flag",
+    ["questdrop"] = "flag",
     ["pvp"] = "flag", ["instance"] = "flag", ["ingroup"] = "flag", ["inguild"] = "flag",
     ["role.tank"] = "flag", ["threat.holding"] = "flag", ["threat.losing"] = "flag", ["threat.pulling"] = "flag",
     ["threat.other"] = "flag", ["threat.offtank"] = "flag",
+    ["hastarget"] = "flag", ["inrange"] = "flag", ["quest.progress"] = "text", ["quest.percent"] = "percent",
+    ["combo"] = "number",
 }
 -- Short names people know from other addons.
 Template.aliases = {
@@ -50,6 +54,7 @@ Template.aliases = {
     ["health.current"] = "health", ["health.deficit"] = "health.missing",
     pp = "power", maxpp = "power.max", ppp = "power.percent", ["power.current"] = "power",
     tp = "threat.percent", ["threat.diff"] = "threat.lead",
+    hasTarget = "hastarget", inRange = "inrange",
 }
 local function Resolve(name) return Template.aliases[name] or name end
 local FORMATS = { short = true, ["0"] = true, ["1"] = true, ["2"] = true }

@@ -51,6 +51,7 @@ Conflicts.KNOWN = {
     { addon = "NeatPlates", label = "NeatPlates" },
     { addon = "Platynator", label = "Platynator" },
     { addon = "nPlates", label = "nPlates" },
+    { addon = "EUIStandaloneNameplates", label = "EUI Nameplates" },
     { addon = "ElvUI", label = "ElvUI", suite = true, check = ElvUIPlates },
     { addon = "Tukui", label = "Tukui", suite = true, check = TukuiPlates },
 }
@@ -66,6 +67,16 @@ function Conflicts.Provider()
         if Running(entry) then return entry.addon end
     end
 end
+
+-- Provider() as the plate runtime asks it, on every plate it lays out: kept until an addon loads or
+-- the world reloads (Lifecycle calls ForgetProvider), the only times the answer can change.
+local providerCache = { known = false }
+function Conflicts.CachedProvider()
+    if not providerCache.known then providerCache.name, providerCache.known = Conflicts.Provider(), true end
+    return providerCache.name
+end
+
+function Conflicts.ForgetProvider() providerCache.known = false end
 
 -- Every running nameplate addon's entry, in list order.
 function Conflicts.Detect()
@@ -148,7 +159,9 @@ function Conflicts.Notice(found, mode)
     return notice
 end
 
--- Disables the addon for this character, then reloads. A failed disable does not reload.
+-- Disables the addon for this character, then offers the reload. Addon code may not reload the
+-- interface (the client blocks C_UI.Reload), so the notice shows a secure button that runs
+-- /reload when the player clicks it. A failed disable offers nothing.
 function Conflicts.DisableAndReload(entry)
     local disable = C_AddOns and C_AddOns.DisableAddOn or _G.DisableAddOn
     if type(disable) ~= "function" then return false end
@@ -157,8 +170,7 @@ function Conflicts.DisableAndReload(entry)
         PS.Chat.ReportError("disable " .. entry.addon, reason)
         return false
     end
-    local reload = C_UI and C_UI.Reload or _G.ReloadUI
-    if type(reload) == "function" then reload() end
+    Conflicts.ShowReload(entry)
     return true
 end
 
@@ -203,8 +215,9 @@ local function CreateNotice()
     frame.suite, frame.hint = TextBlock(frame, "label"), TextBlock(frame, "muted")
     local half = (WIDTH - 2 * PAD - GAP) / 2
     frame.disableButtons = {}
+    -- Full width, one under the other: "Disable <addon> and reload" is too long for half.
     for index = 1, 2 do
-        frame.disableButtons[index] = Window.Button(frame, "", half, BUTTON_H, function(button)
+        frame.disableButtons[index] = Window.Button(frame, "", WIDTH - 2 * PAD, BUTTON_H, function(button)
             if button.entry then Conflicts.RequestDisable(button.entry) end
         end)
     end
@@ -249,8 +262,9 @@ local function Render(frame, notice)
         button:ClearAllPoints()
         if entry then
             button:SetText(string.format(L["Disable %s and reload"], entry.label))
-            button:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD + (index - 1) * (button:GetWidth() + GAP), y)
+            button:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD, y)
             button:Show()
+            y = y - BUTTON_H - GAP
         else
             button:Hide()
         end
@@ -259,16 +273,76 @@ local function Render(frame, notice)
     if #disable > 2 then
         frame.disableMenu:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD, y)
         frame.disableMenu:Show()
+        y = y - BUTTON_H - GAP
     else
         frame.disableMenu:Hide()
     end
-    if #disable > 0 then y = y - BUTTON_H - GAP end
+    if frame.reload then frame.reload:Hide() end
+    frame.dismiss:Show()
     frame.keep:SetText(notice.keep)
     frame.keep:ClearAllPoints()
     frame.keep:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD, y)
     frame.dismiss:ClearAllPoints()
     frame.dismiss:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -PAD, y)
     frame:SetHeight(math.floor(-y + BUTTON_H + PAD + 0.5))
+end
+
+-- The secure reload button: the client runs its /reload on the player's click, which addon code
+-- may not do itself. Parented to UIParent (not the notice) so hiding the notice in combat stays
+-- allowed; it follows the notice and hides with it out of combat.
+local function ReloadButton(frame)
+    if frame.reload then return frame.reload end
+    local button = CreateFrame("Button", "PlateSmithConflictReload", UIParent, "SecureActionButtonTemplate, UIPanelButtonTemplate")
+    button:SetSize((WIDTH - 2 * PAD - GAP) / 2, BUTTON_H)
+    button:SetFrameStrata("FULLSCREEN_DIALOG")
+    if button.SetFrameLevel and frame.GetFrameLevel then button:SetFrameLevel((frame:GetFrameLevel() or 0) + 10) end
+    button:SetText(L["Reload now"])
+    if button.SetAttribute then
+        button:SetAttribute("type", "macro")
+        button:SetAttribute("macrotext", "/reload")
+        button:SetAttribute("useOnKeyDown", false)
+    end
+    if button.RegisterForClicks then button:RegisterForClicks("AnyUp", "AnyDown") end
+    button:Hide()
+    frame.reload = button
+    frame[frame.HookScript and "HookScript" or "SetScript"](frame, "OnHide", function()
+        if not Secret.InCombat() then button:Hide() end
+    end)
+    return button
+end
+
+-- After a disable: the notice says it is off and offers the reload (or, in combat, where a secure
+-- button cannot be shown, says to type /reload).
+function Conflicts.ShowReload(entry)
+    local message = string.format(L["%s is off for this character. Reload the interface to finish."], entry.label)
+    if Secret.InCombat() then
+        PS.Chat.Print(message .. " " .. L["Type /reload after combat."])
+        return false
+    end
+    local frame = Conflicts.frame or CreateNotice()
+    Conflicts.frame = frame
+    local y = -TOP
+    for _, key in ipairs({ "body", "warning", "suite", "hint" }) do
+        local text = frame[key]
+        text:ClearAllPoints()
+        text:SetText(key == "body" and message or "")
+        text:SetShown(key == "body")
+    end
+    frame.body:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD, y)
+    y = y - TextHeight(frame.body, message) - GAP - 4
+    for _, button in ipairs(frame.disableButtons) do button:Hide() end
+    frame.disableMenu:Hide()
+    frame.dismiss:Hide()
+    local reload = ReloadButton(frame)
+    reload:ClearAllPoints()
+    reload:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -PAD, y)
+    reload:Show()
+    frame.keep:SetText(L["Later"])
+    frame.keep:ClearAllPoints()
+    frame.keep:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD, y)
+    frame:SetHeight(math.floor(-y + BUTTON_H + PAD + 0.5))
+    frame:Show()
+    return true
 end
 
 function Conflicts.ShowNotice(found)
@@ -318,6 +392,8 @@ function Conflicts.OnEvent(event)
         session.readyAt = Now() + LOADING_DELAY
         PS.Ticker.SetEnabled("conflicts.notice", true)
     elseif event == "PLAYER_REGEN_ENABLED" then
+        local frame = Conflicts.frame
+        if frame and frame.reload and not frame:IsShown() then frame.reload:Hide() end
         if session.waitingCombat and not session.readyAt then Conflicts.TryShow() end
     end
 end

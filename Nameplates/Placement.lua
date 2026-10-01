@@ -4,8 +4,9 @@ local _, PS = ...
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
 
 PS._CreatePlatePlacement = function(context)
-    local IsReadable = PS.Secret.IsReadable
+    local IsReadable, ReadNumber = PS.Secret.IsReadable, PS.Secret.ReadNumber
     local Styles, MarkVisibility, Counters = context.Styles, context.MarkVisibility, context.Counters
+    local GetSettings, ApplyNameplateFont = context.GetSettings, context.ApplyNameplateFont
     local VALUE_SLOT_COUNT = S.VALUE_SLOT_COUNT
     local VALUE_KEYS, IS_VALUE_KEY, EMPTY = Styles.VALUE_KEYS, Styles.IS_VALUE_KEY, Styles.EMPTY
     local UpdateValueAnchors
@@ -22,17 +23,11 @@ PS._CreatePlatePlacement = function(context)
     end
 
     -- Every region a part's rules and hiding apply to: classification's text and icon both, so a
-    -- switch of style keeps the rule's look.
+    -- switch of style keeps the rule's look, and the quest mark with its progress text.
     local function PartRegions(data, key)
         if key == "classification" then return data.classification, data.classificationIcon end
+        if key == "quest" then return data.quest, data.questProgressLabel end
         return PartRegion(data, key), nil
-    end
-
-    local function ReadNumber(region, method)
-        local fn = region[method]
-        if type(fn) ~= "function" then return nil end
-        local ok, value = pcall(fn, region)
-        if ok and IsReadable(value) and type(value) == "number" then return value end
     end
 
     local function IsText(region)
@@ -270,7 +265,7 @@ PS._CreatePlatePlacement = function(context)
             for key, position in pairs(layout) do
                 local parent = type(position) == "table" and position.parent
                 if parent and layout[parent] and not S.IsGroupKey(parent) then
-                    list[#list + 1] = { key = key, parent = parent }
+                    list[#list + 1] = { key = key, parent = parent, value = IS_VALUE_KEY[key] == true }
                     list.parentOf[key] = parent
                 end
             end
@@ -352,12 +347,18 @@ PS._CreatePlatePlacement = function(context)
         local faded = data.parentFadedSpare or {}
         data.parentFadedSpare = nil
         for key in pairs(hiddenScratch) do hiddenScratch[key] = nil end
+        -- A custom part not made on this plate (most of the 24 slots, all on a names-only plate)
+        -- has nothing to fade, so its parent is not asked.
+        local values = data.values or EMPTY
         for index = 1, #children do
             local entry = children[index]
-            local under = HiddenUnder(data, layout, children.parentOf, entry.parent, 0)
-            local first, second = PartRegions(data, entry.key)
-            SetParentFaded(first, under, faded)
-            SetParentFaded(second, under, faded)
+            local first, second
+            if entry.value then first = values[entry.key] else first, second = PartRegions(data, entry.key) end
+            if first or second then
+                local under = HiddenUnder(data, layout, children.parentOf, entry.parent, 0)
+                SetParentFaded(first, under, faded)
+                SetParentFaded(second, under, faded)
+            end
         end
         -- Faded before but not now (moved to another parent, or another layout): its own alpha back.
         if previous then
@@ -387,6 +388,67 @@ PS._CreatePlatePlacement = function(context)
         MarkVisibility(data)
     end
 
+    -- A cast on a names-only plate (settings namesOnlyCastFriendly, namesOnlyCastEnemy): the plate's own
+    -- cast bar, slim and a fixed width (never measured: a restricted plate's regions can refuse), under
+    -- the name or the guild line pinned below it, its spell name and time small under the bar.
+    -- data.nameCast: the bar is drawn this way; Lifecycle's rounds.SetNameCast switches it back.
+    local NAME_CAST_HEIGHT, NAME_CAST_ICON, NAME_CAST_FONT, NAME_CAST_GAP = 6, 12, 8, 2
+    local NameCast = {}
+
+    -- Whether this plate shows its cast that way: owned, never a restricted friendly plate, and a
+    -- names-only friendly plate, or an enemy plate whose layout hides both its health and cast bars.
+    function NameCast.Wanted(data)
+        if not data.own or data.restrictedFriendly then return false end
+        local settings = GetSettings()
+        if data.namesOnly then return settings.namesOnlyCastFriendly == true end
+        if data.friendly ~= false or settings.namesOnlyCastEnemy ~= true then return false end
+        local layout = data.layout
+        return layout ~= nil and S.TurnedOff(layout.health) and S.TurnedOff(layout.cast)
+    end
+
+    function NameCast.Place(data)
+        local cast, guild = data.cast, data.layout and data.layout.guild
+        local above = data.name
+        if type(guild) == "table" and guild.parent == "name" and not S.TurnedOff(guild) and data.guild:IsShown() then
+            above = data.guild
+        end
+        cast:ClearAllPoints()
+        if cast.SetScale then cast:SetScale(1) end
+        -- A layout could pin the name under the cast bar; the client refuses the loop, so the bar
+        -- then sits under the plate's centre.
+        if not pcall(cast.SetPoint, cast, "TOP", above, "BOTTOM", 0, -NAME_CAST_GAP) then
+            cast:ClearAllPoints()
+            cast:SetPoint("TOP", data.overlay, "CENTER", 0, -NAME_CAST_GAP)
+        end
+    end
+
+    function NameCast.Apply(data)
+        data.nameCast = true
+        local profile, cast, icon, time, name = data.profile, data.cast, data.castIcon, data.castTime, data.castName
+        cast:SetSize(GetSettings().namesOnlyCastWidth or 90, NAME_CAST_HEIGHT)
+        icon:SetSize(NAME_CAST_ICON, NAME_CAST_ICON)
+        icon:ClearAllPoints()
+        if profile.castIcon == "right" then
+            icon:SetPoint("TOPLEFT", cast, "TOPRIGHT", 2, 0)
+        else
+            icon:SetPoint("TOPRIGHT", cast, "TOPLEFT", -2, 0)
+        end
+        ApplyNameplateFont(time, NAME_CAST_FONT)
+        ApplyNameplateFont(name, NAME_CAST_FONT)
+        time:ClearAllPoints()
+        time:SetPoint("TOPRIGHT", cast, "BOTTOMRIGHT", 0, -1)
+        name:ClearAllPoints()
+        name:SetPoint("TOPLEFT", cast, "BOTTOMLEFT", 0, -1)
+        if profile.castTime ~= false then
+            name:SetPoint("TOPRIGHT", time, "TOPLEFT", -2, 0)
+            name:SetJustifyH("LEFT")
+        else
+            name:SetPoint("TOPRIGHT", cast, "BOTTOMRIGHT", 0, -1)
+            name:SetJustifyH("CENTER")
+        end
+        NameCast.Place(data)
+    end
+
     local LAYOUT_PARTS = { "health", "power", "name", "level", "guild", "targetName", "cast", "threat", "tagged", "quest" }
     local LATE_LAYOUT_PARTS = { "raidIcon", "relationshipIcon", "pvpIcon", "classification", "buffs", "debuffs" }
 
@@ -401,12 +463,16 @@ PS._CreatePlatePlacement = function(context)
         -- on name) would otherwise anchor a part to one still anchored to it, which the client refuses.
         for _, key in ipairs(LAYOUT_PARTS) do data[key]:ClearAllPoints() end
         for _, key in ipairs(LATE_LAYOUT_PARTS) do data[key]:ClearAllPoints() end
+        -- Combo points are made only on a plate that shows them (ComboPoints.lua).
+        if data.combo then data.combo:ClearAllPoints() end
+        if data.targetedBy then data.targetedBy:ClearAllPoints() end
         for index = 1, VALUE_SLOT_COUNT do
             local region = data.values[VALUE_KEYS[index]]
             if region then region:ClearAllPoints() end
         end
         if data.classificationIcon then data.classificationIcon:ClearAllPoints() end
         for _, key in ipairs(LAYOUT_PARTS) do AnchorPart(data, data[key], key) end
+        if data.nameCast then NameCast.Place(data) end
         -- The loot bag takes the quest mark's place and scale.
         data.questLoot:ClearAllPoints()
         data.questLoot:SetPoint("CENTER", data.quest, "CENTER", 0, 0)
@@ -417,6 +483,8 @@ PS._CreatePlatePlacement = function(context)
         data.valueAnchorsDirty = true
         UpdateValueAnchors(data)
         for _, key in ipairs(LATE_LAYOUT_PARTS) do AnchorPart(data, data[key], key) end
+        if data.combo then AnchorPart(data, data.combo, "combo") end
+        if data.targetedBy then AnchorPart(data, data.targetedBy, "targetedBy") end
         -- The classification's icon is placed like its text, not centred on it: an empty text is
         -- 0 px wide, so an icon on its centre would sit half over the bar it is pinned to.
         if data.classificationIcon then AnchorPart(data, data.classificationIcon, "classification") end
@@ -438,10 +506,15 @@ PS._CreatePlatePlacement = function(context)
             end
             table.sort(keys)
             -- keys.pinParents: parts a pinned part may meet (its parent and on up); while one is
-            -- absent the pinned part meets the next, so their shown state places parts too.
-            local pinParents, seen = {}, {}
+            -- absent the pinned part meets the next, so their shown state places parts too. A
+            -- turned-off pinned part with nothing under it is drawn nowhere, so it adds none.
+            local pinParents, seen, hasChildren = {}, {}, {}
             for _, position in pairs(layout) do
-                local parent = type(position) == "table" and S.ATTACH_EDGES[position.attach] and position.parent
+                if type(position) == "table" and type(position.parent) == "string" then hasChildren[position.parent] = true end
+            end
+            for key, position in pairs(layout) do
+                local parent = type(position) == "table" and S.ATTACH_EDGES[position.attach]
+                    and (hasChildren[key] or not S.TurnedOff(position)) and position.parent
                 for _ = 1, S.MAX_DEPTH do
                     if type(parent) ~= "string" or S.IsGroupKey(parent) or type(layout[parent]) ~= "table" then break end
                     if not seen[parent] and not CONTAINERS[parent] and not IS_VALUE_KEY[parent] then
@@ -500,9 +573,10 @@ PS._CreatePlatePlacement = function(context)
     end
 
     return {
-        PartRegions = PartRegions, ReadNumber = ReadNumber, SafeSize = SafeSize,
+        PartRegions = PartRegions, SafeSize = SafeSize, AnchorPart = AnchorPart,
         HasStacks = HasStacks, Transforms = Transforms, RestoreParentFaded = RestoreParentFaded, RegionAlpha = RegionAlpha,
         ApplyParentVisibility = ApplyParentVisibility, UpdateValueAnchors = UpdateValueAnchors,
         ApplyComponentLayout = ApplyComponentLayout, StackStateChanged = StackStateChanged, ReflowStacks = ReflowStacks,
+        NameCast = NameCast,
     }
 end

@@ -24,6 +24,8 @@ local DEFAULT_WIDTH, DEFAULT_HEIGHT = 320, 170
 local FIRST_OFFSET_X = 260
 local METER_WINDOWS = 3
 local SNAP_COLOUR = { 1, 0.82, 0.35 }
+local SNAP_GLOW_WIDTH = 12 -- the target's glow band, centred on its edges
+local SNAP_PULSE_SPEED = 6 -- radians a second: about one breath a second
 
 local ranges = Geometry.WINDOW_RANGES
 local modes = { threat = true, tank = true }
@@ -31,7 +33,7 @@ local dockSides = { right = true, left = true, above = true, below = true }
 local DOCK_SIDE_ORDER = { "right", "left", "above", "below" }
 local dockSideLabels = { right = L["Right"], left = L["Left"], above = L["Above"], below = L["Below"] }
 
-local ThreatConsole = { meters = {}, dirty = true, lastSnapshotRevision = -1, lastGroupRevision = -1,
+local ThreatConsole = { version = 1, meters = {}, dirty = true, lastSnapshotRevision = -1, lastGroupRevision = -1,
     watchedRecords = {}, tankShown = false }
 
 local function Bounded(range, value, fallback)
@@ -78,6 +80,8 @@ local function NormalizeWindow(record, id)
     record.theme = theme
     record.locked = record.locked == true
     record.shown = record.shown ~= false
+    -- Tank mode: your current target is the first row whatever the order (on by default).
+    record.targetFirst = record.targetFirst ~= false
     record.alpha = Bounded(ranges.alpha, record.alpha, 1)
     record.rowHeight = math.floor(Bounded(ranges.rowHeight, record.rowHeight, Themes.Get(theme).rowHeight) + 0.5)
     record.width = Bounded(ranges.width, record.width, DEFAULT_WIDTH)
@@ -307,7 +311,7 @@ function ThreatConsole:RenameWindow(id, name)
 end
 
 -- Validated writes for one window's options (mode, theme, locked, alpha, rowHeight, dockMeter,
--- dockSide, shown). Returns false for an unknown key or a rejected value.
+-- dockSide, shown, targetFirst). Returns false for an unknown key or a rejected value.
 function ThreatConsole:SetWindowOption(id, key, value)
     local record = self:GetWindow(id)
     if not record then return false end
@@ -316,7 +320,7 @@ function ThreatConsole:SetWindowOption(id, key, value)
     elseif key == "theme" then
         if not Themes.IsValid(value) then return false end
         record.rowHeight = Themes.Get(value).rowHeight
-    elseif key == "locked" or key == "shown" then
+    elseif key == "locked" or key == "shown" or key == "targetFirst" then
         value = value == true
     elseif key == "alpha" or key == "rowHeight" then
         if type(value) ~= "number" then return false end
@@ -496,34 +500,56 @@ function ThreatConsole:Notify(message)
     PS.Chat.Print(message)
 end
 
+-- A group member's name line; a protected name goes straight into the tooltip's sink.
+local function AddNameLine(name, unit, opaque, hasOpaque)
+    if hasOpaque and pcall(GameTooltip.AddLine, GameTooltip, opaque, 1, 1, 1) then return end
+    GameTooltip:AddLine(name or unit or L["Unknown"], 1, 1, 1)
+end
+
 -- Row tooltips: enemies list who is attacking and targeting them; members their threat.
 function ThreatConsole:ShowActivityTooltip(row)
     local source = self:Source()
     if not row or not row.unit or not source or not GameTooltip then return end
-    local attacking = source:GetActiveAttackerCount(row.unit)
-    local targeting = source:GetTargeterCount(row.unit)
+    local attacking, attackingState = source:GetActiveAttackerCount(row.unit)
+    local targeting, targetingState = source:GetTargeterCount(row.unit)
     if GameTooltip.ClearLines then GameTooltip:ClearLines() end
     GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-    GameTooltip:SetText(row.enemyName or L["Enemy"])
-    GameTooltip:AddLine(L["Actively attacking"], 1, 0.82, 0)
-    if attacking == 0 then
+    if not (row.hasOpaqueName and pcall(GameTooltip.SetText, GameTooltip, row.enemyNameOpaque)) then
+        GameTooltip:SetText(row.enemyName or L["Enemy"])
+    end
+    -- Inferred, never observed: the client names no damage source.
+    GameTooltip:AddLine(L["Possible attackers"], 1, 0.82, 0)
+    if attacking == 0 and attackingState == "no-signal" then
+        GameTooltip:AddLine(L["Unknown: the game has not reported damage to this enemy."], 0.72, 0.72, 0.72)
+    elseif attacking == 0 and (attackingState == "unknown" or attackingState == "partial") then
+        GameTooltip:AddLine(L["Unknown (the game hides some targets here)."], 0.72, 0.72, 0.72)
+    elseif attacking == 0 then
         GameTooltip:AddLine(L["No recent damage + current target match."], 0.72, 0.72, 0.72)
     else
+        if attackingState == "partial" then GameTooltip:AddLine(L["At least:"], 0.72, 0.72, 0.72) end
         for index = 1, attacking do
-            local name = source:GetActiveAttacker(row.unit, index)
-            GameTooltip:AddLine(name or L["Unknown"], 1, 1, 1)
+            AddNameLine(source:GetActiveAttacker(row.unit, index))
         end
-        GameTooltip:AddLine(L["Inferred = mob damage plus a matching current target."], 0.62, 0.72, 0.82)
     end
+    GameTooltip:AddLine(L["Inferred from recent damage to this mob + targeting it."], 0.62, 0.72, 0.82)
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine(L["Currently targeting"], 1, 0.82, 0)
-    if targeting == 0 then
+    -- "None" only when every member's target was read; otherwise the list is a lower bound.
+    if targeting == 0 and targetingState == "none" then
         GameTooltip:AddLine(L["No group members targeting this enemy."], 0.72, 0.72, 0.72)
+    elseif targeting == 0 then
+        GameTooltip:AddLine(L["Targeting unknown (the game hides some targets here)."], 0.72, 0.72, 0.72)
     else
+        if targetingState == "partial" then GameTooltip:AddLine(L["At least:"], 0.72, 0.72, 0.72) end
         for index = 1, targeting do
-            local name = source:GetTargeter(row.unit, index)
-            GameTooltip:AddLine(name or L["Unknown"], 1, 1, 1)
+            AddNameLine(source:GetTargeter(row.unit, index))
         end
+    end
+    local entry = row.entry
+    if type(entry) == "table" and entry.leadKept == true and type(entry.keptAt) == "number" and type(GetTime) == "function" then
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine(string.format(L["Gap last seen %ds ago (read while hovered or focused)."],
+            math.max(0, math.floor(GetTime() - entry.keptAt))), 0.62, 0.72, 0.82)
     end
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine(L["Left-click spotlights this exact visible unit."], 0.55, 0.8, 1)
@@ -538,10 +564,20 @@ function ThreatConsole:ShowMemberTooltip(row)
     if not entry or not GameTooltip then return end
     if GameTooltip.ClearLines then GameTooltip:ClearLines() end
     GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-    GameTooltip:SetText(entry.name or entry.unit or L["Unknown"])
+    if not (entry.hasOpaqueName and pcall(GameTooltip.SetText, GameTooltip, entry.nameOpaque)) then
+        GameTooltip:SetText(entry.name or entry.unit or L["Unknown"])
+    end
     if roleLabels[entry.role] then GameTooltip:AddLine(roleLabels[entry.role], 0.72, 0.72, 0.72) end
     if entry.isPet then GameTooltip:AddLine(L["Pet"], 0.72, 0.72, 0.72) end
-    GameTooltip:AddLine(string.format(L["On %s"], row.enemyName or L["Enemy"]), 1, 0.82, 0)
+    if entry.isOutside then
+        GameTooltip:AddLine(L["Outside your group. Its threat total is worked out from yours (Experimental)."],
+            0.72, 0.72, 0.72, true)
+    end
+    -- A protected enemy name cannot go through string.format: it takes the right-hand column.
+    if not (row.hasOpaqueName and pcall(GameTooltip.AddDoubleLine, GameTooltip, L["On"], row.enemyNameOpaque,
+        1, 0.82, 0, 1, 0.82, 0)) then
+        GameTooltip:AddLine(string.format(L["On %s"], row.enemyName or L["Enemy"]), 1, 0.82, 0)
+    end
     if entry.tanking == true then GameTooltip:AddLine(L["Holding aggro"], 1, 1, 1) end
     if type(entry.gap) == "number" then
         GameTooltip:AddLine(string.format(entry.tanking == true and L["%s before anyone pulls it (110%% rule)"]
@@ -566,6 +602,11 @@ end
 -- Rows never target: they spotlight the exact plate, checked by serial, root and GUID.
 function ThreatConsole:HighlightRow(row)
     if not row or not row.unit or not self.service or (row.entry and row.entry.sample) then return false end
+    -- The threat meter read through "target" with no plate: nothing to spotlight.
+    if not row.root then
+        self.lastHighlightCheck = "no-plate"
+        return false
+    end
     local current, reason = self.service:IsCurrentPlate(row.unit, row.serial, row.root, row.guid)
     if not current then
         self.lastHighlightCheck = reason or "unavailable"
@@ -620,14 +661,7 @@ for index = 1, METER_WINDOWS do
     meterRectKeys[index] = "meter" .. index
 end
 
--- One of the meter frame's getters, or nil when it is missing, errors or is not a readable number.
-local function ReadNumber(target, method)
-    local getter = target[method]
-    if type(getter) ~= "function" then return nil end
-    local ok, value = pcall(getter, target)
-    if not ok or not IsReadable(value) or type(value) ~= "number" then return nil end
-    return value
-end
+local ReadNumber = Secret.ReadNumber
 
 -- Runs every docking and snap tick, so the rectangle is scratch (valid until the next call for
 -- the same meter).
@@ -684,15 +718,21 @@ function ThreatConsole:WindowRects(skipDocked)
     return rects
 end
 
--- Dragging moves the window's whole snapped group (Shift moves it alone). Followers are
--- anchored to the dragged frame for the drag, then placed back on UIParent where they landed.
+local function ShiftDown()
+    return type(IsShiftKeyDown) == "function" and IsShiftKeyDown() == true
+end
+
+-- Dragging moves the window's whole snapped group. Shift as the drag starts moves it alone and
+-- without snapping, to pull it out of a group and drop it anywhere. Followers are anchored to the
+-- dragged frame for the drag, then placed back on UIParent where they landed.
 function ThreatConsole:StartDrag(meter)
     local config = meter.config
     if config.locked then return false end
     self:EndDrag()
     local rects = self:WindowRects(true)
+    local free = ShiftDown()
     -- A following window is dragged alone: dropped away from the meter it stops following.
-    local alone = config.dockMeter > 0 or (type(IsShiftKeyDown) == "function" and IsShiftKeyDown())
+    local alone = config.dockMeter > 0 or free
     local group = alone and { [config.id] = true } or Geometry.Group(rects, config.id)
     local followers = {}
     for id in pairs(group) do
@@ -715,7 +755,7 @@ function ThreatConsole:StartDrag(meter)
         return false
     end
     self.dragBlockedReported = false
-    self.drag = { meter = meter, followers = followers, group = group }
+    self.drag = { meter = meter, followers = followers, group = group, free = free }
     if PS.Ticker then PS.Ticker.SetEnabled("threat.snap", true) end
     return true
 end
@@ -740,19 +780,39 @@ function ThreatConsole:SnapGuide()
     local highlight = CreateFrame("Frame", nil, UIParent)
     highlight:SetFrameStrata("DIALOG")
     if highlight.SetFrameLevel then highlight:SetFrameLevel(99) end
-    highlight.edges = {}
+    highlight.edges, highlight.glows = {}, {}
     for index = 1, 4 do
         local horizontal = index <= 2
         local texture = highlight:CreateTexture(nil, "OVERLAY")
         Themes.SetKit(texture, horizontal and "snap-guide-horizontal" or "snap-guide-vertical", horizontal, not horizontal)
         texture:SetVertexColor(SNAP_COLOUR[1], SNAP_COLOUR[2], SNAP_COLOUR[3], 0.7)
         highlight.edges[index] = texture
+        -- A wider, additive band under each edge: the soft glow that pulses (PulseHighlight).
+        local glow = highlight:CreateTexture(nil, "ARTWORK")
+        Themes.SetKit(glow, horizontal and "snap-guide-horizontal" or "snap-guide-vertical", horizontal, not horizontal)
+        glow:SetVertexColor(SNAP_COLOUR[1], SNAP_COLOUR[2], SNAP_COLOUR[3], 1)
+        if glow.SetBlendMode then glow:SetBlendMode("ADD") end
+        highlight.glows[index] = glow
     end
+    -- A faint wash over the target, so the window being joined reads at a glance.
+    highlight.fill = highlight:CreateTexture(nil, "BACKGROUND")
+    highlight.fill:SetAllPoints(highlight)
+    highlight.fill:SetColorTexture(SNAP_COLOUR[1], SNAP_COLOUR[2], SNAP_COLOUR[3], 1)
     highlight:Hide()
     guide.highlight = highlight
     guide:Hide()
     self.snapGuide = guide
     return guide
+end
+
+-- The glow and wash breathe while a snap is lined up (driven by the snap tick), starting bright
+-- the moment a target appears; the edges themselves stay steady.
+local function PulseHighlight(highlight)
+    local now = type(GetTime) == "function" and GetTime() or 0
+    local phase = math.cos((now - (highlight.pulseStart or now)) * SNAP_PULSE_SPEED) * 0.5 + 0.5
+    highlight.pulse = phase
+    for index = 1, 4 do highlight.glows[index]:SetAlpha(0.25 + 0.45 * phase) end
+    highlight.fill:SetAlpha(0.04 + 0.08 * phase)
 end
 
 local function ShowHighlight(highlight, rect)
@@ -770,7 +830,19 @@ local function ShowHighlight(highlight, rect)
     edges[3]:SetSize(4, height)
     edges[4]:SetPoint("BOTTOMLEFT", highlight, "BOTTOMRIGHT", -2, 0)
     edges[4]:SetSize(4, height)
+    local glows, pad = highlight.glows, SNAP_GLOW_WIDTH / 2
+    for index = 1, 4 do glows[index]:ClearAllPoints() end
+    glows[1]:SetPoint("BOTTOMLEFT", highlight, "TOPLEFT", -pad, -pad)
+    glows[1]:SetSize(width + SNAP_GLOW_WIDTH, SNAP_GLOW_WIDTH)
+    glows[2]:SetPoint("BOTTOMLEFT", highlight, "BOTTOMLEFT", -pad, -pad)
+    glows[2]:SetSize(width + SNAP_GLOW_WIDTH, SNAP_GLOW_WIDTH)
+    glows[3]:SetPoint("BOTTOMLEFT", highlight, "BOTTOMLEFT", -pad, -pad)
+    glows[3]:SetSize(SNAP_GLOW_WIDTH, height + SNAP_GLOW_WIDTH)
+    glows[4]:SetPoint("BOTTOMLEFT", highlight, "BOTTOMRIGHT", -pad, -pad)
+    glows[4]:SetSize(SNAP_GLOW_WIDTH, height + SNAP_GLOW_WIDTH)
+    if highlight.target == nil then highlight.pulseStart = type(GetTime) == "function" and GetTime() or 0 end
     highlight.target = rect
+    PulseHighlight(highlight)
     highlight:Show()
 end
 
@@ -783,10 +855,16 @@ function ThreatConsole:UpdateSnapGuide()
         return
     end
     local rect = CurrentRect(drag.meter)
+    if self:DragSkipsSnap(drag) then return self:DrawSnapGuide(rect) end
     local others = self:OtherRects(drag.group)
     local screenWidth, screenHeight = ScreenSize()
     local _, _, xEdge, yEdge, xTarget, yTarget = Geometry.Snap(rect, others, screenWidth, screenHeight)
     self:DrawSnapGuide(rect, others, xEdge, yEdge, xTarget, yTarget)
+end
+
+-- A drag started with Shift never snaps; pressing Shift during any drag stops snapping while held.
+function ThreatConsole:DragSkipsSnap(drag)
+    return drag.free == true or ShiftDown()
 end
 
 -- A line along each edge that snaps, and a border around the window or meter joined.
@@ -842,7 +920,11 @@ function ThreatConsole:StopDrag(meter)
     local rect = CurrentRect(lead)
     local screenWidth, screenHeight = ScreenSize()
     local others = self:OtherRects(drag.group)
-    local dx, dy, _, _, xTarget, yTarget = Geometry.Snap(rect, others, screenWidth, screenHeight)
+    local dx, dy, xTarget, yTarget = 0, 0, nil, nil
+    if not self:DragSkipsSnap(drag) then
+        local snapX, snapY, _, _, targetX, targetY = Geometry.Snap(rect, others, screenWidth, screenHeight)
+        dx, dy, xTarget, yTarget = snapX, snapY, targetX, targetY
+    end
     local config = lead.config
     config.left, config.top = math.floor(rect.left + dx + 0.5), math.floor(rect.top + dy + 0.5)
     -- Dropped against a side of a Blizzard meter window: the window follows it on that side.
@@ -900,10 +982,6 @@ local function CursorPosition()
     local scale = UIParent and type(UIParent.GetEffectiveScale) == "function" and UIParent:GetEffectiveScale() or 1
     if type(scale) ~= "number" or scale <= 0 then scale = 1 end
     return x / scale, y / scale
-end
-
-local function ShiftDown()
-    return type(IsShiftKeyDown) == "function" and IsShiftKeyDown() == true
 end
 
 local sizingState, sizingRow, sizingColumn, skipBottom, skipRight = {}, {}, {}, {}, {}
@@ -1261,6 +1339,41 @@ function ThreatConsole:ConfirmDelete(id)
     return true
 end
 
+-- True when a shown window is joined to anything: following a meter, or sharing an edge with
+-- another shown window or a Blizzard meter window.
+function ThreatConsole:IsGrouped(id)
+    local record, meter = self:GetWindow(id), self.meters[id]
+    if not record or not meter or not meter.frame:IsShown() then return false end
+    if record.dockMeter > 0 then return true end
+    local rect = Geometry.Rect(record.left, record.top, record.width, record.height)
+    for _, other in ipairs(self:OtherRects({ [id] = true })) do
+        if Geometry.Touching(rect, other) then return true end
+    end
+    return false
+end
+
+-- Takes a window out of its group: it stops following a meter and moves clear of every other
+-- window and meter window, so nothing moves or resizes with it any more. The rest stay put.
+function ThreatConsole:DetachWindow(id)
+    local record, meter = self:GetWindow(id), self.meters[id]
+    if not record or not meter or record.locked or not self:IsGrouped(id) then return false end
+    self:EndDrag()
+    self:StopSizing()
+    if record.dockMeter > 0 then self:SetWindowOption(id, "dockMeter", 0) end
+    -- OtherRects hands out scratch rectangles; DetachSpot needs them to hold still.
+    local others = {}
+    for index, other in ipairs(self:OtherRects({ [id] = true })) do
+        others[index] = Geometry.Rect(other.left, other.top, other.right - other.left, other.top - other.bottom)
+    end
+    local screenWidth, screenHeight = ScreenSize()
+    record.left, record.top = Geometry.DetachSpot(Geometry.Rect(record.left, record.top, record.width, record.height),
+        others, screenWidth, screenHeight)
+    KeepOnScreen(record)
+    meter:Place()
+    self:MarkDirty()
+    return true
+end
+
 -- The title's right-click menu. Option changes made here also refresh an open settings page.
 function ThreatConsole:MenuItems(meter)
     local config = meter.config
@@ -1275,6 +1388,8 @@ function ThreatConsole:MenuItems(meter)
         { text = string.format(L["Window %d: %s"], id, config.name), title = true },
         { text = L["Threat meter"], checked = config.mode == "threat", func = Set("mode", "threat") },
         { text = L["Tank"], checked = config.mode == "tank", func = Set("mode", "tank") },
+        { text = L["Target first"], checked = config.targetFirst ~= false, disabled = config.mode ~= "tank",
+            func = Set("targetFirst", config.targetFirst == false) },
         { separator = true },
     }
     for _, theme in ipairs(Themes.list) do
@@ -1282,6 +1397,11 @@ function ThreatConsole:MenuItems(meter)
     end
     items[#items + 1] = { separator = true }
     items[#items + 1] = { text = config.locked and L["Unlock"] or L["Lock"], func = Set("locked", not config.locked) }
+    items[#items + 1] = { text = L["Detach from group"], disabled = config.locked or not self:IsGrouped(id),
+        func = function()
+            self:DetachWindow(id)
+            self:RefreshOptions()
+        end }
     -- The menu has no submenus: "Follow damage meter" is a group of radio items (off or a side),
     -- then which of Blizzard's meter windows while following.
     items[#items + 1] = { separator = true }

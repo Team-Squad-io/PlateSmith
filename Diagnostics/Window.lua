@@ -7,16 +7,21 @@ local History = assert(PS.DiagnosticHistory, "PlateSmith DiagnosticHistory missi
 local Summary = assert(PS.DiagnosticSummary, "PlateSmith DiagnosticSummary missing")
 local Details = assert(PS.DiagnosticDetails, "PlateSmith DiagnosticDetails missing")
 local ReportCode = assert(PS.DiagnosticCode, "PlateSmith DiagnosticCode missing")
+local Performance = assert(PS.Performance, "PlateSmith Performance missing")
 local L = PS.L
 
 -- The /platesmith diagnose window: the short Summary (what players paste, plus the one-line PS1
--- report code), Details (the report in folding sections), Report (full JSON), and History tabs.
--- It uses the panel kit's Blizzard palette and spacing, as the Settings pages do.
+-- report code), Details (the report in folding sections), Report (full JSON), the live
+-- Performance view, and History tabs. It uses the panel kit's Blizzard palette and spacing, as the
+-- Settings pages do.
 local UI = {}
 PS.DiagnosticUI = UI
 
-local TABS = { "summary", "details", "report", "history" }
-local TAB_LABELS = { summary = L["Summary"], details = L["Details"], report = L["Report"], history = L["History"] }
+local TABS = { "summary", "details", "report", "performance", "history" }
+local TAB_LABELS = { summary = L["Summary"], details = L["Details"], report = L["Report"], performance = L["Performance"],
+    history = L["History"] }
+-- The tabs that show a captured report; opened with none, they capture one first.
+local REPORT_TABS = { summary = true, details = true, report = true }
 local SUMMARY_TAB_CONTROLS = { "copySummary", "copyReport", "showReport", "codeCard", "codeBox", "codeLabel", "summaryHint" }
 local PALETTE = Layout.PALETTES.blizzard
 local T = Layout.TOKENS
@@ -199,7 +204,269 @@ local function RenderDetails(frame)
     frame.panes.details:SetVerticalScroll(0)
 end
 
+-- The live Performance tab: refreshed by its own ticker entry once a second, enabled only while
+-- the tab shows. Every refresh (the entry's and the one on opening) is timed here too, so the view
+-- reports its own cost on its own line instead of hiding it in what it shows.
+local LIVE = { interval = 1, eventRows = 12, calls = 0, peakMs = 0,
+    ownName = string.format(L["%s (this view)"], Performance.LIVE_TICKER), on = L["on"], off = L["off"] }
+UI.live = LIVE
+local PERF_COLUMN = { width = 76, gap = 8 }
+local ADD_KINDS = { "new", "reused", "queued" }
+local PERF_TABLE_KEYS = { "adds", "phases", "events", "ticker" }
+local EMPTY_LIST = {}
+
+local function Clock()
+    return type(debugprofilestop) == "function" and debugprofilestop() or nil
+end
+
+local function SetLive(on)
+    if PS.Ticker.IsEnabled(Performance.LIVE_TICKER) ~= on then PS.Ticker.SetEnabled(Performance.LIVE_TICKER, on) end
+end
+
+local function Ms(value) return type(value) == "number" and string.format(L["%.2f"], value) or L["–"] end
+local function Count(value) return type(value) == "number" and string.format("%d", math.floor(value + 0.5)) or L["–"] end
+local function Seconds(value) return string.format(L["%.2f s"], type(value) == "number" and value or 0) end
+local function Plain(value) return value ~= nil and tostring(value) or "" end
+
+-- A refresh writes only what moved: each text keeps the value and format it shows (perfValue,
+-- perfFormat) and its ink (perfRole), so an unchanged cell is neither formatted nor set again.
+local NONE = {}
+local function SetCell(text, value, format)
+    local key = value == nil and NONE or value
+    if text.perfValue == key and text.perfFormat == format then return end
+    text.perfValue, text.perfFormat = key, format
+    text:SetText(format(value))
+end
+
+local function SetRole(text, role)
+    if text.perfRole == role then return end
+    text.perfRole = role
+    Ink(text, role)
+end
+
+-- The number columns' formats: the five figures of an add, phase or event, and a ticker entry's.
+local FIGURES = { Count, Ms, Ms, Ms, Ms }
+local TICKER_COLUMNS = { Plain, Seconds, Ms, Ms, Count }
+
+-- A table line: a label, then count right-aligned number cells at the line's right end.
+local function PerfLine(parent, count)
+    local line = CreateFrame("Frame", nil, parent)
+    line:SetHeight(kit.ROW_H)
+    line.label = kit.Text(line, "", "label")
+    line.label:SetPoint("LEFT", line, "LEFT", 0, 0)
+    line.label:SetPoint("RIGHT", line, "RIGHT", -count * (PERF_COLUMN.width + PERF_COLUMN.gap), 0)
+    if line.label.SetWordWrap then line.label:SetWordWrap(false) end
+    line.cells = {}
+    for index = 1, count do
+        local cell = kit.Text(line, "", "value")
+        cell:SetJustifyH("RIGHT")
+        cell:SetWidth(PERF_COLUMN.width)
+        cell:SetPoint("RIGHT", line, "RIGHT", -(count - index) * (PERF_COLUMN.width + PERF_COLUMN.gap), 0)
+        line.cells[index] = cell
+    end
+    return line
+end
+
+-- Sets a line's label and its five number cells (formats[i] for value i) in role's ink ("error"
+-- red, as in the Details tables).
+local function SetLine(line, role, label, formats, a, b, c, d, e)
+    -- Most lines show what they showed last refresh; only this function writes a line's texts, so
+    -- the same arguments as its last call leave every cell as it is.
+    local last = line.perfLast
+    if last and last[1] == label and last[2] == role and last[3] == formats and last[4] == a and last[5] == b
+        and last[6] == c and last[7] == d and last[8] == e then
+        return
+    end
+    last = last or {}
+    line.perfLast = last
+    last[1], last[2], last[3], last[4], last[5], last[6], last[7], last[8] = label, role, formats, a, b, c, d, e
+    SetCell(line.label, label, Plain)
+    SetRole(line.label, role)
+    local cells = line.cells
+    SetCell(cells[1], a, formats[1])
+    SetCell(cells[2], b, formats[2])
+    SetCell(cells[3], c, formats[3])
+    SetCell(cells[4], d, formats[4])
+    SetCell(cells[5], e, formats[5])
+    if line.perfRole == role then return end
+    line.perfRole = role
+    local cellRole = role == "label" and "value" or role
+    for index = 1, #cells do SetRole(cells[index], cellRole) end
+end
+
+-- A table: its column heads, then rows made as they are first needed and reused on every refresh.
+-- A row is shown or hidden only when the number of rows changes.
+local function PerfTable(parent, columns)
+    local frame = CreateFrame("Frame", nil, parent)
+    frame:SetSize(kit.WIDTH, kit.ROW_H)
+    frame.count, frame.rows, frame.shownRows = #columns - 1, {}, 0
+    frame.head = PerfLine(frame, frame.count)
+    frame.head.label:SetText(columns[1])
+    Ink(frame.head.label, "muted")
+    for index, cell in ipairs(frame.head.cells) do
+        cell:SetText(columns[index + 1])
+        Ink(cell, "muted")
+    end
+    function frame:Row(index)
+        local line = self.rows[index]
+        if not line then
+            line = PerfLine(self, self.count)
+            self.rows[index] = line
+        end
+        if index > self.shownRows then line:Show() end
+        return line
+    end
+    function frame:Finish(shown)
+        for index = shown + 1, math.min(self.shownRows, #self.rows) do self.rows[index]:Hide() end
+        self.shownRows = shown
+    end
+    function frame:Measure()
+        local y = 0
+        for index = 0, self.shownRows do
+            local line = index == 0 and self.head or self.rows[index]
+            line:ClearAllPoints()
+            line:SetPoint("TOPLEFT", self, "TOPLEFT", 0, -y)
+            line:SetPoint("TOPRIGHT", self, "TOPRIGHT", 0, -y)
+            y = y + kit.ROW_H
+        end
+        self:SetHeight(y)
+        return y
+    end
+    return frame
+end
+
+-- A profiler figure: a number in its format (nil: a count), else the state the profiler gave.
+local PROFILER_ROWS = {
+    { "recent", "recentAverageMs", L["%.2f ms/frame"] }, { "session", "sessionAverageMs", L["%.2f ms/frame"] },
+    { "peak", "peakMs", L["%.2f ms"] }, { "over5", "ticksOver5Ms" }, { "over50", "ticksOver50Ms" },
+}
+local profilerText = {}
+for _, spec in ipairs(PROFILER_ROWS) do
+    local text = spec[3]
+    spec.format = function(value)
+        if type(value) ~= "number" then return profilerText.unavailable or tostring(value or L["–"]) end
+        return text and string.format(text, value) or Count(value)
+    end
+end
+local function ViewCost(value)
+    if type(value) ~= "number" then return L["–"] end
+    return string.format(L["%.2f ms (peak %.2f)"], value / 100, LIVE.peakMs)
+end
+
+local function PaintProfiler(frame, live)
+    local profiler, rows = live.profiler or {}, frame.perfProfilerRows
+    profilerText.unavailable = profiler.state and L["unavailable"] or nil
+    for _, spec in ipairs(PROFILER_ROWS) do SetCell(rows[spec[1]].value, profiler[spec[2]], spec.format) end
+    local recent = profiler.recentAverageMs
+    SetRole(rows.recent.value, type(recent) == "number" and recent > Summary.frameBudgetMs and "error" or "value")
+    -- This view's cost, to the hundredth shown, with its peak: written when either moves.
+    local shownPeak = math.floor(LIVE.peakMs * 100 + 0.5)
+    local shownLast = LIVE.lastMs and math.floor(LIVE.lastMs * 100 + 0.5) or nil
+    local view = rows.view.value
+    if view.perfPeak ~= shownPeak then view.perfPeak, view.perfValue = shownPeak, nil end
+    SetCell(view, shownLast, ViewCost)
+end
+
+-- The debug warning's text, rebuilt only when which settings are on changes.
+local function PaintDebugWarning(frame, on)
+    local warning = frame.perfDebugWarning
+    local key = #on > 0 and (on[1] .. #on) or ""
+    if warning.perfKey == key then return end
+    warning.perfKey = key
+    warning.text:SetText(#on > 0 and string.format(L["%s is on in the client's settings: it costs frame "
+        .. "time on every frame. /console %s 0 turns it off."], table.concat(on, ", "), on[1]) or "")
+    warning:SetShown(#on > 0)
+end
+
+-- The ticker entries sorted by name, again only when an entry is registered.
+local function TickerIds(frame, ticker)
+    local ids, count = frame.perfTickerIds or {}, 0
+    frame.perfTickerIds = ids
+    for _ in pairs(ticker) do count = count + 1 end
+    if count ~= #ids then
+        for index = #ids, 1, -1 do ids[index] = nil end
+        for id in pairs(ticker) do ids[#ids + 1] = id end
+        table.sort(ids)
+    end
+    return ids
+end
+
+local function PaintFigures(line, label, entry)
+    SetLine(line, "label", label, FIGURES, entry.calls, entry.recentAverageMs, entry.averageMs, entry.peakMs, entry.totalMs)
+end
+
+local function PaintPerformance(frame, live)
+    PaintProfiler(frame, live)
+    PaintDebugWarning(frame, live.debugSettingsOn or EMPTY_LIST)
+    local tables = frame.perfTables
+    local shown = 0
+    for _, kind in ipairs(ADD_KINDS) do
+        local entry = live.plateAdds[kind]
+        if entry then
+            shown = shown + 1
+            PaintFigures(tables.adds:Row(shown), Details.PLATE_ADD_NAMES[kind], entry)
+        end
+    end
+    tables.adds:Finish(shown)
+    for index, entry in ipairs(live.addPhases) do
+        PaintFigures(tables.phases:Row(index), Details.PHASE_NAMES[entry.phase] or entry.phase, entry)
+    end
+    tables.phases:Finish(#live.addPhases)
+    for index, entry in ipairs(live.events) do
+        PaintFigures(tables.events:Row(index), Summary.eventNames[entry.event] or entry.event, entry)
+    end
+    tables.events:Finish(#live.events)
+    local ids = TickerIds(frame, live.ticker)
+    for index, id in ipairs(ids) do
+        local entry = live.ticker[id]
+        local over = type(entry.recentAverageMs) == "number" and entry.recentAverageMs > Summary.tickBudgetMs
+        local own = id == Performance.LIVE_TICKER
+        SetLine(tables.ticker:Row(index), over and "error" or (own and "muted" or "label"), own and LIVE.ownName or id,
+            TICKER_COLUMNS, entry.enabled and LIVE.on or LIVE.off, entry.interval, entry.recentAverageMs, entry.peakMs,
+            entry.calls)
+    end
+    tables.ticker:Finish(#ids)
+end
+
+-- Whether the rows the view shows changed since it was last laid out (only then is it laid out again).
+local function PerformanceShapeChanged(frame)
+    local shape, tables = frame.perfShape or {}, frame.perfTables
+    frame.perfShape = shape
+    local changed = false
+    for index, key in ipairs(PERF_TABLE_KEYS) do
+        local rows = tables[key].shownRows
+        if shape[index] ~= rows then shape[index], changed = rows, true end
+    end
+    local warning = frame.perfDebugWarning.perfKey
+    if shape.warning ~= warning then shape.warning, changed = warning, true end
+    return changed
+end
+
+-- One refresh of the live view; stops the refresh when the tab is no longer shown.
+function UI.RefreshPerformance()
+    if not window or window.tab ~= "performance" or not window:IsVisible() then
+        SetLive(false)
+        return
+    end
+    local started = Clock()
+    PaintPerformance(window, Performance.Live(LIVE.eventRows))
+    if PerformanceShapeChanged(window) then Window.RefreshScroll(window.panes.performance) end
+    LIVE.calls = LIVE.calls + 1
+    if started then
+        local cost = Clock() - started
+        LIVE.lastMs = cost
+        if cost > LIVE.peakMs then LIVE.peakMs = cost end
+    end
+end
+
+PS.Ticker.Register(Performance.LIVE_TICKER, LIVE.interval, function() UI.RefreshPerformance() end)
+PS.Ticker.SetEnabled(Performance.LIVE_TICKER, false)
+
 function UI.SelectTab(tab)
+    -- Opened on Performance (or History), the window has no report until a report tab is chosen.
+    if REPORT_TABS[tab] and not window.report and UI._buildReport then
+        return UI.ShowReport(UI._buildReport(), "manual", tab)
+    end
     window.tab = tab
     window.tabs:Select(tab)
     for _, key in ipairs(TABS) do
@@ -209,8 +476,12 @@ function UI.SelectTab(tab)
     for _, key in ipairs(SUMMARY_TAB_CONTROLS) do window[key]:SetShown(tab == "summary") end
     window.selectAll:SetShown(tab == "report")
     window.copyHint:SetShown(tab == "report")
-    window.deleteEntry:SetShown(tab ~= "history" and viewing ~= nil)
+    window.resetPeaks:SetShown(tab == "performance")
+    window.liveHint:SetShown(tab == "performance")
+    window.deleteEntry:SetShown(tab ~= "history" and tab ~= "performance" and viewing ~= nil)
     if tab == "details" and window.detailsRendered ~= window.detailsModel then RenderDetails(window) end
+    SetLive(tab == "performance")
+    if tab == "performance" then UI.RefreshPerformance() end
     Window.RefreshScroll(window.panes[tab])
     if tab == "summary" then
         SelectText(window.summaryBox, window.summaryText)
@@ -413,6 +684,69 @@ local function BuildReport(frame)
     frame.editBox, frame.scroll, frame.selectAll, frame.copyHint = editBox, reportScroll, selectAll, copyHint
 end
 
+local function BuildPerformance(frame)
+    local scroll, child = Window.ScrollText(frame)
+    scroll:SetPoint("TOPLEFT", frame, "TOPLEFT", T.PAD_X, FRAME.top)
+    scroll:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -T.PAD_X, FRAME.bottom)
+    local flow = kit.Flow(CreateFrame("Frame", nil, child))
+    flow:SetPoint("TOPLEFT", child, "TOPLEFT", 0, 0)
+    flow:SetSize(kit.WIDTH, 1)
+    scroll.measure = function(width)
+        flow:SetWidth(width)
+        local height = kit.LayoutFlow(flow, 0)
+        flow:SetHeight(math.max(1, height))
+        return height
+    end
+    kit.Add(flow, kit.Help(flow, L["Live figures, refreshed once a second while this tab is open; opening it captures no "
+        .. "report. The client profiler's figures include this view's own refresh, which is also shown on its own."]))
+    -- A client debug setting that slows every frame (taintLog, scriptProfile): shown only while one is on.
+    local debugWarning = kit.Help(flow, "")
+    Ink(debugWarning.text, "error")
+    kit.Add(flow, debugWarning, function() return (debugWarning.text:GetText() or "") ~= "" end)
+    frame.perfDebugWarning = debugWarning
+    local function Section(key, title)
+        local section = kit.Section(flow, title, { key = "perf." .. key })
+        section.title:SetFontObject("GameFontNormal")
+        kit.Ink(section.title, "title")
+        kit.Add(flow, section)
+        return section
+    end
+    local profiler = Section("profiler", L["Profiler"])
+    local rows = {}
+    for _, spec in ipairs({ { "recent", L["Recent average"] }, { "session", L["Session average"] },
+        { "peak", L["Peak (client profiler, this session)"] }, { "over5", L["Frames over 5 ms"] },
+        { "over50", L["Frames over 50 ms"] }, { "view", L["This view's refresh"] } }) do
+        local row = kit.Row(profiler, spec[2])
+        row.value = kit.Value(row)
+        row.value:SetWidth(160)
+        kit.Add(profiler, row)
+        rows[spec[1]] = row
+    end
+    -- The first column names the row; the rest are the same five figures.
+    local function Columns(first) return { first, L["Calls"], L["Recent ms"], L["Average ms"], L["Peak ms"], L["Total ms"] } end
+    local tables = {}
+    local adds = Section("adds", L["Plate adds"])
+    tables.adds = kit.Add(adds, PerfTable(adds, Columns(L["Kind"])))
+    tables.phases = kit.Add(adds, PerfTable(adds, Columns(L["Phase of an add"])))
+    local events = Section("events", L["Events"])
+    tables.events = kit.Add(events, PerfTable(events, Columns(L["Event"])))
+    local ticker = Section("ticker", L["Ticker entries"])
+    tables.ticker = kit.Add(ticker, PerfTable(ticker, { L["Name"], L["On"], L["Interval"], L["Recent ms"], L["Peak ms"],
+        L["Calls"] }))
+    frame.panes.performance, frame.perfFlow, frame.perfProfilerRows, frame.perfTables = scroll, flow, rows, tables
+
+    local resetPeaks = Window.Button(frame, L["Reset peaks"], 110, T.BUTTON_H, function()
+        Performance.ResetPeaks()
+        LIVE.peakMs = 0
+        UI.RefreshPerformance()
+    end)
+    resetPeaks:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", T.PAD_X, FRAME.footer)
+    local liveHint = Ink(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"), "muted")
+    liveHint:SetPoint("LEFT", resetPeaks, "RIGHT", T.CONTROL_GAP + 2, 0)
+    liveHint:SetText(L["Peaks are PlateSmith's own since the last reset; the client profiler's peak cannot be reset."])
+    frame.resetPeaks, frame.liveHint = resetPeaks, liveHint
+end
+
 local function BuildHistory(frame)
     local card = Card(frame)
     local historyScroll, historyList = Window.ScrollText(frame)
@@ -464,14 +798,21 @@ local function BuildWindow()
             local state = PS.GetState and PS.GetState()
             return state and state.sectionFolds
         end,
-        relayout = function() if window then Window.RefreshScroll(window.panes.details) end end,
+        -- A section folded or opened: the pane it is in (Details, or the live Performance view,
+        -- which is otherwise laid out only when its rows change).
+        relayout = function()
+            if window then Window.RefreshScroll(window.tab == "performance" and window.panes.performance or window.panes.details) end
+        end,
     })
     frame.kit, frame.cards, frame.panes = kit, {}, {}
     BuildHeader(frame)
     BuildSummary(frame)
     BuildDetails(frame)
     BuildReport(frame)
+    BuildPerformance(frame)
     BuildHistory(frame)
+    -- Closed (Escape, the close button, the UI hidden), the live view stops refreshing.
+    frame:HookScript("OnHide", function() SetLive(false) end)
     local deleteEntry = Window.Button(frame, L["Delete this capture"], 130, T.BUTTON_H, function()
         if viewing then History.Delete(viewing) end
         viewing = nil
@@ -491,10 +832,16 @@ function UI.EnsureWindow()
     return window
 end
 
--- New reports are recorded in History when it is on, then shown.
-function UI.ShowReport(report, reason)
+-- New reports are recorded in History when it is on, then shown (on tab, default Summary).
+function UI.ShowReport(report, reason, tab)
     History.Record(report, reason or "manual")
-    ShowView(report, nil, "summary")
+    ShowView(report, nil, tab or "summary")
+end
+
+-- The live Performance tab, without capturing a report.
+function UI.ShowPerformance()
+    UI.EnsureWindow():Show()
+    SelectTab("performance")
 end
 
 function UI.ShowHistory()

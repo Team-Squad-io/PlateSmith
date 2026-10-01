@@ -100,11 +100,8 @@ local function ClientCVar(name)
             return true, default
         end
     end
-    local getDefault = (C_CVar and C_CVar.GetCVarDefault) or GetCVarDefault
-    if type(getDefault) == "function" then
-        local ok, default = pcall(getDefault, name)
-        if ok and default ~= nil then return true, default end
-    end
+    local default = NamePolicy.Default(name)
+    if default ~= nil then return true, default end
     return NamePolicy.Read(name) ~= nil, nil
 end
 
@@ -168,11 +165,11 @@ Stacking.SIZE_LIMITS = SIZE_LIMITS
 -- A name is sized as a typical 12-letter name (half an em a letter); the level as two digits.
 local NAME_LETTERS, LETTER_WIDTH = 12, 0.5
 
--- Part sizes from the profile alone (a plate's live sizes differ per unit).
-local function StaticMeasure(profile)
+-- Part sizes from the profile alone (a plate's live sizes differ per unit), text at the drawn size.
+local function StaticMeasure(profile, textScale)
     local width = tonumber(profile.width) or 112
     local healthHeight = tonumber(profile.healthHeight) or 10
-    local font = tonumber(profile.nameFontSize) or 12
+    local font = S.ScaledFontSize(tonumber(profile.nameFontSize) or 14, textScale)
     return function(key)
         if key == "health" then return width, healthHeight end
         if key == "power" then return tonumber(profile.powerWidth) or width, tonumber(profile.powerHeight) or 5 end
@@ -193,9 +190,9 @@ local function StaticMeasure(profile)
 end
 
 -- The drawn bounds of a layout's sized parts: width, height (profile scale applied), or nil.
-local function LayoutBounds(profile, layout)
+local function LayoutBounds(profile, layout, textScale)
     if type(profile) ~= "table" or type(layout) ~= "table" then return nil end
-    local measure = StaticMeasure(profile)
+    local measure = StaticMeasure(profile, textScale)
     local transforms = S.LayoutTransforms(layout, measure)
     local left, bottom, right, top
     for _, key in ipairs(SIZED_PARTS) do
@@ -238,14 +235,14 @@ function Stacking.FrameSizes(settings)
     if type(profiles) ~= "table" then return {} end
     local inInstance = NamePolicy.InGroupInstance()
     local enemy = inInstance and profiles.enemyDungeon or profiles.enemy
-    local result = { enemy = Union({ { LayoutBounds(enemy, enemy and enemy.layout) } }) }
+    local result = { enemy = Union({ { LayoutBounds(enemy, enemy and enemy.layout, settings.textScale) } }) }
     if inInstance then
         result.friendlyLocked = true
     elseif settings.friendly ~= "off" then
         local field = settings.friendly == "full" and "layout" or "namesLayout"
         local player, npc = profiles.friendlyPlayer, profiles.friendlyNPC
-        result.friendly = Union({ { LayoutBounds(player, player and player[field]) },
-            { LayoutBounds(npc, npc and npc[field]) } })
+        result.friendly = Union({ { LayoutBounds(player, player and player[field], settings.textScale) },
+            { LayoutBounds(npc, npc and npc[field], settings.textScale) } })
     end
     return result
 end
@@ -355,9 +352,11 @@ function Stacking.AppliedSizes() return sizes.applied end
 -- The target's overlay (and the focus's, when chosen) is raised over every other plate's, so its
 -- parts draw on top where plates overlap. Only PlateSmith's own frames move; the level each had
 -- is put back when it stops being the target or focus, or the plate goes.
-local BOOST = { target = 200, focus = 100 }
+-- A casting plate (the cast bar's castOnTop) rises too, under the target and focus: casting holds
+-- the plates that want it, and a plate raised for a role keeps that role's boost until it ends.
+local BOOST = { target = 200, focus = 100, cast = 50 }
 local MAX_LEVEL = 9000
-local onTop = { wanted = {}, raised = {} }
+local onTop = { wanted = {}, raised = {}, casting = {} }
 local attached = {}
 
 -- Lifecycle's plate table and draw-order refresh (Styles.ApplyDrawOrder), which places a plate's
@@ -399,7 +398,9 @@ local function SyncOnTop()
     local focus = stacking and stacking.focusOnTop and onTop.wanted.focus or nil
     if focus == target then focus = nil end
     for role, data in pairs(onTop.raised) do
-        if data ~= target and data ~= focus then Lower(data) end
+        if data ~= target and data ~= focus then
+            if onTop.casting[data] then Raise(data, BOOST.cast) else Lower(data) end
+        end
         onTop.raised[role] = nil
     end
     if target then
@@ -449,8 +450,27 @@ function Stacking.PlateAdded(data)
     end
 end
 
+local function RaisedForRole(data)
+    return onTop.raised.target == data or onTop.raised.focus == data
+end
+
+-- A plate started or stopped casting with castOnTop (Lifecycle's cast updates).
+function Stacking.PlateCasting(data, casting)
+    data = Plate(data)
+    if not data then return end
+    if casting then
+        if onTop.casting[data] then return end
+        onTop.casting[data] = true
+        if not RaisedForRole(data) then Raise(data, BOOST.cast) end
+    elseif onTop.casting[data] then
+        onTop.casting[data] = nil
+        if not RaisedForRole(data) then Lower(data) end
+    end
+end
+
 function Stacking.PlateRemoved(data)
     if type(data) ~= "table" then return end
+    onTop.casting[data] = nil
     for role, wanted in pairs(onTop.wanted) do
         if wanted == data then onTop.wanted[role] = nil end
     end
@@ -483,15 +503,57 @@ local function ApplyCVars(stacking)
         if present[key] then wanted[key] = value end
     end
     if combat.switched then wanted.nameplateMotion = 1 end
-    local captured = NamePolicy.CapturedGroup(GROUP)
-    if captured then
-        for key in pairs(captured) do
-            if wanted[key] == nil then NamePolicy.RestoreGroup(GROUP, key) end
-        end
+    for key in pairs(NamePolicy.GroupNames(GROUP)) do
+        if wanted[key] == nil then NamePolicy.RestoreGroup(GROUP, key) end
     end
     for key, value in pairs(wanted) do
         if not SameValue(NamePolicy.Read(key), value) then NamePolicy.WriteCaptured(GROUP, key, CVarText(value)) end
     end
+end
+
+-- Once a session, before the first write: when every CVar the profile sets without a record already
+-- holds the profile's value, PlateSmith most likely left them there (the saved file lost its record,
+-- or the game closed before logout put them back; after a normal logout they hold the player's own).
+-- Each one not at the client's default is marked lost and the default stands in for its original,
+-- so turning management off restores Blizzard's default. Only a numeric value tells: a switch such
+-- as nameplateMotion = 1 alone is as likely the player's own.
+local checked = false
+local function CheckOriginals(stacking)
+    if checked then return end
+    checked = true
+    if not Managed(stacking) then return end
+    Detect()
+    local record = NamePolicy.CapturedGroup(GROUP) or {}
+    local lost, telling = {}, false
+    for key, value in pairs(stacking.values) do
+        if present[key] and record[key] == nil then
+            if not SameValue(NamePolicy.Read(key), value) then return end
+            local default = NamePolicy.Default(key)
+            if default == nil or not SameValue(default, value) then
+                lost[#lost + 1] = key
+                telling = telling or present[key].kind ~= "choice"
+            end
+        end
+    end
+    if not telling then return end
+    for _, key in ipairs(lost) do NamePolicy.MarkLost(GROUP, key) end
+end
+
+-- True while a managed CVar's original was lost: turning management off restores Blizzard's
+-- default for it (the Studio page says so, and /ps diagnose lists it).
+function Stacking.OriginalsMissing()
+    return NamePolicy.OriginalsMissing(GROUP)
+end
+
+-- For diagnostics: { managed, originals = "missing" (lost, see above), "recorded" or "none" }.
+function Stacking.Report()
+    local originals = "none"
+    if Stacking.OriginalsMissing() then
+        originals = "missing"
+    elseif NamePolicy.CapturedGroup(GROUP) then
+        originals = "recorded"
+    end
+    return { managed = Managed(Options()) and true or false, originals = originals }
 end
 
 local dirty = false
@@ -503,6 +565,7 @@ function Stacking.Apply()
     PS.Ticker.SetEnabled(TICKER, false)
     local stacking = Options()
     if not stacking or not (PS.Profiles and PS.Profiles.State()) then return false end
+    CheckOriginals(stacking)
     ApplyCVars(stacking)
     ApplySizes()
     SyncOnTop()
@@ -535,6 +598,7 @@ function Stacking.CombatStarted()
     local stacking = Options()
     if not (Managed(stacking) and stacking.combatStacking) or combat.probe == "refused" then return end
     if not Stacking.Entry("nameplateMotion") then return end
+    if PS.Profiles and PS.Profiles.State() then CheckOriginals(stacking) end
     if SameValue(NamePolicy.Read("nameplateMotion"), 1) then return end
     local ok, written = pcall(NamePolicy.WriteCaptured, GROUP, "nameplateMotion", "1", true)
     if ok and written and SameValue(NamePolicy.Read("nameplateMotion"), 1) then
@@ -656,6 +720,37 @@ function Stacking.IsManaged()
     return stacking ~= nil and stacking.managed == true
 end
 
+-- Every catalogued CVar back to the client's default, managed or not (the Studio page's reset).
+-- The defaults become the recorded originals and the profile's values are cleared (preset custom);
+-- while managed, each default PlateSmith's range can hold becomes the profile's value, so it sticks.
+-- The writes go through Apply, so in combat they wait for PLAYER_REGEN_ENABLED. Returns true and
+-- the CVars the client reports no default for (left as they are), or false without settings.
+function Stacking.ResetToDefaults()
+    if not (Settings() and PS.Profiles and PS.Profiles.State()) then return false, {} end
+    Detect()
+    local defaults, left = {}, {}
+    for _, entry in ipairs(catalogue) do
+        local default = NamePolicy.Default(entry.key)
+        if default == nil then
+            left[#left + 1] = entry.key
+        else
+            defaults[entry.key] = default
+            NamePolicy.SetOriginal(GROUP, entry.key, default)
+        end
+    end
+    local done = Mutate(function(stacking)
+        local values = {}
+        if stacking.managed then
+            for key, default in pairs(defaults) do
+                local value = S.StackingValue(key, default)
+                if value ~= nil and SameValue(default, value) then values[key] = value end
+            end
+        end
+        stacking.values, stacking.preset = values, "custom"
+    end)
+    return done, left
+end
+
 -- The on/off options: targetOnTop, focusOnTop, matchFrameSize, combatStacking.
 Stacking.OPTIONS = S.STACKING_OPTIONS
 local isOption = {}
@@ -677,59 +772,150 @@ end
 
 -- Preview ----------------------------------------------------------------------------------------
 
--- A small geometry model for the UI's diagram: three units standing close together (heads 0.3 of
--- a plate apart, left to right) and where their plates are drawn. Overlapping: each plate sits on
--- its unit. Stacking: each plate moves up until it is overlapV plate heights from any plate that
--- is within overlapH plate widths of it, as Blizzard's stacking does. values (optional) override
--- the current CVars (nameplateMotion, nameplateOverlapV, nameplateOverlapH) and may carry width
--- and height; otherwise the matched enemy size, else the enemy health bar. Returns
--- { motion, width, height, overlapV, overlapH, plates = { { x, y, width, height, unitX, unitY } },
--- bounds = { left, bottom, right, top } }; x, y are centres, y up, the first unit at 0, 0.
+-- The CVars the preview model reads, in catalogue order: a change to any of them moves the diagram.
+Stacking.PREVIEW_KEYS = { "nameplateMotion", "nameplateMotionSpeed", "nameplateOverlapV", "nameplateOverlapH",
+    "nameplateMaxDistance", "nameplateMinScale", "nameplateMaxScale", "nameplateMinScaleDistance",
+    "nameplateMaxScaleDistance", "nameplateSelectedScale", "nameplateMinAlpha", "nameplateMaxAlpha",
+    "nameplateMinAlphaDistance", "nameplateMaxAlphaDistance", "nameplateSelectedAlpha", "nameplateNotSelectedAlpha" }
+local previewed = {}
+for _, key in ipairs(Stacking.PREVIEW_KEYS) do previewed[key] = true end
+
+function Stacking.Previewed(key)
+    return previewed[key] == true
+end
+
+-- Three units in a row, heads UNIT_GAP plate widths apart: near, your target at mid range, far.
+Stacking.PREVIEW_UNITS = { { distance = 8 }, { distance = 20, target = true }, { distance = 34 } }
+local UNIT_GAP = 0.4
+-- A CVar the client lacks is a behaviour it lacks: no scaling or fading (the spacing keeps
+-- Blizzard's usual values, so the diagram still shows plates). The distances fall back to Schema's.
+local PREVIEW_NEUTRAL = { nameplateMotion = 0, nameplateMotionSpeed = 0, nameplateOverlapV = 1.1,
+    nameplateOverlapH = 0.8, nameplateMinScale = 1, nameplateMaxScale = 1, nameplateSelectedScale = 1,
+    nameplateMinAlpha = 1, nameplateMaxAlpha = 1, nameplateSelectedAlpha = 1, nameplateNotSelectedAlpha = 1 }
+local schemaDefault = {}
+for _, spec in ipairs(S.STACKING_CVARS) do schemaDefault[spec[1]] = spec.default end
+
+-- Blizzard's help for the scale and alpha distance CVars: the Max value holds within MaxDistance of
+-- the camera, the Min value from MinDistance short of the view distance, a straight line between.
+-- When the two ranges meet or cross, the near value holds up to its distance and the far one after.
+local function Ramp(distance, near, far, nearValue, farValue)
+    if distance <= near then return nearValue end
+    if distance >= far then return farValue end
+    return nearValue + (farValue - nearValue) * (distance - near) / (far - near)
+end
+
+-- A geometry model for the UI's diagram (pure: values in, shapes out). Three units stand in a row,
+-- 8, 20 and 34 yards away (the middle one your target), and each plate sits on its unit's head:
+-- - scale: the distance scale (nameplateMaxScale within nameplateMaxScaleDistance, nameplateMinScale
+--   from nameplateMinScaleDistance short of nameplateMaxDistance), times nameplateSelectedScale for
+--   the target;
+-- - alpha: the distance fade the same way (nameplateMaxAlpha, nameplateMinAlpha and their distances),
+--   times nameplateSelectedAlpha for the target and nameplateNotSelectedAlpha for the others;
+-- - a unit beyond nameplateMaxDistance has no plate;
+-- - Overlapping (nameplateMotion 0): each plate stays on its unit. Stacking: each plate moves up until
+--   it is overlapV times the two plates' mean height from any plate within overlapH times their mean
+--   width of it; Blizzard's stacking moves plates up only.
+-- values (optional) override the current CVars (the keys in PREVIEW_KEYS) and may carry width, height
+-- and targetOnTop; otherwise the client's values, the matched enemy size and the option. Returns
+-- { motion, speed, width, height, overlapV, overlapH, viewDistance, targetOnTop,
+--   plates = { { x, y, width, height, scale, alpha, target, shown, distance, unitX, unitY } },
+--   bounds = { left, bottom, right, top } }: x, y are plate centres, y up, the first unit's head at
+-- 0, 0; a plate's width and height are its scaled size, the model's the unscaled plate's.
 function Stacking.PreviewModel(values)
     values = type(values) == "table" and values or {}
-    local function Value(key, fallback)
+    local function Present(key) return values[key] ~= nil or Stacking.Entry(key) ~= nil end
+    local function Value(key)
         local value = tonumber(values[key])
-        if value == nil and Stacking.Entry(key) then value = Stacking.Get(key) end
-        return value or fallback
+        if value == nil and Stacking.Entry(key) then value = tonumber((Stacking.Get(key))) end
+        if value == nil then value = PREVIEW_NEUTRAL[key] end
+        if value == nil then value = schemaDefault[key] end
+        return value
     end
     local width, height = tonumber(values.width), tonumber(values.height)
     if not (width and height) then
-        local size = Stacking.FrameSizes().enemy
+        -- A layout the size model cannot measure must not stop the diagram: the bar's size stands in.
+        local ok, frameSizes = pcall(Stacking.FrameSizes)
+        local size = ok and type(frameSizes) == "table" and frameSizes.enemy or nil
         local settings = Settings()
         local enemy = settings and settings.plateProfiles and settings.plateProfiles.enemy
         width = width or (size and size[1]) or (enemy and enemy.width) or 112
         height = height or (size and size[2]) or math.max(SIZE_LIMITS.minHeight, (enemy and enemy.healthHeight or 10) + 12)
     end
-    local motion = Value("nameplateMotion", 0) == 1 and "stacking" or "overlapping"
-    local overlapV, overlapH = Value("nameplateOverlapV", 1.1), Value("nameplateOverlapH", 0.8)
-    local model = { motion = motion, width = width, height = height, overlapV = overlapV, overlapH = overlapH, plates = {} }
+    local targetOnTop = values.targetOnTop
+    if type(targetOnTop) ~= "boolean" then targetOnTop = Stacking.GetOption("targetOnTop") == true end
+    local motion = Value("nameplateMotion") == 1 and "stacking" or "overlapping"
+    local overlapV, overlapH = Value("nameplateOverlapV"), Value("nameplateOverlapH")
+    local viewDistance = Present("nameplateMaxDistance") and Value("nameplateMaxDistance") or nil
+    local rampEnd = viewDistance or schemaDefault.nameplateMaxDistance
+    local model = { motion = motion, speed = math.max(0, Value("nameplateMotionSpeed")), width = width, height = height,
+        overlapV = overlapV, overlapH = overlapH, viewDistance = viewDistance, targetOnTop = targetOnTop, plates = {} }
     local left, bottom, right, top = math.huge, math.huge, -math.huge, -math.huge
-    for index = 1, 3 do
-        local unitX, unitY = (index - 1) * 0.3 * width, 0
-        local y = unitY
-        if motion == "stacking" then
-            for _ = 1, 3 do
+    for index, unit in ipairs(Stacking.PREVIEW_UNITS) do
+        local target, distance = unit.target == true, unit.distance
+        local shown = viewDistance == nil or distance <= viewDistance
+        local scale = Ramp(distance, Value("nameplateMaxScaleDistance"), rampEnd - Value("nameplateMinScaleDistance"),
+            Value("nameplateMaxScale"), Value("nameplateMinScale"))
+        local alpha = Ramp(distance, Value("nameplateMaxAlphaDistance"), rampEnd - Value("nameplateMinAlphaDistance"),
+            Value("nameplateMaxAlpha"), Value("nameplateMinAlpha"))
+        -- A negative multiplier is the client's "not used" (Forever ships nameplateNotSelectedAlpha -1).
+        local function Multiplier(key)
+            local value = Value(key)
+            return (value and value >= 0) and value or 1
+        end
+        if target then
+            scale, alpha = scale * Multiplier("nameplateSelectedScale"), alpha * Multiplier("nameplateSelectedAlpha")
+        else
+            alpha = alpha * Multiplier("nameplateNotSelectedAlpha")
+        end
+        scale, alpha = math.max(0.05, scale), math.max(0, math.min(1, alpha))
+        local plateWidth, plateHeight = width * scale, height * scale
+        local unitX, unitY = (index - 1) * UNIT_GAP * width, 0
+        local y = unitY + plateHeight / 2
+        if motion == "stacking" and shown then
+            for _ = 1, #Stacking.PREVIEW_UNITS do
                 local moved = false
                 for _, other in ipairs(model.plates) do
-                    if math.abs(other.x - unitX) < width * overlapH and math.abs(other.y - y) < height * overlapV then
-                        y, moved = other.y + height * overlapV, true
+                    if other.shown then
+                        local apartX = overlapH * (plateWidth + other.width) / 2
+                        local apartY = overlapV * (plateHeight + other.height) / 2
+                        if math.abs(other.x - unitX) < apartX and math.abs(other.y - y) < apartY - EPSILON then
+                            y, moved = other.y + apartY, true
+                        end
                     end
                 end
                 if not moved then break end
             end
         end
-        model.plates[index] = { x = unitX, y = y, width = width, height = height, unitX = unitX, unitY = unitY }
-        left, right = math.min(left, unitX - width / 2), math.max(right, unitX + width / 2)
-        bottom, top = math.min(bottom, y - height / 2), math.max(top, y + height / 2)
+        model.plates[index] = { x = unitX, y = y, width = plateWidth, height = plateHeight, scale = scale, alpha = alpha,
+            target = target, shown = shown, distance = distance, unitX = unitX, unitY = unitY }
+        left, right, bottom = math.min(left, unitX), math.max(right, unitX), math.min(bottom, unitY)
+        if shown then
+            left, right = math.min(left, unitX - plateWidth / 2), math.max(right, unitX + plateWidth / 2)
+            top = math.max(top, y + plateHeight / 2)
+        end
     end
-    model.bounds = { left = left, bottom = bottom, right = right, top = top }
+    model.bounds = { left = left, bottom = bottom, right = right, top = math.max(top, 0) }
     return model
 end
 
--- For the suites: detection again (a new mocked client) and the combat probe forgotten.
-function Stacking._Reset()
+-- One animation step of a plate gliding from `from` to `to` over `elapsed` seconds. Blizzard's help
+-- calls nameplateMotionSpeed the rate plates animate to their places; the preview reads it as the
+-- share of the remaining way covered each 60th of a second, and 0 as a jump. Returns the new place
+-- and true once it is within `settle` (default 0.5) of `to`.
+function Stacking.PreviewGlide(from, to, speed, elapsed, settle)
+    speed, elapsed, settle = tonumber(speed) or 0, math.max(0, tonumber(elapsed) or 0), tonumber(settle) or 0.5
+    if speed <= 0 or speed >= 1 or math.abs(to - from) <= settle then return to, true end
+    local remaining = (to - from) * (1 - speed) ^ (elapsed * 60)
+    if math.abs(remaining) <= settle then return to, true end
+    return to - remaining, false
+end
+
+-- For the suites: detection again (a new mocked client) and the combat probe forgotten; newSession
+-- also runs the login check for lost originals again.
+function Stacking._Reset(newSession)
+    if newSession then checked = false end
     catalogue, present, motionShared = nil, nil, nil
     combat.probe, combat.switched = nil, false
     sizes.applied, sizes.originals, sizes.pending, sizes.hooked = {}, {}, nil, false
-    onTop.wanted, onTop.raised = {}, {}
+    onTop.wanted, onTop.raised, onTop.casting = {}, {}, {}
 end

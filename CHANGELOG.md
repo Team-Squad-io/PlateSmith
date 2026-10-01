@@ -2,6 +2,120 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.1.0
+
+A feature update. Profiles from 1.0.3 carry over; nothing needs setting up again.
+
+### New
+
+**Blueprint Studio**
+- **Quick layout**: select the tree's **Plate** row and pick what goes at the Top, Bottom, Left,
+  Right or Centre of the health bar (or the name on names-only plates). Picks are ordinary
+  placement, so everything stays editable.
+- **Search settings**: find any setting by name, help text or page, with results shown right in the
+  page so you can change them there. Matches on Blizzard's Settings pages and Studio parts are
+  listed under **Elsewhere**.
+- **Text size**: one slider (80% to 150%) scales every PlateSmith text on every plate type.
+- Each rule has an **on/off box**, so you can turn a rule off without deleting it.
+- The footer shows PlateSmith's own CPU time per frame; click it for the Performance view.
+
+**Plates**
+- **Combo points** on your target's plate (rogue, or druid in cat form), on by default for enemy
+  plates. Style the pips in Studio; custom text can show `{combo}`.
+- **Quest progress** beside the quest mark, such as **3/8** or **38%** (select the Quest marker:
+  **Progress**). Custom text: `{quest.progress}`, `{quest.percent}`.
+- **Fade non-targets** and **Fade out of range** (Settings › Behaviour & display › Fading), each with
+  its own opacity. Both are ordinary rules you can adjust per part, and Rules presets too. New rule
+  conditions: `hastarget`, `inrange`.
+- **Colour by interrupt** (Cast bar): one colour when you can interrupt and your interrupt is ready,
+  one when it is on cooldown or you have none, one when the cast cannot be interrupted. Also as the
+  `interruptReady` condition and a rule preset.
+- **Draw casts above other plates** (Cast bar, off by default) so a casting plate is not hidden behind
+  its neighbours.
+- **Casts on names-only plates** (Settings › Behaviour & display › Names, off by default): a slim
+  cast bar under a friendly name, so you see "Opening", "Mounting" or Hearthstone. There is an enemy
+  option too, for enemy layouts with no health or cast bar.
+- **Targeted by** badges (+ Add › Icons, off by default): a small class-coloured badge for each party
+  member targeting an enemy (in a raid, its tanks). Hidden where the game will not say.
+- The focus's plate can be drawn on top, like your target's.
+- Opt-in **Blizzard name size** for friendly names in dungeons (Settings › Dungeon friendlies): one
+  size, outline and font for the names Blizzard draws on its own plates, which addons cannot style.
+  It changes Blizzard's shared nameplate fonts; turning it off restores them exactly.
+
+**Stacking & distance** (new Settings page)
+- PlateSmith can manage Blizzard's plate stacking: overlap or stack, spacing, movement speed, screen
+  edges, keeping your target on screen, view distance, scale and fade with distance. Tight, Normal
+  and Loose presets, a live preview, and optional combat-only stacking. Off until you turn it on;
+  turning it off puts every setting back.
+- Plates can be sized to what your layout draws, so stacked plates sit evenly apart.
+- **Reset Blizzard's stacking to game defaults**, and **Restore Blizzard nameplate settings** for the
+  friendly-name settings PlateSmith changes.
+
+**Profiles**
+- **Automatic switching** (Settings › PlateSmith › Profiles): pick a profile per character for the
+  open world, dungeons, raids, battlegrounds and arenas, and per specialization where your client
+  has them. It waits for combat to end and for unsaved changes, and says in chat why it switched.
+
+**Threat**
+- Threat text on plates reads **100%  +145**: your threat % and the signed gap the threat windows
+  show. Where the game keeps the numbers private only the % shows. **Threat text** in the Threat part
+  also offers **% only** or **Detailed**; custom text gains `{threat.leadpercent}`.
+- The last gap read through your target, hover, focus or a boss stays on the plate marked **~**.
+  **Keep last gap for** (5 s to until the mob is gone), **Stale gap** (dim, fade with age or grey)
+  and **Show gap age** ("~+145  3s") set how.
+- Boss units are used for threat in encounters, so a boss's plate can get its full gap even when it
+  is not your target.
+- Threat windows: **Detach from group** in the right-click menu; **Shift**-drag skips snapping; the
+  window or meter you are about to snap to glows; **Target first** keeps your target as the Tank
+  window's first row.
+- A new **Experimental** page in Settings: soft-target and target-of-target threat reads, a solo
+  hover gap, and an outside-group holder row. All off by default; these test what the game allows,
+  and `/ps diagnose` reports whether each one worked.
+
+**Performance**
+- `/ps perf` opens a live **Performance** view: the client profiler's figures for PlateSmith, plate
+  adds by phase, the busiest events and every ticker entry, with **Reset peaks**.
+- `/ps diagnose` warns when the slow `taintLog` or `scriptProfile` client settings are on.
+
+### Changed
+
+- **Smoother plates**: new plates appear with much less of a hitch (camera turns in cities, pull
+  starts, dungeons). Plates build only the parts their layout uses, a few are prepared ahead out of
+  combat, setup is spread over frames, and target changes touch only the two plates involved.
+- Threat windows redraw only what changed, and the Performance tab costs little to keep open.
+- Larger text on **new** profiles (14 pt names, 11 pt custom text). Existing profiles keep their
+  sizes.
+- Settings pages are tidier: help moved into tooltips (point at a setting or its **?**), check boxes
+  line up like Blizzard's Settings, and sections are evenly spaced.
+- **Show on plates** ticks now match Studio's eyes, and the tank's red health-bar edge has its own
+  box, **Warn when you lose a mob you tank**.
+- Threat windows snap from a little further away (12 px).
+- Tank window: **Possible attackers** and **LIKELY** say plainly that attackers are inferred; what
+  the game hides shows as unknown (**?**) rather than 0.
+
+### Fixed
+
+- **Threat in dungeons**:
+  - Mobs you hold no longer show **LOOSE**.
+  - Mob names show instead of "nameplate5".
+  - **LOSING** shows when someone is about to pull a mob you hold.
+  - Fleeing, feared or stunned mobs keep their holder.
+  - Critters and neutral mobs outside the fight no longer fill the Tank window.
+- The threat gap no longer vanishes the moment you change target.
+- A group member's unnamed pet shows as "<owner>'s pet" instead of "Unknown".
+- Quest marks: a mob that still drops an item you need shows the loot bag once its kill objective is
+  done, and quest progress shows in dungeons through your target or mouseover.
+- Friendly names in dungeons no longer show at two sizes at once.
+- Updating from 1.0.3 with threat details off keeps threat parts hidden and turns threat-reading
+  rules off (a chat line says which profiles; tick the rule's box to turn it back on).
+- The other-addon notice's **Disable and reload** works again and offers a **Reload now** button.
+- If PlateSmith's saved file is lost while it manages Blizzard settings, turning the option off now
+  restores Blizzard's defaults.
+- Settings: section lines no longer vanish when scrolled to the end, section titles survive switching
+  pages, and every page opens at its top.
+- Rules using tanking, elite, rare, boss, hostile or neutral no longer apply when the game hides
+  that information.
+
 ## 1.0.3
 
 ### Fixed

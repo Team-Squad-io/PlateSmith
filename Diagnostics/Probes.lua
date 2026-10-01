@@ -60,11 +60,71 @@ PS._CreateDiagnosticProbes = function(context)
             return frame:GetLeft(), frame:GetBottom(), frame:GetWidth(), frame:GetHeight()
         end)
         if not ok then return nil end
-        for _, value in ipairs({ left, bottom, width, height }) do
+        -- Each checked by position: ipairs would stop at the first nil (an unplaced frame has no left).
+        local values = { left, bottom, width, height }
+        for index = 1, 4 do
+            local value = values[index]
             if not IsReadable(value) or type(value) ~= "number" then return nil end
         end
         return { left = math.floor(left + 0.5), bottom = math.floor(bottom + 0.5),
             width = math.floor(width + 0.5), height = math.floor(height + 0.5) }
+    end
+
+    -- A font object's or text's size and outline, read only.
+    local function FontState(object)
+        if type(object) ~= "table" or type(object.GetFont) ~= "function" then return "api-missing" end
+        local ok, _, height, flags = pcall(object.GetFont, object)
+        if not ok then return "error" end
+        if not IsReadable(height) or not IsReadable(flags) then return "protected" end
+        return { height = type(height) == "number" and math.floor(height * 10 + 0.5) / 10 or "unavailable",
+            outline = type(flags) == "string" and flags ~= "" and flags or "none" }
+    end
+
+    local function ReadScale(region)
+        if type(region.GetEffectiveScale) ~= "function" then return "api-missing" end
+        local ok, scale = pcall(region.GetEffectiveScale, region)
+        if not ok then return "error" end
+        if not IsReadable(scale) then return "protected" end
+        return type(scale) == "number" and math.floor(scale * 100 + 0.5) / 100 or "unavailable"
+    end
+
+    -- Blizzard's name on a plate: shown, its font and font object, and its drawn scale (read only).
+    local function NativeNameState(root)
+        local native = type(root) == "table" and root.UnitFrame
+        local region = type(native) == "table" and native.name
+        if type(region) ~= "table" then return "unavailable" end
+        local state = { visible = RegionVisibleState(region), font = FontState(region), scale = ReadScale(region) }
+        if type(region.GetFontObject) == "function" then
+            local ok, object = pcall(region.GetFontObject, region)
+            state.fontObject = "none"
+            if ok and type(object) == "table" and type(object.GetName) == "function" then
+                local named, name = pcall(object.GetName, object)
+                if named and IsReadable(name) and type(name) == "string" then state.fontObject = name end
+            end
+        end
+        if type(native.GetAlpha) == "function" then
+            local ok, alpha = pcall(native.GetAlpha, native)
+            state.alpha = ok and IsReadable(alpha) and type(alpha) == "number" and math.floor(alpha * 100 + 0.5) / 100
+                or "unavailable"
+        end
+        return state
+    end
+
+    -- Each tracked friendly plate in a dungeon or raid (at most 12): what PlateSmith shows on it and how
+    -- Blizzard's own name is drawn, so two name sizes on screen can be traced to their frames.
+    local function FriendlyPlateStates()
+        local list = PS.Json.Array()
+        for unit, data in pairs(active) do
+            if #list >= 12 then break end
+            if data.unit == unit and data.friendly == true then
+                list[#list + 1] = {
+                    unit = unit, profile = tostring(data.profileKey or "unknown"),
+                    restricted = data.restrictedFriendly == true, overlay = data.overlay:IsShown() == true,
+                    name = RegionVisibleState(data.name), native = NativeNameState(data.root),
+                }
+            end
+        end
+        return list
     end
 
     -- The tracked plate of the player's target: its frame's plate, else a plate matching "target".
@@ -87,6 +147,36 @@ PS._CreateDiagnosticProbes = function(context)
         if value == nil then return "none" end
         local kind = type(value)
         return (kind == "boolean" or kind == "number" or kind == "string") and value or "unavailable"
+    end
+
+    -- Stacking: management, preset, options, what the client allows, and each catalogued CVar's
+    -- current value (CVars are plain strings, never secret).
+    local function StackingReport(Stacking)
+        local ok, section = pcall(Stacking.Report)
+        if not ok or type(section) ~= "table" then return { state = "failed" } end
+        local readCVar = C_CVar and C_CVar.GetCVar or GetCVar
+        local okPreset, preset = pcall(Stacking.Preset)
+        section.preset = okPreset and tostring(preset) or "error"
+        section.options = {}
+        for _, name in ipairs(Stacking.OPTIONS or {}) do
+            local okOption, value = pcall(Stacking.GetOption, name)
+            if okOption then section.options[name] = value == true else section.options[name] = "error" end
+        end
+        local okSize, sizeSupport = pcall(Stacking.SizeSupport)
+        section.sizeSupport = okSize and sizeSupport == true
+        local okCombat, allowed, probe = pcall(Stacking.CanCombatSwitch)
+        section.combatSwitch = okCombat and (allowed == true and "allowed" or tostring(probe or "untested")) or "error"
+        section.cvars = {}
+        local okCatalogue, catalogue = pcall(Stacking.Catalogue)
+        for _, entry in ipairs(okCatalogue and type(catalogue) == "table" and catalogue or {}) do
+            local value = "api-missing"
+            if type(readCVar) == "function" then
+                local okRead, text = pcall(readCVar, entry.key)
+                value = not okRead and "error" or type(text) == "string" and text or "unavailable"
+            end
+            section.cvars[entry.key] = value
+        end
+        return section
     end
 
     local function BuildReport()
@@ -131,6 +221,7 @@ PS._CreateDiagnosticProbes = function(context)
             raid = {},
         }
         if PS.Conflicts then report.conflicts = PS.Conflicts.Report() end
+        if PS.AutoProfile then report.autoProfile = PS.AutoProfile.Report() end
         -- Modules (the QuestieDB companion and any extension) and the add-ons they rely on, so a report
         -- shows why an optional feature is off: not installed, disabled, or loaded but failing.
         report.modules = {}
@@ -159,6 +250,8 @@ PS._CreateDiagnosticProbes = function(context)
             end
             report.addons[name] = state
         end
+        if PS.Stacking then report.stacking = StackingReport(PS.Stacking) end
+        if PS.NativeFonts then report.nativeFonts = PS.NativeFonts.Report() end
         if inInstance and (instanceType == "party" or instanceType == "raid") then
             local trackedFriendly, overlayShown, overlayErrors, firstError = 0, 0, 0, nil
             for _, data in pairs(active) do
@@ -179,6 +272,9 @@ PS._CreateDiagnosticProbes = function(context)
             if firstError then
                 report.dungeonFriendlyOverlay.firstError = PS.Format.Truncate(tostring(firstError), 160, 160)
             end
+            -- Every shared nameplate font object Blizzard's names may use, and what PlateSmith does to them.
+            report.dungeonFriendlyOverlay.nameFont = PS.NativeFonts and PS.NativeFonts.Report() or "api-missing"
+            report.dungeonFriendlyOverlay.plates = FriendlyPlateStates()
         end
 
         if type(PS.IterateQuestProviders) == "function" then
@@ -231,12 +327,13 @@ PS._CreateDiagnosticProbes = function(context)
                 applied = targetData.targetGlowStyle or "none",
                 nameGlowShown = (targetData.targetGlowStyle == "border"
                     or targetData.targetGlowStyle == "halo") and nameShown == true,
-                healthGlowShown = targetData.targetBorder:IsShown() == true,
+                healthGlowShown = targetData.targetBorder ~= nil and targetData.targetBorder:IsShown() == true,
             }
             local shownValues = {}
             for index = 1, VALUE_SLOT_COUNT do
                 local key = "value" .. index
-                if targetData.values[key]:IsShown() then
+                local region = targetData.values[key]
+                if region and region:IsShown() then
                     shownValues[#shownValues + 1] = { slot = key,
                         source = targetData.profile.valueSlots[key].source }
                 end
@@ -248,11 +345,12 @@ PS._CreateDiagnosticProbes = function(context)
             local debuffPosition = targetData.layout.debuffs
             local shownBuffIcons, shownDebuffIcons = 0, 0
             for index = 1, AURA_ICON_COUNT do
-                if targetData.buffIcons[index]:IsShown() then shownBuffIcons = shownBuffIcons + 1 end
-                if targetData.debuffIcons[index]:IsShown() then shownDebuffIcons = shownDebuffIcons + 1 end
+                local buff, debuff = targetData.buffIcons[index], targetData.debuffIcons[index]
+                if buff and buff:IsShown() then shownBuffIcons = shownBuffIcons + 1 end
+                if debuff and debuff:IsShown() then shownDebuffIcons = shownDebuffIcons + 1 end
             end
             report.target.buffs = {
-                enabled = db.showBuffs == true, source = db.buffSource, own = targetData.own == true,
+                enabled = PS.GetPartShownState("showBuffs") ~= "none", source = db.buffSource, own = targetData.own == true,
                 layout = buffPosition.visible ~= false,
                 position = { x = buffPosition.x, y = buffPosition.y, scale = buffPosition.scale or 1 },
                 rowShown = targetData.buffs:IsShown() == true,
@@ -267,7 +365,7 @@ PS._CreateDiagnosticProbes = function(context)
                     plate = AuraProbe(targetData.unit, buffFilter) },
             }
             report.target.debuffs = {
-                enabled = db.showDebuffs == true, source = db.debuffSource, own = targetData.own == true,
+                enabled = PS.GetPartShownState("showDebuffs") ~= "none", source = db.debuffSource, own = targetData.own == true,
                 layout = debuffPosition.visible ~= false,
                 position = { x = debuffPosition.x, y = debuffPosition.y, scale = debuffPosition.scale or 1 },
                 rowShown = targetData.debuffs:IsShown() == true,
@@ -294,7 +392,8 @@ PS._CreateDiagnosticProbes = function(context)
                     local ok, alpha = pcall(frame.GetAlpha, frame)
                     local okIgnore, ignores = pcall(function() return frame.IsIgnoringParentAlpha and frame:IsIgnoringParentAlpha() end)
                     blizzard[entry[1]] = { alpha = ok and IsReadable(alpha) and alpha or "unreadable",
-                        shown = RegionVisibleState(frame), ignoresParentAlpha = okIgnore and ignores == true or false }
+                        shown = RegionVisibleState(frame),
+                        ignoresParentAlpha = okIgnore and IsReadable(ignores) and ignores == true or false }
                 end
             end
             report.target.blizzardAuras = blizzard
@@ -377,6 +476,17 @@ PS._CreateDiagnosticProbes = function(context)
             report.target.quest = {
                 related = questRelated == true, source = questSource or "none", detail = questDetail or "none",
             }
+            -- Which route told the outstanding objective, through "target" and through its plate's token
+            -- (instances can protect the plate token's tooltip).
+            if PS.QuestProgress and questRelated == true then
+                local state, _, _, _, _, _, route = PS.QuestProgress.Outstanding("target")
+                report.target.quest.objective, report.target.quest.route = state or "unknown", route
+                if targetData and targetData.unit then
+                    local plateState, _, _, _, _, _, plateRoute = PS.QuestProgress.Outstanding(targetData.unit)
+                    report.target.quest.plateObjective, report.target.quest.plateRoute = plateState or "unknown", plateRoute
+                end
+                report.target.quest.progress = targetData and targetData.questProgressText or "none"
+            end
             local threat = targetData and targetData.unit and ThreatRecord(targetData.unit, true) or nil
             local threatText = threat and FormatThreatRecord(threat) or ""
             if threatText == "" and threat and (threat.hasOpaquePercent or threat.hasOpaqueLeadPercent or threat.hasOpaqueRawThreat) then
@@ -484,8 +594,8 @@ PS._CreateDiagnosticProbes = function(context)
                         situation = ThreatProbeCall(UnitThreatLeadSituation, actor, mob),
                     }
                 end
-                actorProbe.lead = { target = LeadPair("target"), plate = LeadPair(plateUnit),
-                    guid = LeadPair(guid) }
+                -- A GUID is not a unit token: the client rejects it, so it is not probed.
+                actorProbe.lead = { target = LeadPair("target"), plate = LeadPair(plateUnit) }
                 threatProbe.actors[#threatProbe.actors + 1] = actorProbe
             end
             -- The threat meter's question in one line: can the other members' threat be read?
@@ -503,6 +613,69 @@ PS._CreateDiagnosticProbes = function(context)
             end
             threatProbe.groupThreat = others == 0 and "no other members probed"
                 or string.format("%d of %d readable, %d protected", readable, others, protected)
+        end
+        -- What the client lets us read about each engaged mob's own target (the Tank window's ON
+        -- column): up to 8 tracked engaged enemies, read-only, classified, never converted to text.
+        local service = PS.ThreatService
+        if service and type(service.enemyOrder) == "table" then
+            local function Readability(callback, unit)
+                if type(callback) ~= "function" then return "api-missing" end
+                local ok, value = pcall(callback, unit)
+                if not ok then return "error" end
+                return IsReadable(value) and "readable" or "protected"
+            end
+            local mobTargets = PS.Json.Array()
+            for index = 1, service.enemyCount or 0 do
+                local record = service.enemyOrder[index]
+                if #mobTargets >= 8 then break end
+                if record and record.unit and record.engaged and record.targetToken then
+                    mobTargets[#mobTargets + 1] = {
+                        unit = record.targetToken, hold = record.holdState or "unavailable",
+                        exists = Readability(UnitExists, record.targetToken),
+                        name = Readability(UnitName, record.targetToken),
+                    }
+                end
+            end
+            report.threatMobTargets = mobTargets
+            -- Who targets each engaged mob, how readable the members' targets are, damage events.
+            if type(service.TargetingReport) == "function" then report.threatTargeting = service:TargetingReport() end
+            -- The hover route: the last mouseover event, the plate it named and the read through it,
+            -- then how each engaged plate's gap was read (readable facts only).
+            local probe = service.mouseoverProbe or {}
+            local now = type(GetTime) == "function" and GetTime() or 0
+            local hoverPlates = PS.Json.Array()
+            for index = 1, service.enemyCount or 0 do
+                local record = service.enemyOrder[index]
+                if #hoverPlates >= 8 then break end
+                if record and record.unit and record.engaged then
+                    hoverPlates[#hoverPlates + 1] = {
+                        unit = record.unit, source = record.threatMobSource or "unavailable",
+                        differential = record.differentialState or "unavailable",
+                        blocker = record.differentialBlocker or "none",
+                        gap = type(record.lead) == "number" and record.lead or "none",
+                        kept = record.leadKept == true,
+                    }
+                end
+            end
+            report.threatMouseover = {
+                events = probe.events or 0, eventsWhileAsleep = probe.asleep or 0,
+                lastEventAgo = type(probe.eventAt) == "number" and string.format("%.1fs", now - probe.eventAt) or "never",
+                matched = probe.matched == nil and "never" or (probe.matched or "no record"),
+                route = probe.route or "never",
+                lastRead = probe.readUnit and {
+                    unit = probe.readUnit, ago = string.format("%.1fs", now - (probe.readAt or now)),
+                    token = probe.token or "unavailable", playerRaw = probe.playerRaw or "unavailable",
+                    playerTanking = probe.playerTanking or "unavailable", playerPercent = probe.playerPercent or "unavailable",
+                    differential = probe.differential, blocker = probe.blocker, groupRead = probe.groupRead,
+                    gap = probe.lead, kind = probe.leadKind, display = probe.display ~= "" and probe.display or "none",
+                } or "never",
+                plates = hoverPlates,
+            }
+            -- Settings › Experimental: whether each test is on and what the game allowed.
+            if type(service.ExperimentalReport) == "function" then
+                local ok, experimental = pcall(service.ExperimentalReport, service)
+                report.experimental = ok and experimental or { state = "failed" }
+            end
         end
         -- Blizzard's damage meter windows, read only (a threat window can dock beside them).
         local meter = rawget(_G, "DamageMeter")
@@ -525,11 +698,25 @@ PS._CreateDiagnosticProbes = function(context)
             local ok, windows = pcall(PS.ThreatConsole.Report, PS.ThreatConsole)
             report.threatConsole = ok and windows or { state = "failed" }
         end
+        -- "Targeted by" badges: per member, whether the target and engaged plates' comparisons read.
+        if PS.TargetedBy and type(PS.TargetedBy.Report) == "function" then
+            local ok, targeted = pcall(PS.TargetedBy.Report)
+            report.targetedBy = ok and targeted or { state = "failed" }
+        end
         return report
     end
 
+    -- A probe that fails (a value the client withholds in combat, say) must not leave /ps diagnose
+    -- silent: the window still opens, on a short report naming the failure.
     local function Diagnose()
-        DiagnosticUI.ShowReport(BuildReport(), "manual")
+        local ok, report = pcall(BuildReport)
+        if not ok then
+            local reason = tostring(report)
+            PS.Chat.ReportError("diagnose", reason)
+            report = { format = "platesmith-diagnostics", version = tostring(PS.RUNTIME_BUILD or "unknown build"),
+                reportError = reason, performance = PS.Performance.Report() }
+        end
+        DiagnosticUI.ShowReport(report, "manual")
     end
 
     local function ProbePlayerPlate()

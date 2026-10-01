@@ -18,6 +18,13 @@ local GROUP_THREAT_INTERVAL = 0.2
 -- The differential needs every roster member's threat on the mob. The player's target and focus,
 -- and enemies a tank window shows, are read on every refresh; other plates at most this often.
 local GROUP_SCAN_INTERVAL = 0.5
+-- An engaged mob is re-read at least this often, event or not.
+local STALE_REFRESH = 1
+-- Members whose target is re-read on each GROUP_SCAN_INTERVAL pass whatever UNIT_TARGET said: all
+-- of a party's, a rolling few of a raid's (ReconcileTargets).
+local RECONCILE_BUDGET = 5
+-- UNIT_COMBAT damage per record, in one-second slots, for /ps diagnose (the last 10 s).
+local DAMAGE_SLOTS = 10
 
 local SERVICE_EVENTS = {
     "NAME_PLATE_UNIT_ADDED",
@@ -27,6 +34,12 @@ local SERVICE_EVENTS = {
     "UNIT_TARGET",
     "UNIT_PET",
     "PLAYER_TARGET_CHANGED",
+    -- The mouseover and focus tokens can read threat a plate's own token cannot (ReadThreat).
+    "UPDATE_MOUSEOVER_UNIT",
+    "PLAYER_FOCUS_CHANGED",
+    -- The boss tokens (boss1..boss5) appear, change and become targetable during an encounter.
+    "INSTANCE_ENCOUNTER_ENGAGE_UNIT",
+    "UNIT_TARGETABLE_CHANGED",
     "GROUP_ROSTER_UPDATE",
     "PLAYER_ROLES_ASSIGNED",
     "PLAYER_ENTERING_WORLD",
@@ -40,6 +53,7 @@ local SERVICE_EVENTS = {
 }
 
 local ThreatService = {
+    version = 1,
     cursor = 0,
     enemyCount = 0,
     rosterCount = 0,
@@ -53,6 +67,8 @@ local ThreatService = {
     isSolo = true,
     nextRecordSerial = 0,
     deadCursor = 0,
+    reconcileCursor = 0,
+    targetReconciles = 0,
     immediateRefreshes = 0,
     targetersDirty = false,
     allTargetersDirty = false,
@@ -71,31 +87,24 @@ local ThreatService = {
 
 local Secret = assert(PS.Secret, "PlateSmith Secret missing")
 local IsReadable, IsSecret, ReadBoolean = Secret.IsReadable, Secret.IsSecret, Secret.ReadBoolean
-local UnitExistsSafely, SameUnit, ReadName, ReadGUID = Secret.UnitExists, Secret.SameUnit, Secret.ReadName, Secret.ReadGUID
+local UnitExistsSafely, SameUnit, ReadGUID = Secret.UnitExists, Secret.SameUnit, Secret.ReadGUID
+local TargetToken = Secret.TargetToken
 local L = PS.L
-
--- "<unit>target" for each token seen, built once instead of on every read.
-local targetTokens = {}
-local function TargetToken(unit)
-    local token = targetTokens[unit]
-    if not token then
-        token = unit .. "target"
-        targetTokens[unit] = token
-    end
-    return token
-end
 
 -- Roster tokens, built once rather than on every roster rebuild.
 local RAID_TOKENS, RAID_PET_TOKENS, PARTY_TOKENS, PARTY_PET_TOKENS = {}, {}, {}, {}
 for index = 1, 40 do RAID_TOKENS[index], RAID_PET_TOKENS[index] = "raid" .. index, "raidpet" .. index end
 for index = 1, 4 do PARTY_TOKENS[index], PARTY_PET_TOKENS[index] = "party" .. index, "partypet" .. index end
 
--- Fields a threat window shows or sorts by. A refresh that changes none of them (and holds no
--- protected value, which cannot be compared) leaves the snapshot as it is.
+-- Fields a threat window (its rows and open tooltip) shows or sorts by. A refresh that changes none
+-- of them (and holds no protected value, which cannot be compared) leaves the snapshot as it is.
+-- targeterRevision covers a new targeter list of the same length.
 local SHOWN_FIELDS = {
     "unit", "guid", "enemyName", "serial", "root", "threatMobSource", "holdState", "engaged", "loose",
-    "targetName", "activeAttackerCount", "percent", "lead", "leadKind", "leadPercent", "rawThreat",
-    "selfHolds", "tankHolds", "tanking", "status",
+    "targetName", "activeAttackerCount", "attackerState", "targeterCount", "targeterState", "targeterRevision",
+    "percent", "lead", "leadKind", "leadKept", "leadPercent", "rawThreat",
+    "selfHolds", "tankHolds", "tanking", "status", "hasOpaqueName", "hasOpaqueTargetName",
+    "hasOpaqueTanking", "holdFlagCount", "holdFallback",
 }
 
 local function Now()
@@ -114,6 +123,142 @@ local function PlateToken(unit)
     local token = plate.namePlateUnitToken
     if not IsReadable(token) or type(token) ~= "string" then return false end
     return true, token
+end
+
+local function IsGroupToken(unit)
+    return unit == "player" or unit == "pet" or unit:match("^party") ~= nil or unit:match("^raid") ~= nil
+end
+
+-- Tokens borrowed for a plate's threat reads besides "target" (ReadThreat), in this order; a group
+-- member's target (MemberBorrowedToken) comes after them. Boss tokens name the same mob for every
+-- player, so they come before the hover.
+local BORROWED_TOKENS = { "focus", "boss1", "boss2", "boss3", "boss4", "boss5", "mouseover" }
+local BOSS_TOKENS = { boss1 = true, boss2 = true, boss3 = true, boss4 = true, boss5 = true }
+-- The boss tokens that may name a unit now (SyncBossTokens, on encounter events): the others are not
+-- looked up, so outside an encounter a read costs what it did without them. An unreadable answer counts.
+local bossActive = {}
+
+local function SyncBossTokens()
+    for token in pairs(BOSS_TOKENS) do bossActive[token] = ReadBoolean(UnitExists, token) ~= false end
+end
+-- Who a borrowed token found targeting a mob is kept this long after it moves on (ReadTokenTargeters).
+local TARGETERS_HOLD = 5
+
+local function Settings()
+    local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
+    return type(settings) == "table" and settings or nil
+end
+
+-- A gap read through one of them (or the target) is kept after the token moves on for the
+-- profile's threatKeptHold: seconds, or false ("until") while the same mob lives (its record serial).
+local KEPT_HOLDS = { ["5"] = 5, ["10"] = 10, ["15"] = 15, ["30"] = 30, ["until"] = false }
+local DEFAULT_KEPT_HOLD = 5
+
+-- The hold in seconds, or nil while a kept gap stays as long as its mob.
+local function KeptHold()
+    local settings = Settings()
+    local hold = settings and KEPT_HOLDS[settings.threatKeptHold]
+    if hold == nil then return DEFAULT_KEPT_HOLD end
+    return hold or nil
+end
+ThreatService.KeptHold = KeptHold
+
+-- Settings › Experimental: more borrowed tokens, after the mouseover and before a member's target:
+-- the soft targets, then the target's and focus's targets. They may not exist on this client, so
+-- each is looked up only while its test is on, and one the client refuses is skipped.
+local SOFT_TOKENS = { "softenemy", "softinteract" }
+local CHAIN_TOKENS = { "targettarget", "focustarget" }
+-- Per token, for /ps diagnose: whether it exists (readable, none, protected, error, api-missing), and
+-- how many reads went through it, with the last one's differential state.
+local experimentalTokens = {}
+for _, token in ipairs({ SOFT_TOKENS[1], SOFT_TOKENS[2], CHAIN_TOKENS[1], CHAIN_TOKENS[2] }) do
+    experimentalTokens[token] = { exists = "not tried", reads = 0, last = "none" }
+end
+
+local function ExperimentalTokenExists(token)
+    local stat = experimentalTokens[token]
+    if type(UnitExists) ~= "function" then
+        stat.exists = "api-missing"
+        return false
+    end
+    local ok, exists = pcall(UnitExists, token)
+    if not ok then
+        stat.exists = "error"
+        return false
+    end
+    -- A protected answer may still name a unit: the plate lookup decides.
+    if not IsReadable(exists) then
+        stat.exists = "protected"
+        return true
+    end
+    stat.exists = exists and "readable" or "none"
+    return exists and true or false
+end
+
+-- Whether a unit token (such as "mouseover") names the plate root or plate unit: the plate frame the
+-- client gives for it is compared with ours (a frame, not a protected GUID), else its readable
+-- plate token. A withheld answer is no.
+local function TokenPlateFrame(token)
+    local getPlate = C_NamePlate and C_NamePlate.GetNamePlateForUnit
+    if type(getPlate) ~= "function" then return nil end
+    local ok, plate = pcall(getPlate, token)
+    if ok and IsReadable(plate) and type(plate) == "table" then return plate end
+    return nil
+end
+
+local function TokenNamesPlate(token, root, unit)
+    local plate = TokenPlateFrame(token)
+    if not plate then return false end
+    if root ~= nil and plate == root then return true end
+    local plateUnit = plate.namePlateUnitToken
+    return IsReadable(plateUnit) and type(plateUnit) == "string" and plateUnit == unit
+end
+
+-- Whether a member's target token is this record's mob, by readable GUIDs (outdoors; in instances
+-- the GUIDs are protected and this is false).
+local function MemberTargetsRecord(token, record)
+    local guid = record.guid
+    if not guid then return false end
+    return ReadGUID(token) == guid
+end
+
+-- The plate frame the client gives for a member's target, and what it said: "found", "none" (no
+-- plate: no target, or one without a plate), "protected", "error", "unavailable" or "api-missing".
+-- The frame is our own plate root (a readable table, compared by identity); a protected answer is
+-- never looked at.
+local function ReadTargetPlate(token)
+    local getPlate = C_NamePlate and C_NamePlate.GetNamePlateForUnit
+    if type(getPlate) ~= "function" then return nil, "api-missing" end
+    local ok, plate = pcall(getPlate, token)
+    if not ok then return nil, "error" end
+    if not IsReadable(plate) then return nil, "protected" end
+    if plate == nil then return nil, "none" end
+    if type(plate) ~= "table" then return nil, "unavailable" end
+    return plate, "found"
+end
+
+local function ExperimentalToken(tokens, record)
+    for index = 1, #tokens do
+        local token = tokens[index]
+        if ExperimentalTokenExists(token) and TokenNamesPlate(token, record.root, record.unit) then return token end
+    end
+    return nil
+end
+
+-- The first borrowed token that names this record's plate, or nil.
+local function BorrowedToken(record)
+    for index = 1, #BORROWED_TOKENS do
+        local token = BORROWED_TOKENS[index]
+        if (not BOSS_TOKENS[token] or bossActive[token]) and TokenNamesPlate(token, record.root, record.unit) then
+            return token
+        end
+    end
+    local settings = Settings()
+    if not settings then return nil end
+    local token
+    if settings.experimentalSoftTargetThreat == true then token = ExperimentalToken(SOFT_TOKENS, record) end
+    if not token and settings.experimentalTargetOfTargetThreat == true then token = ExperimentalToken(CHAIN_TOKENS, record) end
+    return token
 end
 
 -- The character's tank choice: "adaptive", "always" or "never".
@@ -225,16 +370,51 @@ local function IsVisibleHostile(root, unit)
     return false
 end
 
+-- A member's target: its GUID, and whether the answer is known (a readable GUID, or readably no
+-- target at all). A protected GUID or existence leaves it unknown.
+local function ReadMemberTarget(token)
+    local guid = ReadGUID(token)
+    if guid then return guid, true end
+    return nil, ReadBoolean(UnitExists, token) == false
+end
+
 -- A unit token usable as a table key: readable and a string.
 local function ReadableToken(unit)
     return IsReadable(unit) and type(unit) == "string" and unit or nil
 end
 
+-- A unit's name as readable, opaque, hasOpaque. In instances Forever protects enemy (and sometimes
+-- group) names: the opaque value is kept only for a text sink and readable is then nil, so logic
+-- never sees it. fallback is used only when the client returns no name at all.
+local function ReadDisplayName(unit, fallback)
+    if type(UnitName) ~= "function" then return fallback, nil, false end
+    local ok, name = pcall(UnitName, unit)
+    if not ok then return fallback, nil, false end
+    if not IsReadable(name) then return nil, name, true end
+    if type(name) == "string" and name ~= "" then return name, nil, false end
+    return fallback, nil, false
+end
+
+-- Readable names sort by name, a protected (nil) one after them; nil when they are equal.
+local function NameBefore(left, right)
+    if left == right then return nil end
+    if left == nil then return false end
+    if right == nil then return true end
+    return left < right
+end
+
 local function SnapshotSort(left, right)
     if left.loose ~= right.loose then return left.loose end
     if left.engaged ~= right.engaged then return left.engaged end
-    if left.targetName ~= right.targetName then return left.targetName < right.targetName end
-    if left.enemyName ~= right.enemyName then return left.enemyName < right.enemyName end
+    local before = NameBefore(left.targetName, right.targetName)
+    if before ~= nil then return before end
+    before = NameBefore(left.enemyName, right.enemyName)
+    if before ~= nil then return before end
+    -- Protected names: the order the plates were tracked in, so rows do not shuffle.
+    if left.enemyName == nil and type(left.serial) == "number" and type(right.serial) == "number"
+        and left.serial ~= right.serial then
+        return left.serial < right.serial
+    end
     return left.unit < right.unit
 end
 
@@ -247,12 +427,19 @@ function ThreatService:AddRosterUnit(unit, owner, isMember)
     entry.owner = owner or unit
     entry.assignedRole = ReadRole(entry.owner)
     entry.role = entry.assignedRole
-    entry.name = ReadName(unit, unit)
+    entry.name, entry.nameOpaque, entry.hasOpaqueName = ReadDisplayName(unit, unit)
+    -- A pet the client has not named yet ("Unknown", or no name at all): named by its owner.
+    if entry.owner ~= unit and not entry.hasOpaqueName
+        and (entry.name == unit or entry.name == rawget(_G, "UNKNOWNOBJECT")) then
+        local ownerName = ReadDisplayName(entry.owner, nil)
+        if ownerName then entry.name = string.format(L["%s's pet"], ownerName) end
+    end
     entry.guid = ReadGUID(unit)
     entry.isMember = isMember and true or false
     entry.isPlayer = unit == "player" or SameUnit(unit, "player")
     entry.ownerIsPlayer = entry.owner ~= unit and (entry.owner == "player" or SameUnit(entry.owner, "player"))
-    entry.targetGUID, entry.targetDirty = nil, true
+    entry.targetGUID, entry.targetKnown, entry.targetDirty = nil, false, true
+    entry.plateFrame, entry.plateState = nil, nil
     entry.classToken = nil
     if entry.isMember and type(UnitClass) == "function" then
         local ok, _, token = pcall(UnitClass, unit)
@@ -353,12 +540,15 @@ function ThreatService:RebuildRoster()
     end
 
     self.isSolo = not raid and groupCount == 0
+    self.isRaid = raid
 
     for index = self.rosterCount + 1, oldCount do
         local entry = self.rosterPool[index]
         entry.unit, entry.owner, entry.role, entry.assignedRole, entry.name, entry.guid = nil, nil, nil, nil, nil, nil
+        entry.nameOpaque, entry.hasOpaqueName = nil, nil
         entry.isMember, entry.isPlayer, entry.ownerIsPlayer, entry.classToken = nil, nil, nil, nil
-        entry.targetToken, entry.targetGUID, entry.targetDirty = nil, nil, nil
+        entry.targetToken, entry.targetGUID, entry.targetKnown, entry.targetDirty = nil, nil, nil, nil
+        entry.plateFrame, entry.plateState = nil, nil
         local tuple = self.threatTuples[index]
         tuple.pass, tuple.tanking, tuple.status, tuple.scaled, tuple.rawPercent, tuple.raw = nil, nil, nil, nil, nil, nil
     end
@@ -447,8 +637,17 @@ function ThreatService:RebuildTargeterCounts(onlyDirty)
         local member = self.rosterPool[index]
         if member.isMember then
             if readAll or member.targetDirty then
-                member.targetGUID = ReadGUID(member.targetToken)
+                local known, frame = member.targetKnown, member.plateFrame
+                member.targetGUID, member.targetKnown = ReadMemberTarget(member.targetToken)
+                member.plateFrame, member.plateState = ReadTargetPlate(member.targetToken)
                 member.targetDirty = false
+                -- Readable where it was not, or the other way: any record's targeting state can change.
+                if known ~= member.targetKnown or (frame == nil) ~= (member.plateFrame == nil) then
+                    self.targetKnownChanged = true
+                elseif frame ~= member.plateFrame then
+                    -- From one plate to another: only those two records' lists change.
+                    self.touchedPlates[frame], self.touchedPlates[member.plateFrame] = true, true
+                end
             end
             local targetGUID = member.targetGUID
             if targetGUID then
@@ -472,6 +671,139 @@ function ThreatService:RebuildTargeterCounts(onlyDirty)
     end
 end
 
+-- A member's target GUID is read on its UNIT_TARGET; one the client withheld at that moment would
+-- stay missing until the next retarget. On the tick (every GROUP_SCAN_INTERVAL) a missing one is
+-- read again, and the targeters rebuilt only when it has become readable.
+function ThreatService:RetryMissingTargets()
+    for index = 1, self.rosterCount do
+        local member = self.rosterPool[index]
+        if member.isMember and member.targetGUID == nil and not member.targetDirty
+            and ReadGUID(member.targetToken) ~= nil then
+            member.targetDirty = true
+            self.targetersDirty = true
+        end
+    end
+end
+
+-- UNIT_TARGET can be missed (withheld, or sent while the GUID was protected), which would leave an
+-- old count. Each pass re-reads up to RECONCILE_BUDGET members' targets, from a rolling cursor, and
+-- flags only the ones whose GUID (or whether it is known) or target plate frame changed. The
+-- borrowed-token route needs none of this: it is re-read on every refresh of the record
+-- (ReadTokenTargeters).
+function ThreatService:ReconcileTargets()
+    local count = self.rosterCount
+    local checked, visited = 0, 0
+    while checked < RECONCILE_BUDGET and visited < count do
+        visited = visited + 1
+        self.reconcileCursor = (self.reconcileCursor % count) + 1
+        local member = self.rosterPool[self.reconcileCursor]
+        if member.isMember and not member.targetDirty then
+            checked = checked + 1
+            local guid, known = ReadMemberTarget(member.targetToken)
+            local frame, plateState = ReadTargetPlate(member.targetToken)
+            if guid ~= member.targetGUID or known ~= member.targetKnown or frame ~= member.plateFrame
+                or plateState ~= member.plateState then
+                member.targetDirty = true
+                self.targetersDirty = true
+                self.targetReconciles = self.targetReconciles + 1
+            end
+        end
+    end
+    return checked
+end
+
+-- Members targeting the record by its borrowed token (target, mouseover or focus), for when the
+-- GUID route gives nothing (a protected plate or member-target GUID): UnitIsUnit against that
+-- token, which the client often answers where the plate's own token is protected. Read at most
+-- every GROUP_THREAT_INTERVAL per record; a plate read through its own token has none.
+function ThreatService:ReadTokenTargeters(record)
+    local bucket = record.tokenTargeters
+    local source = record.threatMobSource
+    local borrowed = source ~= nil and source ~= "nameplate"
+    local now = Now()
+    if borrowed and bucket.source == source and bucket.serial == record.serial and bucket.readAt
+        and now - bucket.readAt < GROUP_THREAT_INTERVAL then
+        return
+    end
+    -- Read through the mouseover or focus a moment ago: kept for TARGETERS_HOLD.
+    if not borrowed and bucket.readAt and bucket.serial == record.serial and now - bucket.readAt < TARGETERS_HOLD then
+        return
+    end
+    local count = 0
+    -- Each member's answer (true, false, or nil when protected), for MergeTargeters.
+    local answers = bucket.answers
+    for unit in pairs(answers) do answers[unit] = nil end
+    if borrowed then
+        for index = 1, self.rosterCount do
+            local member = self.rosterPool[index]
+            if member.isMember then
+                local same = ReadBoolean(UnitIsUnit, member.targetToken, source)
+                answers[member.unit] = same
+                if same == true and count < MAX_ATTACKERS_PER_TARGET then
+                    count = count + 1
+                    bucket.names[count], bucket.units[count] = member.name, member.unit
+                end
+            end
+        end
+    end
+    for index = count + 1, bucket.count do bucket.names[index], bucket.units[index] = nil, nil end
+    bucket.count, bucket.source, bucket.serial, bucket.readAt = count, source, record.serial, borrowed and now or nil
+end
+
+-- Whether a member readably targets something other than the record: another plate (by the frame
+-- the client gives for its target), nothing at all, or a GUID that is not the record's (known when
+-- the record's GUID is, or when it is a group member's or another tracked mob's).
+function ThreatService:TargetsElsewhere(member, record)
+    local frame = member.plateFrame
+    if frame ~= nil and frame ~= record.root then return true end
+    if not member.targetKnown then return false end
+    local target = member.targetGUID
+    if target == nil or record.guid ~= nil then return true end
+    local other = self.enemyByGUID[target]
+    return self.rosterByGUID[target] ~= nil or (other ~= nil and other ~= record)
+end
+
+-- Who targets the record, member by member: the GUID route (RebuildTargeterCounts), the plate-frame
+-- route (the frame the client gives for the member's target is this record's plate, which works
+-- where GUIDs and UnitIsUnit are protected) and the borrowed token route (ReadTokenTargeters) each
+-- identify members on their own, and a member any one names is listed. targeterState says how sure
+-- the list is: "confirmed" or "none" when every member was answered, "partial" (a lower bound) or
+-- "unknown" (nobody found) when some member's target could not be matched. targeterRevision moves
+-- when the list or the state changes.
+function ThreatService:MergeTargeters(record)
+    local merged, answers = record.targeters, record.tokenTargeters.answers
+    local guid, root = record.guid, record.root
+    local count, partial, changed = 0, false, false
+    -- A read kept after the hover or focus moved on (TARGETERS_HOLD) still lists who it found, but its
+    -- "not targeting" answers are old: they confirm nothing.
+    local live = record.threatMobSource == record.tokenTargeters.source
+    for index = 1, self.rosterCount do
+        local member = self.rosterPool[index]
+        if member.isMember then
+            local token = answers[member.unit]
+            local frame = member.plateFrame
+            local onPlate = frame ~= nil and frame == root
+            if token == true or onPlate or (guid ~= nil and member.targetGUID == guid) then
+                if count < MAX_ATTACKERS_PER_TARGET then
+                    count = count + 1
+                    if merged.units[count] ~= member.unit or merged.names[count] ~= member.name then changed = true end
+                    merged.names[count], merged.units[count] = member.name, member.unit
+                end
+            elseif (token ~= false or not live) and not self:TargetsElsewhere(member, record) then
+                partial = true
+            end
+        end
+    end
+    for index = count + 1, merged.count do merged.names[index], merged.units[index] = nil, nil end
+    local state = partial and (count > 0 and "partial" or "unknown") or (count > 0 and "confirmed" or "none")
+    if changed or count ~= merged.count or state ~= record.targeterState then
+        record.targeterRevision = (record.targeterRevision or 0) + 1
+    end
+    merged.count, record.targeterState, record.targeterCount = count, state, count
+    local bucket = guid and self.attackerTargets[guid]
+    record.guidTargeterCount = bucket and bucket.count or 0
+end
+
 function ThreatService:ExpireEngagements(now)
     now = tonumber(now) or Now()
     local nextExpiry
@@ -491,12 +823,36 @@ function ThreatService:ExpireEngagements(now)
     self.nextEngagementExpiry = nextExpiry
 end
 
+-- Forgets the damage slots (a new mob in the record).
+local function ClearDamage(record)
+    for slot = 1, DAMAGE_SLOTS do record.damageStamps[slot], record.damageCounts[slot] = nil, 0 end
+end
+
 function ThreatService:RecordUnitDamage(unit)
     local token = ReadableToken(unit)
     local record = token and self.enemyByUnit[token] or nil
+    if not record and token and not IsGroupToken(token) then
+        -- "target", "focus", "mouseover"...: the plate the client names for it.
+        local known, plateUnit = PlateToken(token)
+        record = known and plateUnit and self.enemyByUnit[plateUnit] or nil
+        local frame = not known and TokenPlateFrame(token) or nil
+        for index = 1, frame and self.enemyCount or 0 do
+            local candidate = self.enemyOrder[index]
+            if candidate.root == frame then
+                record = candidate
+                break
+            end
+        end
+    end
     if not record then return false end
     local now = Now()
+    local second = math.floor(now)
+    local slot = second % DAMAGE_SLOTS + 1
+    if record.damageStamps[slot] ~= second then record.damageStamps[slot], record.damageCounts[slot] = second, 0 end
+    record.damageCounts[slot] = record.damageCounts[slot] + 1
     record.unitDamageAt = now
+    -- The client reports damage for this mob, so a quiet spell later means nobody is hitting it.
+    record.damageSeenSerial = record.serial
     record.dirty = true
     self:Hurry()
     local expiry = now + ENGAGEMENT_WINDOW
@@ -515,12 +871,75 @@ function ThreatService:UpdateRecordGUID(record)
     -- withheld keeps its history while a genuinely different mob starts clean.
     if guid and record.knownGUID and guid ~= record.knownGUID then
         record.unitDamageAt = nil
+        ClearDamage(record)
         self.nextRecordSerial = self.nextRecordSerial + 1
         record.serial = self.nextRecordSerial
     end
     if guid then record.knownGUID = guid end
     record.guid = guid
     if guid then self.enemyByGUID[guid] = record end
+end
+
+-- Creature types (as the client names them) that are never part of a fight.
+local CRITTER_TYPES = { Critter = true, ["Non-combat Pet"] = true }
+local TRIVIAL_CLASSES = { trivial = true, minus = true }
+
+local function ReadString(callback, ...)
+    if type(callback) ~= "function" then return nil end
+    local ok, value = pcall(callback, ...)
+    if ok and IsReadable(value) and type(value) == "string" then return value end
+    return nil
+end
+
+local function ReadNumberValue(callback, ...)
+    if type(callback) ~= "function" then return nil end
+    local ok, value = pcall(callback, ...)
+    if ok and IsReadable(value) and type(value) == "number" then return value end
+    return nil
+end
+
+-- Whether the mob is on the group's readable threat table: your own entry, or another member's.
+-- The group scan is kept per record (GroupHighest) and only counts while recent.
+local function OnThreatTable(record)
+    local group = type(record.groupHighest) == "number" and record.groupHighest > 0
+        and type(record.groupScanAt) == "number" and Now() - record.groupScanAt < 2 * GROUP_SCAN_INTERVAL
+    if record.playerThreatNoEntry == true then return group end
+    return record.tanking == true or type(record.status) == "number"
+        or (type(record.rawThreat) == "number" and record.rawThreat > 0) or group
+end
+
+-- Units that are not part of the fight leave the Tank list and its counts (record.excluded): a
+-- neutral critter (creature type Critter, trivial or minus, or level 1) not on the group's threat
+-- table, or another neutral mob neither in combat nor on it. (One you cannot attack is never
+-- tracked: IsVisibleHostile.) Only readable answers exclude; a protected one never does. What
+-- does not change for a mob (reaction, type, classification, level) is read once per serial.
+function ThreatService:UpdateExcluded(record)
+    local unit = record.unit
+    if record.involvementSerial ~= record.serial then
+        record.involvementSerial = record.serial
+        -- One read for a hostile mob (the usual case); a neutral one is looked at more closely.
+        -- A readable "cannot attack" never reaches here: IsVisibleHostile untracks it.
+        local reaction = ReadNumberValue(UnitReaction, unit, "player")
+        record.neutral = reaction == 4
+        record.critter = false
+        if record.neutral then
+            local creature = ReadString(UnitCreatureType, unit)
+            local class = ReadString(UnitClassification, unit)
+            record.critter = (creature ~= nil and CRITTER_TYPES[creature] == true)
+                or (class ~= nil and TRIVIAL_CLASSES[class] == true)
+                or ReadNumberValue(UnitLevel, unit) == 1
+        end
+    end
+    local excluded = false
+    if record.critter or record.neutral then
+        -- Joined the fight: on the group's threat table (or, for a neutral one, in combat).
+        local fighting = OnThreatTable(record)
+        if not fighting and record.neutral and not record.critter then
+            fighting = ReadBoolean(UnitAffectingCombat, unit) == true
+        end
+        excluded = not fighting
+    end
+    record.excluded = excluded == true
 end
 
 function ThreatService:UpdateEngaged(record)
@@ -532,18 +951,26 @@ function ThreatService:UpdateEngaged(record)
     record.engaged = engaged
 end
 
--- Who is attacking: the mob took damage recently, so the members targeting it are inferred to be
--- the ones hitting it (the client names no damage source).
+-- Who is possibly attacking: the mob took damage recently, so the members targeting it are
+-- inferred to be the ones hitting it (the client names no damage source). attackerState: the
+-- targeting state (MergeTargeters) while it took damage; "none" when idle, or quiet although the
+-- client has reported damage to it before; "no-signal" when engaged but no damage to it was ever
+-- reported (UNIT_COMBAT withheld for it, or not hit yet), so nothing can be inferred.
 function ThreatService:UpdateActiveAttackers(record)
     local count = 0
+    local state = "none"
     if record.unitDamageAt and Now() - record.unitDamageAt < ENGAGEMENT_WINDOW then
-        local bucket = record.guid and self.attackerTargets[record.guid] or nil
-        for index = 1, bucket and bucket.count or 0 do
+        local bucket = record.targeters
+        for index = 1, bucket.count do
             count = count + 1
             record.activeAttackerNames[count] = bucket.names[index]
             record.activeAttackerUnits[count] = bucket.units[index]
         end
+        state = record.targeterState or "unknown"
+    elseif record.engaged and record.damageSeenSerial ~= record.serial then
+        state = "no-signal"
     end
+    record.attackerState = state
     for index = count + 1, record.activeAttackerCount or 0 do
         record.activeAttackerNames[index] = nil
         record.activeAttackerUnits[index] = nil
@@ -552,50 +979,204 @@ function ThreatService:UpdateActiveAttackers(record)
 end
 
 -- The roster entry the mob is targeting: matched by GUID, and by UnitIsUnit only against members
--- whose GUID the client withheld (or when the target's own GUID is withheld).
+-- whose GUID the client withheld (or when the target's own GUID is withheld). The second result
+-- is whether the answer is known: false when a protected UnitIsUnit left a member unchecked.
 function ThreatService:FindHolder(targetUnit)
     local guid = ReadGUID(targetUnit)
     if guid then
         local entry = self.rosterByGUID[guid]
-        if entry or self.rosterMissingGUID == 0 then return entry end
+        if entry or self.rosterMissingGUID == 0 then return entry, true end
     end
+    local known = true
     for index = 1, self.rosterCount do
         local member = self.rosterPool[index]
-        if (not guid or not member.guid) and SameUnit(targetUnit, member.unit) then return member end
+        if not guid or not member.guid then
+            local same = ReadBoolean(UnitIsUnit, targetUnit, member.unit)
+            if same == true then return member, true end
+            if same == nil then known = false end
+        end
     end
-    return nil
+    return nil, known
+end
+
+-- Drops the protected holding answers FoldHolders kept.
+local function ClearHoldFlags(record)
+    local flags, states = record.holdFlags, record.holdFlagStates
+    for index = 1, record.holdFlagCount or 0 do flags[index], states[index] = nil, nil end
+    record.holdFlagCount, record.holdFallback, record.holdFlagsHaveSelf = 0, nil, false
+end
+
+-- The mob's target by its token: its name (readable, else opaque for the text sink, else the
+-- fallback) and class file (possibly protected, for the class-colour sink).
+local function NameTarget(record, targetUnit)
+    record.targetName, record.targetNameOpaque, record.hasOpaqueTargetName =
+        ReadDisplayName(targetUnit, L["Unknown target"])
+    record.targetClass, record.hasTargetClass = Secret.ClassFile(targetUnit)
+end
+
+local function SetHold(record, state, targetName)
+    record.targetName, record.targetUnit = targetName, nil
+    record.targetNameOpaque, record.hasOpaqueTargetName = nil, false
+    record.targetClass, record.hasTargetClass = nil, false
+    record.tankHolds, record.selfHolds, record.loose = false, false, state == "LOOSE"
+    record.holdState = state
+    ClearHoldFlags(record)
+end
+
+-- kept: the holder is carried over (HoldWithoutTarget), so its time is not renewed.
+function ThreatService:SetHolder(record, member, kept)
+    if not kept then
+        record.lastHolderUnit, record.lastHolderAt, record.lastHolderSerial = member.unit, Now(), record.serial
+    end
+    record.targetName, record.targetUnit = member.name, member.unit
+    record.targetNameOpaque, record.hasOpaqueTargetName = member.nameOpaque, member.hasOpaqueName == true
+    record.targetClass, record.hasTargetClass = nil, false
+    record.tankHolds = member.role == "TANK"
+    record.selfHolds = self.isSolo and (member.isPlayer or member.owner == "player")
+    record.loose = not record.tankHolds and not record.selfHolds
+    record.holdState = record.tankHolds and "TANK" or record.selfHolds and "YOU" or "LOOSE"
+    ClearHoldFlags(record)
+end
+
+-- Whether a group member other than the player (or the player's pet) has the tank role.
+function ThreatService:HasOtherTank()
+    for index = 1, self.rosterCount do
+        local member = self.rosterPool[index]
+        if member.role == "TANK" and not member.isPlayer and not member.ownerIsPlayer then return true end
+    end
+    return false
+end
+
+-- In instances Forever can protect the mob's target (existence, GUID and UnitIsUnit) while the
+-- player's own threat stays readable, as the threat meter shows. That decides what it can: you
+-- hold it, or, as the group's only tank, you do not. Anything else is UNKNOWN, never LOOSE.
+-- Otherwise the group's own "holding it" answers decide (FoldHolders).
+function ThreatService:HoldFromOwnThreat(record)
+    local player = self.playerRosterIndex and self.rosterPool[self.playerRosterIndex]
+    local onlyTank = player and player.role == "TANK" and not self.isSolo and not self:HasOtherTank()
+    if player and record.tanking == true then
+        self:SetHolder(record, player)
+    elseif record.tanking == false and onlyTank then
+        SetHold(record, "LOOSE", L["Unknown target"])
+    else
+        SetHold(record, "UNKNOWN", L["Unknown target"])
+        self:FoldHolders(record, player, onlyTank)
+    end
+end
+
+-- Group members whose "holding it" answer FoldHolders reads, besides you: a party's members, or a
+-- raid's tanks, at most this many.
+local MAX_FOLDED_MEMBERS = 5
+
+-- Who holds a mob when neither its target nor your own threat can say: each member's isTanking
+-- from UnitDetailedThreatSituation on it (only one unit can hold it). A readable true names the
+-- holder. Protected answers are kept with the state each would mean (holdFlags, holdFlagStates:
+-- TANK for a tank, else LOOSE; yours first, as SetHolder would give it, with holdFlagsHaveSelf),
+-- and holdFallback for none of them: the tank window and plates pass them to the client's boolean
+-- sinks, and the record stays
+-- UNKNOWN (not loose, for counts and order). Lua never branches on a protected answer.
+function ThreatService:FoldHolders(record, player, onlyTank)
+    local flags, states = record.holdFlags, record.holdFlagStates
+    local count = 0
+    if player and record.tanking == nil and record.hasOpaqueTanking then
+        count = 1
+        flags[1] = record.tankingOpaque
+        states[1] = player.role == "TANK" and "TANK" or (self.isSolo and "YOU") or "LOOSE"
+        record.holdFlagCount, record.holdFlagsHaveSelf = count, true
+    end
+    local source = record.threatMobSource
+    local mob = (source ~= nil and source ~= "nameplate") and source or record.unit
+    -- Whether every answer read was readable (a raid's non-tanks are not read, so never there).
+    local complete = (record.tanking ~= nil or record.playerThreatNoEntry == true) and not self.isRaid
+    local folded = 0
+    for index = 1, self.rosterCount do
+        if folded >= MAX_FOLDED_MEMBERS then break end
+        local member = self.rosterPool[index]
+        if member.isMember and not member.isPlayer and (not self.isRaid or member.role == "TANK") then
+            folded = folded + 1
+            local ok, tanking = self:ReadMemberThreat(index, member.unit, mob)
+            if ok and IsReadable(tanking) and tanking == true then
+                self:SetHolder(record, member)
+                return true
+            elseif ok and IsSecret(tanking) then
+                count = count + 1
+                flags[count], states[count] = tanking, member.role == "TANK" and "TANK" or "LOOSE"
+                record.holdFlagCount = count
+                complete = false
+            elseif not ok or not IsReadable(tanking) then
+                complete = false
+            end
+        end
+    end
+    if folded >= MAX_FOLDED_MEMBERS then complete = false end
+    record.holdFallback = count > 0 and (onlyTank and "LOOSE" or "UNKNOWN") or nil
+    return complete
+end
+
+-- How long the last holder is kept once a mob has no target (fear, stun, fleeing at low health).
+local HOLDER_KEPT = 3
+
+-- A mob with (readably) no target: running away, feared or stunned, it is still held by whoever
+-- held it. The last holder is kept for HOLDER_KEPT seconds; you hold it when your readable threat
+-- says so (tanking, status 2 or 3, or the top of the group's readable threat); protected answers
+-- are folded as for a "?" row (FoldHolders, LOOSE for none of them). LOOSE only when every answer
+-- is readable and nobody in the group holds it.
+function ThreatService:HoldWithoutTarget(record)
+    local last = record.lastHolderUnit and self.rosterByUnit[record.lastHolderUnit]
+    if last and record.lastHolderSerial == record.serial and record.lastHolderAt
+        and Now() - record.lastHolderAt < HOLDER_KEPT then
+        self:SetHolder(record, last, true)
+        return
+    end
+    local player = self.playerRosterIndex and self.rosterPool[self.playerRosterIndex]
+    local status, differential = record.status, record.playerDifferential
+    if player and (record.tanking == true or (type(status) == "number" and status >= 2)
+        or (type(differential) == "number" and differential >= 0 and record.playerThreatNoEntry ~= true
+            and type(record.rawThreat) == "number" and record.rawThreat > 0)) then
+        self:SetHolder(record, player)
+        return
+    end
+    SetHold(record, "UNKNOWN", L["No target"])
+    local complete = self:FoldHolders(record, player, true)
+    if record.targetUnit ~= nil then return end
+    if record.holdFlagCount == 0 and complete then SetHold(record, "LOOSE", L["No target"]) end
 end
 
 function ThreatService:FindTarget(record)
+    -- Whether the holder was named by the mob's own (readable) target, not inferred.
+    record.holdFromTarget = false
     if not record.engaged then
-        record.targetName, record.targetUnit = L["No target"], nil
-        record.tankHolds, record.selfHolds, record.loose = false, false, false
-        record.holdState = "IDLE"
+        SetHold(record, "IDLE", L["No target"])
         return
     end
-    local targetUnit = record.targetToken
-    if not UnitExistsSafely(targetUnit) then
-        record.targetName, record.targetUnit = L["No target"], nil
-        record.tankHolds, record.selfHolds, record.loose = false, false, true
-        record.holdState = "LOOSE"
+    -- The confirmed target's own "targettarget" is often readable where the plate's is not (and
+    -- likewise "mouseovertarget" and "focustarget" for a borrowed token).
+    local source = record.threatMobSource
+    local targetUnit = (source ~= nil and source ~= "nameplate") and TargetToken(source) or record.targetToken
+    local exists = ReadBoolean(UnitExists, targetUnit)
+    if exists == false then
+        self:HoldWithoutTarget(record)
         return
     end
-
-    local member = self:FindHolder(targetUnit)
-    if member then
-        record.targetName = member.name
-        record.targetUnit = member.unit
-        record.tankHolds = member.role == "TANK"
-        record.selfHolds = self.isSolo and (member.isPlayer or member.owner == "player")
-        record.loose = not record.tankHolds and not record.selfHolds
-        record.holdState = record.tankHolds and "TANK" or record.selfHolds and "YOU" or "LOOSE"
-        return
+    if exists == true then
+        local member, known = self:FindHolder(targetUnit)
+        if member then
+            self:SetHolder(record, member)
+            record.holdFromTarget = true
+            return
+        end
+        if known then
+            -- Held by someone outside the group.
+            SetHold(record, "LOOSE", L["Unknown target"])
+            NameTarget(record, targetUnit)
+            return
+        end
     end
-
-    record.targetName = ReadName(targetUnit, L["Unknown target"])
-    record.targetUnit = nil
-    record.tankHolds, record.selfHolds, record.loose = false, false, true
-    record.holdState = "LOOSE"
+    -- The mob's target cannot be matched to the group (or even said to exist): unless a group
+    -- member was found holding it, the ON column still names it and colours it by class, through
+    -- the text and class-colour sinks when protected (nothing when the client gives no name).
+    self:HoldFromOwnThreat(record)
+    if record.targetUnit == nil then NameTarget(record, targetUnit) end
 end
 
 -- One roster member's UnitDetailedThreatSituation on mob. Reads on the player's target are kept
@@ -644,10 +1225,13 @@ end
 -- else the cached result (kept per record and invalidated by a new mob or a roster change).
 function ThreatService:GroupHighest(record, mob, priority)
     local now = Now()
+    -- A scan through another token (the plate's, or a member's target) may be blocked where this one
+    -- is not.
     if priority or record.groupScanSerial ~= record.serial or record.groupScanRoster ~= self.rosterRevision
-        or not record.groupScanAt or now - record.groupScanAt >= GROUP_SCAN_INTERVAL then
+        or record.groupScanMob ~= mob or not record.groupScanAt or now - record.groupScanAt >= GROUP_SCAN_INTERVAL then
         record.groupHighest, record.groupBlockedState, record.groupBlocker = self:ScanGroupThreat(mob)
         record.groupScanAt, record.groupScanSerial, record.groupScanRoster = now, record.serial, self.rosterRevision
+        record.groupScanMob = mob
         self.groupScans = self.groupScans + 1
     end
     return record.groupHighest, record.groupBlockedState, record.groupBlocker
@@ -659,6 +1243,31 @@ function ThreatService:IsPriority(record, targetMatched)
     local console = PS.ThreatConsole
     if console and console.watchedRecords and console.watchedRecords[record] then return true end
     return SameUnit(record.unit, "focus")
+end
+
+-- A group member's target token ("party2target") that names this record's plate, for a plate whose
+-- own threat read was not readable: like the mouseover, a member's target can read threat the
+-- plate's token cannot, and it is matched the same way, by the plate frame the client gives for
+-- it. Only members whose target was last read as this plate are asked (one lookup each); one that
+-- has moved on is read again at the next flush.
+function ThreatService:MemberBorrowedToken(record)
+    local root = record.root
+    if record.plateThreat ~= "blocked" or root == nil then return nil end
+    for index = 1, self.rosterCount do
+        local member = self.rosterPool[index]
+        -- The player's own target is "target", borrowed first.
+        if member.isMember and not member.isPlayer then
+            if member.plateFrame == root then
+                if TokenPlateFrame(member.targetToken) == root then return member.targetToken end
+                member.targetDirty, self.targetersDirty = true, true
+            elseif member.targetGUID ~= nil and member.targetGUID == record.guid
+                and MemberTargetsRecord(member.targetToken, record) then
+                -- Forever refuses the plate lookup for "party1target": matched by readable GUID instead.
+                return member.targetToken
+            end
+        end
+    end
+    return nil
 end
 
 function ThreatService:ReadThreat(record)
@@ -674,14 +1283,25 @@ function ThreatService:ReadThreat(record)
     record.differentialState = "unavailable"
     record.differentialBlocker = nil
     record.tanking, record.status = nil, nil
+    record.tankingOpaque, record.hasOpaqueTanking = nil, false
     record.playerThreatNoEntry = false
+    record.outsideHolderThreat = nil
 
     -- Forever can expose readable threat through the player's target while the
     -- equivalent nameplate token remains protected. Only borrow that token for
     -- the exact current mob; never match by name or infer an arbitrary GUID.
+    -- The focus and mouseover tokens are borrowed the same way, for the mob focused or under the
+    -- mouse (matched by the plate the client names for them), then a group member's target.
     local targetMatched = SameUnit(record.unit, "target")
-    local mob = targetMatched and "target" or record.unit
-    record.threatMobSource = targetMatched and "target" or "nameplate"
+    local borrowed = targetMatched and "target" or BorrowedToken(record)
+    local memberBorrowed = false
+    if not borrowed then
+        borrowed = self:MemberBorrowedToken(record)
+        memberBorrowed = borrowed ~= nil
+    end
+    record.memberBorrowed = memberBorrowed
+    local mob = borrowed or record.unit
+    record.threatMobSource = borrowed or "nameplate"
     record.leadPercent, record.leadPercentOpaque, record.leadPercentState =
         ReadThreatValue(UnitThreatPercentageOfLead, "player", mob)
     record.hasOpaqueLeadPercent = record.leadPercentState == "protected/displayable"
@@ -710,7 +1330,13 @@ function ThreatService:ReadThreat(record)
         record.differentialBlocker = "player"
         return
     end
-    if IsReadable(tanking) and type(tanking) == "boolean" then record.tanking = tanking end
+    if IsReadable(tanking) and type(tanking) == "boolean" then
+        record.tanking = tanking
+    elseif IsSecret(tanking) then
+        -- Kept only for the client's boolean sinks (Secret.Pick): the windows and plates show
+        -- what it would mean either way without Lua branching on it.
+        record.tankingOpaque, record.hasOpaqueTanking = tanking, true
+    end
     if IsReadable(status) and type(status) == "number" then record.status = status end
     if IsReadable(scaledPercent) and type(scaledPercent) == "number" then
         record.playerPercent = scaledPercent
@@ -735,7 +1361,9 @@ function ThreatService:ReadThreat(record)
         return
     end
 
-    local highestOther, blockedState, blocker = self:GroupHighest(record, mob, self:IsPriority(record, targetMatched))
+    -- A member's target is read like any other plate (GROUP_SCAN_INTERVAL), not on every refresh.
+    local highestOther, blockedState, blocker =
+        self:GroupHighest(record, mob, self:IsPriority(record, borrowed ~= nil and not memberBorrowed))
     if not highestOther then
         record.differentialState, record.differentialBlocker = blockedState, blocker
         return
@@ -747,6 +1375,11 @@ function ThreatService:ReadThreat(record)
         local holder = IsReadable(rawPercent) and type(rawPercent) == "number" and rawPercent > 0
             and raw * 100 / rawPercent or nil
         if holder and holder > highestOther then
+            -- Clearly above every group member (not the holder's own total come back with rounding):
+            -- held outside the group, for the threat meter's outside-group row (readable only).
+            if holder - highestOther > math.max(1, highestOther * 0.001) then
+                record.outsideHolderThreat = math.floor(holder + 0.5)
+            end
             highestOther = holder
         elseif not holder and highestOther <= raw then
             record.differentialState = "external-holder"
@@ -761,6 +1394,15 @@ function ThreatService:ReadThreat(record)
     end
     if targetMatched and not SameUnit(record.unit, "target") then
         record.differentialState = "target-changed"
+        return
+    end
+    if memberBorrowed then
+        if TokenPlateFrame(borrowed) ~= record.root and not MemberTargetsRecord(borrowed, record) then
+            record.differentialState = "member-target-changed"
+            return
+        end
+    elseif borrowed and not targetMatched and BorrowedToken(record) ~= borrowed then
+        record.differentialState = "hover-changed"
         return
     end
     record.playerDifferential = raw - highestOther
@@ -784,24 +1426,59 @@ local function GroupThreatSort(left, right)
     return left.order < right.order
 end
 
+-- Settings › Experimental (Outside-group holder row): the unit holding the measured enemy from outside
+-- the group, as one more row after the count members, when ReadThreat recovered its threat total
+-- (outsideHolderThreat, readable) and no member holds it. Its name is the mob's target's, readable
+-- only; else "Outside group". The entry, or nil.
+function ThreatService:AddOutsideHolder(record, count)
+    local settings = Settings()
+    local total = record.outsideHolderThreat
+    if not (settings and settings.experimentalOutsideHolderRow == true) or type(total) ~= "number"
+        or count >= MAX_ROSTER_UNITS then
+        return nil
+    end
+    for index = 1, count do
+        if self.groupThreat[index].tanking == true then return nil end
+    end
+    local source = record.threatMobSource
+    local name = (source ~= nil and source ~= "nameplate") and Secret.ReadName(TargetToken(source)) or nil
+    if not name and record.targetToken then name = Secret.ReadName(record.targetToken) end
+    local entry = self.groupThreat[count + 1]
+    entry.unit, entry.role, entry.classToken = nil, nil, nil
+    entry.name = name and string.format(L["%s (outside group)"], name) or L["Outside group"]
+    entry.nameOpaque, entry.hasOpaqueName = nil, false
+    entry.isPlayer, entry.isPet, entry.isOutside, entry.order = false, false, true, 0
+    -- It holds the mob, so its threat is the 100% everyone else's is measured against.
+    entry.tanking, entry.percent, entry.percentOpaque, entry.hasOpaquePercent = true, 100, nil, false
+    entry.raw, entry.rawOpaque, entry.hasOpaqueRaw, entry.gap = total, nil, false, nil
+    self.outsideRowsShown = (self.outsideRowsShown or 0) + 1
+    self.outsideLastThreat = total
+    return entry
+end
+
 -- Every roster member's threat on the player's current target, for the threat meter windows.
 -- Only the confirmed current target is read (the token Forever makes readable most often).
 -- Protected values are kept opaque for display sinks; the gap to pulling (the holder's raw
 -- threat x 1.1, the melee rule) and the order are only calculated from readable numbers.
 function ThreatService:ReadGroupThreat(record)
     local count, holderRaw, allReadable = 0, nil, true
+    -- True only when every member was read and none is on the mob's threat table.
+    local noThreat = type(UnitDetailedThreatSituation) == "function" and self.rosterCount > 0
     self.groupThreatRecord = record
     if type(UnitDetailedThreatSituation) == "function" then
         for index = 1, self.rosterCount do
             local member = self.rosterPool[index]
             local ok, tanking, status, scaled, rawPercent, raw = self:ReadMemberThreat(index, member.unit, "target")
+            if not ok then noThreat = false end
             -- A complete, readable nil tuple is no entry on this mob's table: no row.
             if ok and not IsNoEntry(tanking, status, scaled, rawPercent, raw) then
+                noThreat = false
                 count = count + 1
                 local entry = self.groupThreat[count]
                 entry.unit, entry.name, entry.role = member.unit, member.name, member.role
+                entry.nameOpaque, entry.hasOpaqueName = member.nameOpaque, member.hasOpaqueName == true
                 entry.isPlayer, entry.isPet, entry.order = member.isPlayer, not member.isMember, index
-                entry.classToken = member.classToken
+                entry.classToken, entry.isOutside = member.classToken, false
                 entry.tanking = nil
                 if IsReadable(tanking) and type(tanking) == "boolean" then entry.tanking = tanking end
                 entry.percent, entry.percentOpaque, entry.hasOpaquePercent = nil, nil, false
@@ -821,11 +1498,16 @@ function ThreatService:ReadGroupThreat(record)
             end
         end
     end
+    local outside = self:AddOutsideHolder(record, count)
+    if outside then
+        count, holderRaw, noThreat = count + 1, outside.raw, false
+    end
     for index = count + 1, self.groupThreatCount do
         local entry = self.groupThreat[index]
         entry.unit, entry.name, entry.percentOpaque, entry.rawOpaque = nil, nil, nil, nil
+        entry.nameOpaque, entry.hasOpaqueName = nil, false
     end
-    self.groupThreatCount = count
+    self.groupThreatCount, self.groupThreatNone = count, noThreat
     -- Gaps follow the lead's rules (see ReadThreat): the holder's margin over the highest other
     -- (known only when every other total is readable), everyone else's distance to pulling. Your
     -- own row takes your lead, which also counts a holder outside the group.
@@ -865,7 +1547,7 @@ end
 -- A failed group read shows no rows rather than half-updated ones.
 function ThreatService:ReadGroupThreatSafely(record)
     if pcall(self.ReadGroupThreat, self, record) then return true end
-    self.groupThreatCount = 0
+    self.groupThreatCount, self.groupThreatNone = 0, false
     self.groupThreatRevision = self.groupThreatRevision + 1
     return false
 end
@@ -893,12 +1575,48 @@ function ThreatService:FlushGroupThreat(now)
     end
 end
 
--- The measured record, the row count and the pooled rows; nil and 0 when the player's target
--- has no tracked plate.
+-- The threat meter's enemy when no tracked plate is read through "target" (the target has no plate,
+-- or the client will not match its plate to "target"): the group is read through "target" itself,
+-- which needs no plate, when it is a living enemy you can attack. At most every
+-- GROUP_THREAT_INTERVAL, from the tick; a matched plate (RequestGroupThreat) takes precedence.
+function ThreatService:ReadTargetScope(now)
+    if self.targetScopeAt and now - self.targetScopeAt < GROUP_THREAT_INTERVAL then return end
+    self.targetScopeAt = now
+    local scope, current = self.targetScope, self.groupThreatRecord
+    if current and current ~= scope and current.unit and current.threatMobSource == "target"
+        and SameUnit(current.unit, "target") then
+        return
+    end
+    local attackable = UnitExistsSafely("target") and ReadBoolean(UnitCanAttack, "player", "target") == true
+        and ReadBoolean(UnitIsDeadOrGhost, "target") ~= true and ReadBoolean(UnitIsDead, "target") ~= true
+    if not attackable then
+        if current == scope then self:ClearTargetScope() end
+        return
+    end
+    scope.guid = ReadGUID("target")
+    scope.enemyName, scope.enemyNameOpaque, scope.hasOpaqueName = ReadDisplayName("target", nil)
+    self.groupThreatReadAt, self.groupThreatPending = now, nil
+    -- A later tick: nothing read in the last refresh pass may be reused.
+    self.threatPass = self.threatPass + 1
+    self.targetScopeReads = (self.targetScopeReads or 0) + 1
+    self:ReadGroupThreatSafely(scope)
+end
+
+-- The target changed or went away: the meter's "target" read is no longer about it.
+function ThreatService:ClearTargetScope()
+    self.targetScopeAt = nil
+    if self.groupThreatRecord ~= self.targetScope then return end
+    self.groupThreatRecord, self.groupThreatCount, self.groupThreatNone = nil, 0, false
+    self.groupThreatRevision = self.groupThreatRevision + 1
+end
+
+-- The measured record, the row count, the pooled rows, and whether the client showed that nobody
+-- in the group has threat on it yet; nil and 0 when "target" is not the enemy last read. The record
+-- is a tracked plate's, or targetScope (targetScoped, no plate) from ReadTargetScope.
 function ThreatService:GetGroupThreat()
     local record = self.groupThreatRecord
-    if not record or not record.unit or not SameUnit(record.unit, "target") then return nil, 0, self.groupThreat end
-    return record, self.groupThreatCount, self.groupThreat
+    if not record or not record.unit or not SameUnit(record.unit, "target") then return nil, 0, self.groupThreat, false end
+    return record, self.groupThreatCount, self.groupThreat, self.groupThreatCount == 0 and self.groupThreatNone == true
 end
 
 -- Windows in threat meter mode ask for the group read; nobody else pays for it.
@@ -914,18 +1632,178 @@ function ThreatService:SetGroupThreatWanted(wanted)
         self:Hurry()
     else
         self.groupThreatRecord, self.groupThreatCount, self.groupThreatPending = nil, 0, nil
+        self.targetScopeAt = nil
     end
 end
 
 local function ShownChanged(record)
     if record.hasOpaquePercent or record.hasOpaqueLeadPercent or record.hasOpaqueRawThreat
-        or record.hasOpaqueLeadSituation then return true end
+        or record.hasOpaqueLeadSituation or record.hasOpaqueTanking or (record.holdFlagCount or 0) > 0
+        or record.hasOpaqueTargetName or record.hasTargetClass then
+        return true
+    end
     local shown = record.shown
     for index = 1, #SHOWN_FIELDS do
         local field = SHOWN_FIELDS[index]
         if shown[field] ~= record[field] then return true end
     end
     return false
+end
+
+-- Differential states that mean the token read gave no usable threat (ReadThreat).
+local BLOCKED_READS = {
+    ["unavailable"] = true, ["error"] = true, ["protected-player-threat"] = true, ["player-threat-unavailable"] = true,
+    ["protected-group-threat"] = true, ["group-threat-unavailable"] = true,
+}
+
+-- The enemy's name: readable, else opaque for a text sink (the plate token only when the client
+-- gives no name at all). A plate's name can be protected while "target" names the same mob, so
+-- the borrowed token (target, mouseover or focus) is asked too.
+function ThreatService:ReadEnemyName(record)
+    local name, opaque, hasOpaque = ReadDisplayName(record.unit, nil)
+    local source = record.threatMobSource
+    if name == nil and source ~= nil and source ~= "nameplate" then
+        local targetName, targetOpaque, targetHasOpaque = ReadDisplayName(source, nil)
+        if targetName ~= nil or targetHasOpaque then name, opaque, hasOpaque = targetName, targetOpaque, targetHasOpaque end
+    end
+    if name == nil and not hasOpaque then name = record.unit end
+    record.enemyName, record.enemyNameOpaque, record.hasOpaqueName = name, opaque, hasOpaque
+end
+
+-- A gap read through the mouseover, focus, a boss or a member's target token is kept on the record; once
+-- the plate's own reads (or a protected member-target read) give none, it is shown again for
+-- the profile's hold (KeptHold; the same mob only: its serial). A later borrowed read of the mob replaces it.
+function ThreatService:KeepBorrowedLead(record)
+    local source = record.threatMobSource
+    -- Any live gap is kept, the target's too: outdoors the target is often the only token that
+    -- reads one, so a gap seen while targeting stays (marked "~") after the target moves on.
+    if source ~= "nameplate" and type(record.lead) == "number" then
+        record.keptLead, record.keptLeadKind, record.keptPercent = record.lead, record.leadKind, record.percent
+        record.keptTanking, record.keptStatus = record.tanking, record.status
+        record.keptAt, record.keptSerial = Now(), record.serial
+        record.leadKept = false
+        return
+    end
+    -- A token that read no gap (a protected hover, the plate's own) falls back to the kept one.
+    local hold = KeptHold()
+    local fresh = record.keptAt ~= nil and record.keptSerial == record.serial
+        and (hold == nil or Now() - record.keptAt < hold)
+    local kept = source ~= "target" and record.lead == nil and BLOCKED_READS[record.differentialState] == true and fresh
+    record.leadKept = kept
+    if kept then
+        -- The hold state and LOSING follow the kept read too (FindTarget runs after this).
+        record.lead, record.leadKind = record.keptLead, record.keptLeadKind
+        if record.percent == nil and not record.hasOpaquePercent then record.percent = record.keptPercent end
+        if record.tanking == nil then record.tanking = record.keptTanking end
+        if record.status == nil then record.status = record.keptStatus end
+    elseif record.keptAt ~= nil and not fresh then
+        record.keptLead, record.keptLeadKind, record.keptPercent, record.keptAt, record.keptSerial = nil, nil, nil, nil, nil
+        record.keptTanking, record.keptStatus = nil, nil
+    end
+end
+
+-- The last read through the mouseover, for /ps diagnose (threatMouseover): readable facts only.
+function ThreatService:NoteMouseoverRead(record)
+    local probe = self.mouseoverProbe
+    probe.readAt, probe.readUnit = Now(), record.unit
+    -- The token every call of this read went through (ReadThreat's mob), and what the player's own
+    -- tuple gave through it.
+    probe.token = record.threatMobSource
+    probe.playerRaw = record.rawThreatState or "unavailable"
+    probe.playerTanking = record.tanking ~= nil and "readable" or (record.hasOpaqueTanking and "protected" or "none")
+    probe.playerPercent = type(record.percent) == "number" and "readable"
+        or (record.hasOpaquePercent and "protected" or "none")
+    probe.differential, probe.blocker = record.differentialState or "unavailable", record.differentialBlocker or "none"
+    probe.groupRead = record.differentialState == "readable" and "readable"
+        or (record.differentialState == "protected-group-threat" and "protected") or "not reached"
+    probe.lead = type(record.lead) == "number" and record.lead or "none"
+    probe.leadKind = record.leadKind or "none"
+    local text = PS.ThreatText and PS.ThreatText.Record
+    probe.display = type(text) == "function" and text(record) or ""
+end
+
+-- Settings › Experimental (Solo hover gap): solo, the gap while you hold a mob is your raw threat x 1.1
+-- (nobody else is on its table). With only a protected raw threat, a linear client curve
+-- (0 -> 0, CURVE_TOP -> CURVE_TOP x 1.1) evaluates that inside the client; Lua never compares or
+-- computes with the value, which goes to the plate's format sink as it is (ThreatText).
+local CURVE_TOP = 1e9
+local curveGap -- the curve, made once; false when the client has none
+ThreatService.curveStats = { state = "not tried", evaluated = 0, failed = 0, shown = 0 }
+
+local function CurveGap()
+    if curveGap ~= nil then return curveGap end
+    curveGap = false
+    local util, kinds = C_CurveUtil, Enum and Enum.LuaCurveType
+    local linear = kinds and kinds.Linear
+    if util and type(util.CreateCurve) == "function" and linear ~= nil then
+        local ok, made = pcall(util.CreateCurve)
+        if ok and made ~= nil and pcall(made.SetType, made, linear) and pcall(made.AddPoint, made, 0, 0)
+            and pcall(made.AddPoint, made, CURVE_TOP, CURVE_TOP * 1.1) then
+            curveGap = made
+        end
+    end
+    return curveGap
+end
+
+function ThreatService:ReadCurveGap(record)
+    record.curveLeadOpaque, record.hasCurveLead, record.curveState = nil, false, nil
+    local settings = Settings()
+    if not (settings and settings.experimentalSoloCurveGap == true) then return end
+    -- The mob's own target names you (YOU, or TANK for a solo tank): only then is the gap raw x 1.1.
+    -- A kept gap (an older readable read) does not stop it: a live curve read is newer.
+    if not self.isSolo or not record.hasOpaqueRawThreat or (record.lead ~= nil and not record.leadKept)
+        or record.targetUnit ~= "player"
+        or not record.holdFromTarget then
+        return
+    end
+    local stats = self.curveStats
+    local curve = CurveGap()
+    if not curve then
+        record.curveState, stats.state = "curve-missing", "curve-missing"
+        return
+    end
+    local ok, value = pcall(curve.Evaluate, curve, record.rawThreatOpaque)
+    if not ok or not (IsSecret(value) or (IsReadable(value) and type(value) == "number")) then
+        record.curveState, stats.state, stats.failed = "evaluate-failed", "evaluate-failed", stats.failed + 1
+        -- What the client said, for /ps diagnose: its error text, or the kind of value it gave back.
+        if not ok then
+            stats.lastError = IsReadable(value) and type(value) == "string" and value:sub(1, 160) or "unreadable error"
+        else
+            stats.lastError = IsReadable(value) and ("returned " .. type(value)) or "returned unreadable"
+        end
+        return
+    end
+    record.curveLeadOpaque, record.hasCurveLead = value, true
+    record.curveState, stats.state, stats.evaluated = "evaluated", "evaluated", stats.evaluated + 1
+end
+
+-- For /ps diagnose (experimental): each test's switch and what it saw. Readable words and counts only;
+-- a token is looked up here only while its test is on.
+function ThreatService:ExperimentalReport()
+    local settings = Settings() or {}
+    local function Tokens(tokens, on)
+        local report = {}
+        for _, token in ipairs(tokens) do
+            local stat = experimentalTokens[token]
+            if on then ExperimentalTokenExists(token) end
+            report[token] = { exists = on and stat.exists or "off", reads = stat.reads, last = stat.last }
+        end
+        return report
+    end
+    local soft, chain = settings.experimentalSoftTargetThreat == true, settings.experimentalTargetOfTargetThreat == true
+    local curveOn, outsideOn = settings.experimentalSoloCurveGap == true, settings.experimentalOutsideHolderRow == true
+    local stats = self.curveStats
+    local curve = "off"
+    if curveOn then curve = CurveGap() and "available" or "curve-missing" end
+    return {
+        softTargets = { enabled = soft, tokens = Tokens(SOFT_TOKENS, soft) },
+        targetOfTarget = { enabled = chain, tokens = Tokens(CHAIN_TOKENS, chain) },
+        soloCurveGap = { enabled = curveOn, solo = self.isSolo == true, curve = curve,
+            state = curveOn and stats.state or "off", evaluated = stats.evaluated, failed = stats.failed, shown = stats.shown,
+            lastError = stats.lastError or "none" },
+        outsideHolderRow = { enabled = outsideOn, rowsShown = self.outsideRowsShown or 0,
+            lastThreat = self.outsideLastThreat or "none" },
+    }
 end
 
 function ThreatService:RefreshRecord(record)
@@ -941,21 +1819,50 @@ function ThreatService:RefreshRecord(record)
         shown[field] = record[field]
     end
 
-    record.enemyName = ReadName(record.unit, record.unit)
     self:UpdateRecordGUID(record)
-    record.targeterCount = record.guid and (self.attackerCounts[record.guid] or 0) or nil
     -- A failed read must not leave the record dirty or skip the engagement and hold state below.
     if not pcall(self.ReadThreat, self, record) then
         record.differentialState, record.differentialBlocker = "error", nil
     end
+    -- Whether the plate's own token read threat: a member's target is borrowed only for one that did
+    -- not (MemberBorrowedToken). Protected through the member's target too, the plate is tried again.
+    local readable = not BLOCKED_READS[record.differentialState]
+    if record.threatMobSource == "nameplate" then
+        record.plateThreat = readable and "readable" or "blocked"
+    elseif record.memberBorrowed and not readable then
+        record.plateThreat = nil
+    end
+    self:ReadTokenTargeters(record)
+    self:MergeTargeters(record)
+    -- A read through an experimental token (only tried while its test is on), for /ps diagnose.
+    local tokenStat = experimentalTokens[record.threatMobSource]
+    if tokenStat then tokenStat.reads, tokenStat.last = tokenStat.reads + 1, record.differentialState or "unavailable" end
+    self:KeepBorrowedLead(record)
+    if record.threatMobSource == "mouseover" then self:NoteMouseoverRead(record) end
+    self:ReadEnemyName(record)
     if self.groupThreatWanted and record.threatMobSource == "target" then self:RequestGroupThreat(record) end
     self:UpdateEngaged(record)
     self:UpdateActiveAttackers(record)
     self:FindTarget(record)
+    self:ReadCurveGap(record)
     record.dirty = false
+    record.refreshedAt = Now()
     record.revision = record.revision + 1
     if ShownChanged(record) then self.snapshotDirty = true end
     return true
+end
+
+-- A plate frame is reused for another mob: members whose target was read as that frame are read
+-- again at the next flush, so no member is listed on the new mob from an old answer.
+function ThreatService:RecheckPlateTargets(root)
+    if root == nil then return end
+    for index = 1, self.rosterCount do
+        local member = self.rosterPool[index]
+        if member.plateFrame == root then
+            member.targetDirty = true
+            self.targetersDirty = true
+        end
+    end
 end
 
 function ThreatService:TrackEnemy(unit, root)
@@ -968,7 +1875,11 @@ function ThreatService:TrackEnemy(unit, root)
     local record = self.enemyByUnit[unit]
     self:Hurry()
     if record then
-        if record.root ~= root then self.snapshotDirty = true end
+        if record.root ~= root then
+            self.snapshotDirty = true
+            self:RecheckPlateTargets(record.root)
+            self:RecheckPlateTargets(root)
+        end
         record.root = root
         record.dirty = true
         return record
@@ -983,23 +1894,34 @@ function ThreatService:TrackEnemy(unit, root)
     self.enemyOrder[self.enemyCount] = record
     self.enemyByUnit[unit] = record
     record.unit, record.root, record.targetToken = unit, root, TargetToken(unit)
+    self:RecheckPlateTargets(root)
+    record.plateThreat, record.memberBorrowed = nil, false
     self.nextRecordSerial = self.nextRecordSerial + 1
     record.serial = self.nextRecordSerial
     record.dirty, record.revision = true, 0
     record.enemyName, record.targetName, record.targetUnit = unit, L["No target"], nil
+    record.enemyNameOpaque, record.hasOpaqueName, record.targetNameOpaque, record.hasOpaqueTargetName = nil, false, nil, false
     record.tankHolds, record.selfHolds, record.loose, record.engaged = false, false, false, false
     record.holdState = "IDLE"
     record.guid = ReadGUID(unit)
     record.knownGUID = record.guid
-    record.targeterCount = nil
-    record.activeAttackerCount = 0
+    record.targeterCount, record.targeterState, record.guidTargeterCount = 0, "unknown", 0
+    record.activeAttackerCount, record.attackerState, record.damageSeenSerial = 0, "none", nil
     record.unitDamageAt = nil
+    ClearDamage(record)
     record.groupScanAt, record.groupHighest, record.groupBlockedState, record.groupBlocker = nil, nil, nil, nil
     if record.guid then self.enemyByGUID[record.guid] = record end
     record.playerPercent, record.playerDifferential = nil, nil
     record.playerThreatNoEntry = false
     record.percent, record.lead, record.tanking, record.status = nil, nil, nil, nil
+    record.tankingOpaque, record.hasOpaqueTanking = nil, false
+    ClearHoldFlags(record)
+    record.keptLead, record.keptLeadKind, record.keptPercent, record.keptAt, record.keptSerial = nil, nil, nil, nil, nil
+    record.keptTanking, record.keptStatus = nil, nil
+    record.leadKept = false
     record.leadKind = nil
+    record.outsideHolderThreat, record.holdFromTarget = nil, false
+    record.curveLeadOpaque, record.hasCurveLead, record.curveState = nil, false, nil
     record.percentOpaque, record.hasOpaquePercent = nil, false
     record.rawThreat, record.rawThreatOpaque, record.hasOpaqueRawThreat = nil, nil, false
     record.leadPercent, record.leadPercentOpaque, record.hasOpaqueLeadPercent = nil, nil, false
@@ -1038,15 +1960,19 @@ function ThreatService:UntrackEnemy(unit)
         record.activeAttackerNames[index], record.activeAttackerUnits[index] = nil, nil
     end
     record.activeAttackerCount = 0
+    local tokens, merged = record.tokenTargeters, record.targeters
+    for index = 1, tokens.count do tokens.names[index], tokens.units[index] = nil, nil end
+    for member in pairs(tokens.answers) do tokens.answers[member] = nil end
+    tokens.count, tokens.source, tokens.serial, tokens.readAt = 0, nil, nil, nil
+    for index = 1, merged.count do merged.names[index], merged.units[index] = nil, nil end
+    merged.count = 0
+    self:RecheckPlateTargets(record.root)
     record.unit, record.root, record.guid, record.dirty = nil, nil, nil, false
+    record.enemyNameOpaque, record.targetNameOpaque, record.curveLeadOpaque, record.hasCurveLead = nil, nil, nil, false
     self.freeCount = self.freeCount + 1
     self.freeRecords[self.freeCount] = record
     if self.cursor > self.enemyCount then self.cursor = 0 end
     self.snapshotDirty = true
-end
-
-local function IsGroupToken(unit)
-    return unit == "player" or unit == "pet" or unit:match("^party") ~= nil or unit:match("^raid") ~= nil
 end
 
 function ThreatService:MarkDirty(unit)
@@ -1086,14 +2012,32 @@ end
 
 -- The player's target changed: only the old target (the records last read through "target") and
 -- the new one can read differently now.
-function ThreatService:MarkTargetChanged()
-    local known, token = PlateToken("target")
-    if not known then return self:MarkDirty() end
+-- The same for the mouseover and focus tokens; when the client will not name their plate, only the
+-- record last read through them (a hover must not re-read every plate).
+function ThreatService:MarkTokenChanged(unit)
+    local known, token = PlateToken(unit)
+    if not known and unit == "target" then return self:MarkDirty() end
+    local frame = not known and TokenPlateFrame(unit) or nil
+    local matched
     for index = 1, self.enemyCount do
         local record = self.enemyOrder[index]
-        if record.threatMobSource == "target" or record.unit == token then record.dirty = true end
+        local names = (token ~= nil and record.unit == token) or (frame ~= nil and record.root == frame)
+        if names then matched = record.unit end
+        if record.threatMobSource == unit or names then record.dirty = true end
+    end
+    if unit == "mouseover" then
+        -- For /ps diagnose (threatMouseover): which plate the hover named, and how.
+        local probe = self.mouseoverProbe
+        probe.matched = matched or false
+        probe.route = (known and token and "plate-token") or (frame and "plate-frame")
+            or (known and "no-plate") or "unknown"
     end
     self:Hurry()
+end
+
+function ThreatService:MarkTargetChanged()
+    self:ClearTargetScope()
+    return self:MarkTokenChanged("target")
 end
 
 function ThreatService:RefreshUnit(unit)
@@ -1151,16 +2095,27 @@ function ThreatService:RefreshBatch(budget)
 end
 
 -- UNIT_TARGET fires for every group member's retarget; rebuild once per tick, read only the
--- members that retargeted, and only re-read the records whose targeters could have changed.
+-- members that retargeted, and only re-read (and re-merge) the records whose targeters could have
+-- changed: engaged ones, ones whose GUID count moved or whose list is uncertain, and every record
+-- when a member's target became readable or protected.
 function ThreatService:FlushTargeters()
     if not self.targetersDirty then return end
-    self.targetersDirty = false
+    self.targetersDirty, self.targetKnownChanged = false, false
     self:RebuildTargeterCounts(true)
+    local all, touched = self.targetKnownChanged, self.touchedPlates
     for index = 1, self.enemyCount do
         local record = self.enemyOrder[index]
-        local count = record.guid and (self.attackerCounts[record.guid] or 0) or nil
-        if record.engaged or count ~= record.targeterCount then record.dirty = true end
+        local bucket = record.guid and self.attackerTargets[record.guid]
+        if all or record.engaged or record.targeterState == "partial" or record.targeterState == "unknown"
+            or (bucket and bucket.count or 0) ~= record.guidTargeterCount or touched[record.root] then
+            record.dirty = true
+            -- Merged now, so the re-read below sees no change: the snapshot is marked here.
+            local revision = record.targeterRevision
+            self:MergeTargeters(record)
+            if record.targeterRevision ~= revision then self.snapshotDirty = true end
+        end
     end
+    for frame in pairs(touched) do touched[frame] = nil end
 end
 
 function ThreatService:RefreshAllForTest()
@@ -1187,14 +2142,15 @@ local function GetTargeterBucket(service, unit)
     if type(unit) ~= "string" then return nil end
     if service.rosterDirty then service:FlushPending() end
     local record = service.enemyByUnit[unit]
-    local guid = record and record.guid
-    return guid and service.attackerTargets[guid] or nil
+    return record and record.targeters or nil
 end
 
--- Group members whose current target is this enemy (see RebuildTargeterCounts).
+-- How many group members target this enemy (MergeTargeters), and how sure that is: "confirmed",
+-- "none", "partial" (at least that many) or "unknown" (also for an enemy that is not tracked).
 function ThreatService:GetTargeterCount(unit)
     local bucket = GetTargeterBucket(self, unit)
-    return bucket and bucket.count or 0
+    if not bucket then return 0, "unknown" end
+    return bucket.count, self.enemyByUnit[unit].targeterState or "unknown"
 end
 
 function ThreatService:GetTargeter(unit, index)
@@ -1203,22 +2159,34 @@ function ThreatService:GetTargeter(unit, index)
     end
     local bucket = GetTargeterBucket(self, unit)
     if not bucket or index > bucket.count then return nil, nil end
-    return bucket.names[index], bucket.units[index]
+    return bucket.names[index], bucket.units[index], self:MemberNameOpaque(bucket.units[index])
 end
 
+-- A roster member's protected name for a text sink, and whether there is one.
+function ThreatService:MemberNameOpaque(unit)
+    local member = type(unit) == "string" and self.rosterByUnit[unit]
+    if member and member.hasOpaqueName then return member.nameOpaque, true end
+    return nil, false
+end
+
+-- The number of possible attackers (UpdateActiveAttackers) and its state: "confirmed", "none",
+-- "partial" (at least that many), "unknown" (targeting hidden) or "no-signal" (no damage reported).
 function ThreatService:GetActiveAttackerCount(unit)
     local record = type(unit) == "string" and self.enemyByUnit[unit]
-    return record and record.activeAttackerCount or 0
+    if not record then return 0, "unknown" end
+    return record.activeAttackerCount or 0, record.attackerState or "unknown"
 end
 
--- The name and unit of an inferred attacker (see UpdateActiveAttackers).
+-- The name and unit of an inferred attacker (see UpdateActiveAttackers), then a protected name for
+-- a text sink and whether there is one (the readable name is then nil). GetTargeter is the same.
 function ThreatService:GetActiveAttacker(unit, index)
     if not IsReadable(index) or type(index) ~= "number" or index < 1 or index ~= math.floor(index) then
         return nil, nil
     end
     local record = type(unit) == "string" and self.enemyByUnit[unit]
     if not record or index > record.activeAttackerCount then return nil, nil end
-    return record.activeAttackerNames[index], record.activeAttackerUnits[index]
+    local attacker = record.activeAttackerUnits[index]
+    return record.activeAttackerNames[index], attacker, self:MemberNameOpaque(attacker)
 end
 
 function ThreatService:IsCurrentPlate(unit, serial, root, guid)
@@ -1249,7 +2217,10 @@ function ThreatService:GetSnapshot()
         local count, loose, engaged = 0, 0, 0
         for index = 1, self.enemyCount do
             local record = self.enemyOrder[index]
-            if record and record.unit then
+            -- Critters and mobs not in the fight are left out of the list and its counts. Decided here,
+            -- so only a shown Tank window pays for it (its inputs are shown fields, which rebuild this).
+            if record and record.unit then self:UpdateExcluded(record) end
+            if record and record.unit and not record.excluded then
                 count = count + 1
                 self.snapshot[count] = record
                 if record.loose then loose = loose + 1 end
@@ -1283,18 +2254,32 @@ local ROSTER_EVENTS = { GROUP_ROSTER_UPDATE = true, PLAYER_ROLES_ASSIGNED = true
 -- A form or aura only matters as tank evidence; talents (and a new pull) can also change the spec.
 local EVIDENCE_EVENTS = { UPDATE_SHAPESHIFT_FORM = true, UNIT_AURA = true }
 local ROLE_EVENTS = { CHARACTER_POINTS_CHANGED = true, PLAYER_TALENT_UPDATE = true, PLAYER_REGEN_DISABLED = true }
+-- The borrowed token each event changes (MarkTokenChanged).
+local BORROW_EVENTS = { UPDATE_MOUSEOVER_UNIT = "mouseover", PLAYER_FOCUS_CHANGED = "focus" }
 
 -- With nothing reading threat, events only note what must be redone on waking: a plate
 -- removal is applied (it is cheap and leaves no stale record), additions are rescanned, and
 -- the roster and role are rebuilt.
 function ThreatService:NoteWhileAsleep(event, unit)
+    -- A hover, focus or boss change while nothing reads threat: the wake re-reads every record anyway.
+    if event == "INSTANCE_ENCOUNTER_ENGAGE_UNIT" or event == "UNIT_TARGETABLE_CHANGED" then
+        SyncBossTokens()
+        return
+    end
+    if BORROW_EVENTS[event] then
+        if event == "UPDATE_MOUSEOVER_UNIT" then self.mouseoverProbe.asleep = (self.mouseoverProbe.asleep or 0) + 1 end
+        return
+    end
     if event == "NAME_PLATE_UNIT_REMOVED" then
         self:UntrackEnemy(unit)
     elseif event == "NAME_PLATE_UNIT_ADDED" then
         self.platesDirty = true
     elseif ROSTER_EVENTS[event] then
         self.rosterDirty = true
-        if event == "PLAYER_ENTERING_WORLD" then self.platesDirty = true end
+        if event == "PLAYER_ENTERING_WORLD" then
+            self.platesDirty = true
+            SyncBossTokens()
+        end
     elseif ROLE_EVENTS[event] or event == "UPDATE_SHAPESHIFT_FORM"
         or (event == "UNIT_AURA" and IsReadable(unit) and unit == "player") then
         self.roleDirty = true
@@ -1313,6 +2298,7 @@ function ThreatService:HandleEvent(event, unit, action)
     elseif event == "NAME_PLATE_UNIT_REMOVED" then
         self:UntrackEnemy(unit)
     elseif ROSTER_EVENTS[event] then
+        if event == "PLAYER_ENTERING_WORLD" then SyncBossTokens() end
         self:MarkRosterDirty()
     elseif EVIDENCE_EVENTS[event] then
         -- A stance, form or aura can make the player the tank (or stop it), but only as evidence.
@@ -1328,16 +2314,40 @@ function ThreatService:HandleEvent(event, unit, action)
     elseif event == "PLAYER_TARGET_CHANGED" then
         self:MarkTargeterDirty("player")
         self:MarkTargetChanged()
+    elseif BORROW_EVENTS[event] then
+        local token = BORROW_EVENTS[event]
+        if token == "mouseover" then
+            local probe = self.mouseoverProbe
+            probe.events, probe.eventAt = probe.events + 1, Now()
+        end
+        self:MarkTokenChanged(token)
+    elseif event == "INSTANCE_ENCOUNTER_ENGAGE_UNIT" then
+        self.bossEvents = (self.bossEvents or 0) + 1
+        SyncBossTokens()
+        for token in pairs(BOSS_TOKENS) do self:MarkTokenChanged(token) end
+    elseif event == "UNIT_TARGETABLE_CHANGED" then
+        if IsReadable(unit) and BOSS_TOKENS[unit] then
+            self.bossEvents = (self.bossEvents or 0) + 1
+            SyncBossTokens()
+            self:MarkTokenChanged(unit)
+        end
     elseif event == "UNIT_THREAT_LIST_UPDATE" or event == "UNIT_THREAT_SITUATION_UPDATE" then
         self:MarkDirty(unit)
     elseif event == "UNIT_COMBAT" and IsReadable(action) and action == "WOUND" then
-        self:RecordUnitDamage(unit)
+        -- Counted for /ps diagnose: damage the client reported for a tracked mob, or for none.
+        if self:RecordUnitDamage(unit) then
+            self.combatMatched = (self.combatMatched or 0) + 1
+        else
+            self.combatUnmatched = (self.combatUnmatched or 0) + 1
+        end
     end
 end
 
+-- Plates need threat while a layout shows it or reads it (Lifecycle's PlateNeeds, cached per
+-- settings revision, so this stays cheap on every tick). Without the plates it is assumed.
 function ThreatService:HasActiveConsumer()
-    local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
-    if not settings or settings.threat ~= false then return true end
+    local needs = type(PS.PlateNeeds) == "function" and PS.PlateNeeds() or nil
+    if not needs or needs.threat ~= false then return true end
     local console = PS.ThreatConsole
     return console and type(console.IsShown) == "function" and console:IsShown() or false
 end
@@ -1384,9 +2394,23 @@ function ThreatService:OnUpdate()
     if self.nextEngagementExpiry and now >= self.nextEngagementExpiry then
         self:ExpireEngagements(now)
     end
+    if not self.targetRetryAt or now - self.targetRetryAt >= GROUP_SCAN_INTERVAL then
+        self.targetRetryAt = now
+        self:RetryMissingTargets()
+        self:ReconcileTargets()
+        -- An engaged mob whose threat event the client did not send (or sent for another token)
+        -- is still re-read at least every STALE_REFRESH.
+        for index = 1, self.enemyCount do
+            local record = self.enemyOrder[index]
+            if record.engaged and not record.dirty and (not record.refreshedAt or now - record.refreshedAt >= STALE_REFRESH) then
+                record.dirty = true
+            end
+        end
+    end
     self:FlushTargeters()
     if self.groupThreatPending then self:FlushGroupThreat(now) end
     self:RefreshBatch(REFRESH_BUDGET)
+    if self.groupThreatWanted then self:ReadTargetScope(now) end
     self:PaceTicker()
 end
 
@@ -1420,6 +2444,13 @@ function ThreatService:OnInitialize()
             activeAttackerNames = {},
             activeAttackerUnits = {},
             shown = {},
+            -- Members targeting it by the borrowed token (ReadTokenTargeters).
+            tokenTargeters = { count = 0, names = {}, units = {}, answers = {} },
+            -- Both routes merged, member by member (MergeTargeters).
+            targeters = { count = 0, names = {}, units = {} },
+            damageStamps = {}, damageCounts = {},
+            -- Protected "holding it" answers and what each means (FoldHolders).
+            holdFlags = {}, holdFlagStates = {}, holdFlagCount = 0,
         }
     end
     self.freeCount = MAX_ENEMIES
@@ -1433,6 +2464,9 @@ function ThreatService:OnInitialize()
     end
     self.attackerCounts = {}
     self.attackerTargets = {}
+    self.mouseoverProbe = { events = 0 }
+    -- Plate frames a member's target moved to or from since the last FlushTargeters.
+    self.touchedPlates = {}
     self.attackerTargetOrder = {}
     self.attackerTargetPool = {}
     self.attackerTargetCount = 0
@@ -1441,6 +2475,8 @@ function ThreatService:OnInitialize()
     end
     self.snapshot = {}
     self.groupThreat, self.groupThreatScratch = {}, {}
+    -- The meter's enemy read through "target" alone (ReadTargetScope): never tracked, no plate.
+    self.targetScope = { unit = "target", serial = 0, targetScoped = true, threatMobSource = "target" }
     for index = 1, MAX_ROSTER_UNITS do self.groupThreat[index] = {} end
     self:RebuildRoster()
     self:RebuildTargeterCounts()
@@ -1461,6 +2497,120 @@ function ThreatService:OnDisable()
     self:SyncTicker()
 end
 
+-- What the client lets the service read about a unit, in /ps diagnose's words.
+local function Readability(callback, ...)
+    if type(callback) ~= "function" then return "api-missing" end
+    local ok, value = pcall(callback, ...)
+    if not ok then return "error" end
+    if not IsReadable(value) then return "protected" end
+    if value == nil or value == false then return "none" end
+    return "readable"
+end
+
+-- Whether a unit's threat on mob reads: its raw threat readable, protected, no entry, or worse.
+local function ThreatReadability(unit, mob)
+    if type(UnitDetailedThreatSituation) ~= "function" then return "api-missing" end
+    local ok, tanking, status, scaled, rawPercent, raw = pcall(UnitDetailedThreatSituation, unit, mob)
+    if not ok then return "error" end
+    if IsNoEntry(tanking, status, scaled, rawPercent, raw) then return "no-entry" end
+    if not IsReadable(raw) then return "protected" end
+    return type(raw) == "number" and "readable" or "unavailable"
+end
+
+-- For /ps diagnose (threatTargeting): each group member's target as the client shows it (at most 8),
+-- the targeting and damage state of each engaged mob (at most 8), and the event counters. Readable
+-- facts and state words only; built on demand, never on the tick.
+function ThreatService:TargetingReport()
+    local Array = PS.Json and PS.Json.Array or function() return {} end
+    local now = Now()
+    local members = Array()
+    for index = 1, self.rosterCount do
+        local member = self.rosterPool[index]
+        if #members >= 8 then break end
+        if member.isMember then
+            local token = member.targetToken
+            -- The plate the client gives for the member's target, the record it is, and whether threat
+            -- reads through "<member>target" (the player's own tuple, and the rest of the group).
+            local frame, plateState = ReadTargetPlate(token)
+            local plateRecord = "none"
+            for enemyIndex = 1, frame and self.enemyCount or 0 do
+                if self.enemyOrder[enemyIndex].root == frame then plateRecord = self.enemyOrder[enemyIndex].unit break end
+            end
+            if frame and plateRecord == "none" then plateRecord = "untracked" end
+            -- Without a plate frame (Forever refuses "party1target"), the record matched by GUID.
+            local guidMatch = false
+            if not frame and member.targetGUID then
+                local record = self.enemyByGUID[member.targetGUID]
+                if record then plateRecord, guidMatch = record.unit, true end
+            end
+            local threatGroup = "not read"
+            if frame or guidMatch then
+                local highest, blocked = self:ScanGroupThreat(token)
+                threatGroup = highest ~= nil and "readable"
+                    or (blocked == "protected-group-threat" and "protected") or blocked or "unavailable"
+            end
+            members[#members + 1] = {
+                unit = member.unit, exists = Readability(UnitExists, token), guid = Readability(UnitGUID, token),
+                isTarget = Readability(UnitIsUnit, token, "target"),
+                known = member.targetKnown == true and (member.targetGUID and "target" or "no target") or "unknown",
+                plateFrame = plateState, plateRecord = plateRecord,
+                threatPlayer = (frame or guidMatch) and ThreatReadability("player", token) or "not read",
+                threatGroup = threatGroup, matchedBy = frame and "plate" or (guidMatch and "guid") or "none",
+            }
+        end
+    end
+    local mobs = Array()
+    local second = math.floor(now)
+    for index = 1, self.enemyCount do
+        local record = self.enemyOrder[index]
+        if #mobs >= 8 then break end
+        if record.unit and record.engaged then
+            local damage = 0
+            for slot = 1, DAMAGE_SLOTS do
+                local stamp = record.damageStamps[slot]
+                if stamp and second - stamp < DAMAGE_SLOTS then damage = damage + record.damageCounts[slot] end
+            end
+            mobs[#mobs + 1] = {
+                unit = record.unit, source = record.threatMobSource or "nameplate",
+                targeting = record.targeterState or "unknown", targeters = record.targeters.count,
+                attackers = record.attackerState or "unknown", attackerCount = record.activeAttackerCount or 0,
+                damageEvents10s = damage,
+                lastDamageAgo = record.unitDamageAt and string.format("%.1fs", now - record.unitDamageAt) or "none",
+                gapKept = record.leadKept == true,
+            }
+        end
+    end
+    -- The boss tokens as a threat source: whether each exists, the plate the client names for it, the
+    -- record that plate is, and whether that record's last read went through the token.
+    local bosses = Array()
+    for index = 1, 5 do
+        local token = "boss" .. index
+        local exists = Readability(UnitExists, token)
+        if exists ~= "none" then
+            local frame, plateState = ReadTargetPlate(token)
+            local plateRecord, source = frame and "untracked" or "none", "none"
+            for enemyIndex = 1, frame and self.enemyCount or 0 do
+                local record = self.enemyOrder[enemyIndex]
+                if record.root == frame then
+                    plateRecord, source = record.unit, record.threatMobSource or "nameplate"
+                    break
+                end
+            end
+            bosses[#bosses + 1] = {
+                unit = token, exists = exists, plateFrame = plateState, plateRecord = plateRecord,
+                readThrough = source == token, source = source,
+            }
+        end
+    end
+    local scope = self.groupThreatRecord
+    return {
+        members = members, mobs = mobs, bosses = bosses, bossEvents = self.bossEvents or 0,
+        combatEvents = { matched = self.combatMatched or 0, unmatched = self.combatUnmatched or 0 },
+        reconciledTargets = self.targetReconciles,
+        meterScope = (scope == nil and "none") or (scope == self.targetScope and "target") or "plate",
+    }
+end
+
 ThreatService._Test = {
     IsSecret = IsSecret,
     RefreshInterval = REFRESH_INTERVAL,
@@ -1468,6 +2618,10 @@ ThreatService._Test = {
     RefreshBudget = REFRESH_BUDGET,
     EngagementWindow = ENGAGEMENT_WINDOW,
     GroupScanInterval = GROUP_SCAN_INTERVAL,
+    ReconcileBudget = RECONCILE_BUDGET,
+    ExperimentalTokens = experimentalTokens,
+    -- Forgets the curve (made again on the next solo curve read).
+    ResetCurve = function() curveGap = nil end,
 }
 
 -- Register once while the addon file is loading, then gate delivery with

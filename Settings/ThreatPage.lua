@@ -75,7 +75,7 @@ end
 
 -- What the controls show while there is no window (all deleted).
 local EMPTY = { mode = "tank", theme = "forge", rowHeight = 18, alpha = 1, dockMeter = 0, dockSide = "right",
-    locked = false, shown = false }
+    locked = false, shown = false, targetFirst = true }
 
 local function Get(key)
     return function()
@@ -199,7 +199,9 @@ local function BuildWindows(kit, flow)
     local Geometry = assert(PS.ThreatGeometry, "PlateSmith ThreatGeometry missing")
     kit.Add(section, kit.Help(section, string.format(L["Up to %d windows, each a Threat meter (your group's threat on "
         .. "your target) or Tank (every enemy in view and who holds it). Drag a title to move a window and those snapped "
-        .. "to it; Shift-drag moves it alone. Right-click a title for its menu. Changes apply at once."], Geometry.MAX_WINDOWS)))
+        .. "to it; Shift-drag moves it alone without snapping, so you can drop it anywhere. Shift-resize changes it alone. "
+        .. "Right-click a title for its menu (Detach from group moves it clear of the rest). Changes apply at once."],
+        Geometry.MAX_WINDOWS)))
     local pickRow, picker = kit.DropdownRow(section, L["Window"], {
         name = WidgetName("threatWindows_window", "Dropdown"), choices = WindowChoices,
         get = function() local record = Selected() return record and record.id end,
@@ -257,6 +259,13 @@ local function BuildWindows(kit, flow)
     })
     Register(mode)
     kit.Add(section, modeRow)
+    local firstRow, firstCheck = kit.CheckRow(section, L["Row order"], {
+        text = L["Target first"], name = WidgetName("threatWindows_targetFirst", "Checkbox"),
+        get = Get("targetFirst"), set = Set("targetFirst"),
+    })
+    Register(firstCheck)
+    kit.Add(section, firstRow)
+    kit.Add(section, kit.ControlHelp(section, L["In Tank mode your current target is always the first row."]))
     local themeRow, theme = kit.DropdownRow(section, L["Theme"], {
         name = WidgetName("threatWindows_theme", "Dropdown"), choices = ThemeChoices, get = Get("theme"), set = Set("theme"),
     })

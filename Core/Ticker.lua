@@ -77,15 +77,21 @@ function Ticker.Step(elapsed)
     end
 end
 
+-- Each entry's peak starts again from its next run (the diagnostics' Reset peaks).
+function Ticker.ResetPeaks()
+    for _, entry in ipairs(entries) do entry.peakMs = 0 end
+end
+
 -- Per-entry cost for diagnostics; milliseconds are nil when the client has no profiler clock.
-function Ticker.Report()
-    local report = {}
+-- into: a report to fill again (the live view's, refreshed every second), else a new one.
+function Ticker.Report(into)
+    local report = into or {}
     for _, entry in ipairs(entries) do
-        report[entry.id] = {
-            interval = entry.interval, enabled = entry.enabled, calls = entry.calls,
-            averageMs = entry.calls > 0 and math.floor(entry.totalMs / entry.calls * 1000 + 0.5) / 1000 or nil,
-            peakMs = entry.calls > 0 and math.floor(entry.peakMs * 1000 + 0.5) / 1000 or nil,
-        }
+        local row = report[entry.id] or {}
+        report[entry.id] = row
+        row.interval, row.enabled, row.calls = entry.interval, entry.enabled, entry.calls
+        row.averageMs = entry.calls > 0 and math.floor(entry.totalMs / entry.calls * 1000 + 0.5) / 1000 or nil
+        row.peakMs = entry.calls > 0 and math.floor(entry.peakMs * 1000 + 0.5) / 1000 or nil
     end
     return report
 end

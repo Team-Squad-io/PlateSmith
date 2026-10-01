@@ -24,14 +24,20 @@ local BUTTON_TIPS = {
     close = L["Hide this window"], menu = L["Window menu"], lock = L["Lock or unlock"],
     mode = L["Switch between threat meter and tank mode"], ["new-window"] = L["New window"],
 }
-local STATE_ICONS = { TANK = "icon-tank", LOOSE = "icon-loose", IDLE = "icon-idle", YOU = "icon-you" }
--- The hold state spelt out in the STATE column (the service's tokens are never shown raw).
-local STATE_LABELS = { TANK = L["TANK"], LOOSE = L["LOOSE"], IDLE = L["IDLE"], YOU = L["YOU"] }
+local STATE_ICONS = { TANK = "icon-tank", LOSING = "icon-tank", LOOSE = "icon-loose", IDLE = "icon-idle", YOU = "icon-you" }
+-- The hold state spelt out in the STATE column (the service's tokens are never shown raw). UNKNOWN:
+-- the client will not say who holds the mob. LOSING: you hold it, but someone is about to pull it.
+local STATE_LABELS = {
+    TANK = L["TANK"], LOSING = L["LOSING"], LOOSE = L["LOOSE"], IDLE = L["IDLE"], YOU = L["YOU"], UNKNOWN = L["?"],
+}
 local ROLE_ICONS = { TANK = "icon-role-tank", HEALER = "icon-role-healer", DAMAGER = "icon-role-damage" }
 local IDLE_COLOUR = { 0.62, 0.65, 0.68 }
 local MUTED = { 0.72, 0.72, 0.74 }
-local ROW_TEXTS = { "name", "state", "on", "attackers", "value", "gap" }
-local ROW_COLUMNS = { "name", "state", "on", "attackers", "gap" }
+local KEPT_ALPHA = 0.6
+local ROW_TEXTS = { "name", "state", "stateAlt", "stateAlt2", "on", "attackers", "value", "gap" }
+local ROW_COLUMNS = { "name", "state", "stateAlt", "stateAlt2", "on", "attackers", "gap" }
+-- Row texts placed in another text's column.
+local SHARED_COLUMNS = { stateAlt = "state", stateAlt2 = "state" }
 local HEADER_KEYS = { "name", "state", "on", "attackers", "you", "gap", "percent" }
 
 -- A count through singular and plural format strings (each with one %d), or "--" when unknown.
@@ -40,13 +46,202 @@ local function FormatCount(count, singular, plural)
     return string.format(count == 1 and singular or plural, count)
 end
 
+-- The possible attackers cell (the threat service's attackerState): "?" when nothing can be
+-- inferred, "2+ attackers" for a lower bound, else the count. A record without a state (sample
+-- data) shows its count.
+local function AttackerText(entry)
+    local state = entry.attackerState
+    if state == "unknown" or state == "no-signal" then return L["?"] end
+    if state == "partial" then return string.format(L["%d+ attackers"], entry.activeAttackerCount or 0) end
+    return FormatCount(entry.activeAttackerCount, L["%d attacker"], L["%d attackers"])
+end
+
 -- The hold state's colour from the plates' palette (standard or colour-blind); the state is
 -- also spelt out, so colour never carries it alone.
 local function StateColour(state)
-    if state == "IDLE" then return IDLE_COLOUR end
+    if state == "IDLE" or state == "UNKNOWN" then return IDLE_COLOUR end
     local palette = ThreatText.Palette()
     if state == "LOOSE" then return palette.losing end
+    -- The plates' colour for a mob you are losing (ThreatText.StateColour).
+    if state == "LOSING" then return palette.warning end
     return palette.hold
+end
+
+-- The windows redraw every shown row whenever the service's snapshot or group read moves, which
+-- with protected names or threat (a dungeon) is every refresh. So a cell is written only when what
+-- it shows changed: readable text, colours, icons, the bar's value. A protected value always goes
+-- to its sink and the cell forgets what it showed. ForgetCells: after a restyle (SetFontObject
+-- resets a text's colour) every cell is written again.
+local CELL_TEXTS = { "name", "state", "stateAlt", "stateAlt2", "on", "attackers", "value", "gap" }
+local function CellText(text, value)
+    if text.threatText ~= value then
+        text:SetText(value)
+        text.threatText = value
+    end
+end
+
+local function CellTextColour(text, r, g, b)
+    if text.threatR ~= r or text.threatG ~= g or text.threatB ~= b then
+        text:SetTextColor(r, g, b)
+        text.threatR, text.threatG, text.threatB = r, g, b
+    end
+end
+
+local function CellBarColour(row, r, g, b, a)
+    if row.threatR ~= r or row.threatG ~= g or row.threatB ~= b or row.threatA ~= a then
+        row:SetStatusBarColor(r, g, b, a)
+        row.threatR, row.threatG, row.threatB, row.threatA = r, g, b, a
+    end
+end
+
+-- value: a readable number, or (opaque) a protected one for the bar's own sink.
+local function CellBarValue(row, value, opaque)
+    if opaque then
+        row.threatValue = nil
+        if not pcall(row.SetValue, row, value) then row:SetValue(0) end
+    elseif row.threatValue ~= value then
+        row:SetValue(value)
+        row.threatValue = value
+    end
+end
+
+-- A readable alpha (1 for a label shown normally). ShowPickedState writes a protected one and
+-- forgets it here, so the next readable one is always written.
+local function CellAlpha(text, alpha)
+    if text.threatAlpha ~= alpha then
+        text:SetAlpha(alpha)
+        text.threatAlpha = alpha
+    end
+end
+
+-- A cell written straight to its sink (a folded, possibly protected value): the next cached write
+-- must not be skipped.
+local function ForgetText(text)
+    text.threatText, text.threatR, text.threatG, text.threatB, text.threatAlpha = nil, nil, nil, nil, nil
+end
+
+-- ThreatText's once-a-second redraw of a kept gap whose age shows or which fades.
+local function RefreshKeptValue(text, entry, gap)
+    ThreatText.Apply(text, entry, gap)
+    text.threatText = nil
+    CellAlpha(text, ThreatText.KeptAlpha(entry, KEPT_ALPHA))
+end
+
+local function CellIcon(texture, name, theme)
+    if texture.threatIcon ~= name or texture.threatIconTheme ~= theme then
+        Themes.Icon(texture, name, theme)
+        texture.threatIcon, texture.threatIconTheme = name, theme
+    end
+end
+
+local function ForgetCells(row)
+    for _, key in ipairs(CELL_TEXTS) do ForgetText(row[key]) end
+    row.threatR, row.threatG, row.threatB, row.threatA, row.threatValue, row.threatSelected = nil, nil, nil, nil, nil, nil
+    row.icon.threatIcon, row.icon.threatIconTheme, row.marker.threatIcon, row.marker.threatIconTheme = nil, nil, nil, nil
+end
+
+-- The row's state: the service's hold state, or LOSING while you hold it and the readable facts say
+-- someone is about to pull it (ThreatText.Facts.losing: a negative gap, or threat status 2). A
+-- protected gap or status leaves the fact unknown, and the state as it is.
+local function HoldState(entry)
+    local state = entry.holdState or (not entry.engaged and "IDLE") or (entry.loose and "LOOSE") or "TANK"
+    if (state == "TANK" or state == "YOU") and ThreatText.Facts.losing(entry) == true then return "LOSING" end
+    return state
+end
+
+-- The alpha a state label shows with (possibly protected, for SetAlpha only): 1 when a flag meaning
+-- that state is true (only one unit holds a mob), else none when it is the fallback, else 0.
+-- Folded inside the client (Secret.Pick); false when it has no such sink.
+local function LabelAlpha(entry, state, none)
+    -- none may be protected: chosen by an explicit branch on state, never truth-tested.
+    local alpha = 0
+    if state == entry.holdFallback then alpha = none end
+    local flags, states = entry.holdFlags, entry.holdFlagStates
+    for index = 1, entry.holdFlagCount do
+        if states[index] == state then
+            local ok
+            ok, alpha = Secret.Pick(flags[index], 1, alpha)
+            if not ok then return false end
+        end
+    end
+    return true, alpha
+end
+
+-- The distinct states the protected flags and the fallback can mean, in order, at most as many as
+-- the cell has labels (nil beyond that).
+local pickedStates = {}
+-- Adds state to pickedStates (count so far); the new count, or nil when it does not fit.
+local function AddPicked(state, count, limit)
+    for index = 1, count do if pickedStates[index] == state then return count end end
+    if count >= limit or not STATE_LABELS[state] then return nil end
+    pickedStates[count + 1] = state
+    return count + 1
+end
+local function PickedStates(entry, limit)
+    local count = 0
+    for index = 1, entry.holdFlagCount do
+        count = AddPicked(entry.holdFlagStates[index], count, limit)
+        if not count then return nil end
+    end
+    return AddPicked(entry.holdFallback, count, limit)
+end
+
+-- The STATE cell while only protected "holding it" answers say who holds the mob (the threat
+-- service's holdFlags): each state they can mean is written over the others and the flags pick
+-- which one shows (alpha folded in the client), with the bar coloured to match, so Lua never
+-- branches on them. False when the client has no such sink (the caller shows "?").
+local function ShowPickedState(row, entry)
+    if type(entry.holdFlagCount) ~= "number" or entry.holdFlagCount < 1 then return false end
+    local labels = row.stateLabels
+    local count = PickedStates(entry, #labels)
+    if not count then return false end
+    local flags, states = entry.holdFlags, entry.holdFlagStates
+    local ok, none = true, 1
+    for index = 1, entry.holdFlagCount do
+        ok, none = Secret.Pick(flags[index], 0, none)
+        if not ok then return false end
+    end
+    for index = 1, #labels do
+        local label, state = labels[index], index <= count and pickedStates[index] or nil
+        local shown, alpha = true, 0
+        if state then shown, alpha = LabelAlpha(entry, state, none) end
+        -- The folded alpha may be protected: always written, never cached.
+        label.threatAlpha = nil
+        if not shown or not pcall(label.SetAlpha, label, alpha) then
+            for reset = 2, #labels do CellText(labels[reset], "") end
+            return false
+        end
+        local colour = state and StateColour(state) or IDLE_COLOUR
+        CellText(label, state and STATE_LABELS[state] or "")
+        CellTextColour(label, colour[1], colour[2], colour[3])
+    end
+    local fallback = StateColour(entry.holdFallback)
+    local r, g, b = fallback[1], fallback[2], fallback[3]
+    for index = 1, entry.holdFlagCount do
+        if ok then ok, r, g, b = ThreatText.FoldColour(flags[index], StateColour(states[index]), r, g, b) end
+    end
+    -- A folded bar colour goes straight to its sink; the cache forgets it.
+    row.threatR, row.threatG, row.threatB, row.threatA = nil, nil, nil, nil
+    if not (ok and pcall(row.SetStatusBarColor, row, r, g, b, 0.55)) then
+        CellBarColour(row, IDLE_COLOUR[1], IDLE_COLOUR[2], IDLE_COLOUR[3], 0.55)
+    end
+    return true
+end
+
+-- A name that may be protected: the opaque value straight into the FontString's sink, else the
+-- readable text, else fallback. The opaque value is never compared or formatted in Lua.
+local function SetName(text, readable, opaque, hasOpaque, fallback)
+    if hasOpaque and pcall(text.SetText, text, opaque) then return end
+    text:SetText(readable or fallback or "")
+end
+
+-- SetName for a row's cell (CellText).
+local function CellName(text, readable, opaque, hasOpaque, fallback)
+    if hasOpaque and pcall(text.SetText, text, opaque) then
+        text.threatText = nil
+        return
+    end
+    CellText(text, readable or fallback or "")
 end
 
 -- Threat % colour on the meter: holding (hold), at or past pulling (losing), close (warning).
@@ -143,9 +338,14 @@ local function CreateRow(meter)
     row.marker = row:CreateTexture(nil, "OVERLAY")
     row.name = Text(row)
     row.state = Text(row)
+    -- Drawn over state when the client's protected flags pick between states (ShowPickedState).
+    row.stateAlt = Text(row)
+    row.stateAlt2 = Text(row)
+    row.stateLabels = { row.state, row.stateAlt, row.stateAlt2 }
     row.on = Text(row)
     row.attackers = Text(row)
     row.value = Text(row)
+    row.value.threatKeptRefresh = RefreshKeptValue
     row.gap = Text(row)
     row:EnableMouse(true)
     row:SetScript("OnEnter", function(owner)
@@ -312,8 +512,10 @@ local function CreateFrames(meter)
         GameTooltip:SetOwner(owner, "ANCHOR_TOP")
         GameTooltip:SetText(meter.config.name or L["Threat window"])
         GameTooltip:AddLine(L["Drag to move this window and the windows snapped to it."], 1, 0.82, 0.45, true)
-        GameTooltip:AddLine(L["Hold Shift to move it alone; it still snaps."], 0.8, 0.8, 0.8, true)
-        GameTooltip:AddLine(L["Right-click for the window menu."], 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine(L["Hold Shift as you start to drag to move it alone without snapping, to pull it out of "
+            .. "a group and drop it anywhere."], 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine(L["Right-click for the window menu; Detach from group takes it out of its group."],
+            0.8, 0.8, 0.8, true)
         GameTooltip:Show()
     end)
     titleBar:SetScript("OnLeave", function(owner)
@@ -410,6 +612,7 @@ function Meter:SkinRow(row)
     for _, key in ipairs(ROW_TEXTS) do
         SetFont(row[key], theme.rowFont, "GameFontHighlightSmall")
     end
+    ForgetCells(row)
 end
 
 -- The title's buttons that fit, right to left in priority order.
@@ -560,7 +763,7 @@ end
 
 local HEADER_NAMES = {
     threat = { name = L["NAME"], gap = L["GAP"], percent = L["THREAT"] },
-    tank = { name = L["ENEMY"], state = L["STATE"], on = L["ON"], attackers = L["ACTIVE"], you = L["YOU"] },
+    tank = { name = L["ENEMY"], state = L["STATE"], on = L["ON"], attackers = L["LIKELY"], you = L["YOU"] },
 }
 
 function Meter:LayoutHeaderLabels(layout)
@@ -652,7 +855,7 @@ function Meter:LayoutRow(row, index)
     row.marker:SetPoint("TOPLEFT", row, "TOPLEFT", 4 + iconSize, -iconY)
     row.marker:SetSize(iconSize, iconSize)
     for _, key in ipairs(ROW_COLUMNS) do
-        local column = self.columns[key]
+        local column = self.columns[SHARED_COLUMNS[key] or key]
         row[key]:ClearAllPoints()
         if column then
             row[key]:SetPoint("LEFT", row, "LEFT", column.x, 0)
@@ -679,6 +882,8 @@ function Meter:Scroll(delta)
 end
 
 local function SetSelected(row, selected)
+    if row.threatSelected == selected then return end
+    row.threatSelected = selected
     row.selectedLeft:SetShown(selected)
     row.selectedMid:SetShown(selected)
     row.selectedRight:SetShown(selected)
@@ -686,6 +891,7 @@ end
 
 local function ClearRow(row)
     row.kind, row.unit, row.guid, row.enemyName, row.serial, row.root, row.entry = nil, nil, nil, nil, nil, nil, nil
+    row.enemyNameOpaque, row.hasOpaqueName = nil, nil
 end
 
 -- A tank-mode row for one enemy record from the threat service's snapshot.
@@ -695,39 +901,68 @@ function Meter:FillEnemy(row, entry)
     -- A listed enemy's lead is read on every service refresh, not throttled.
     self.console.watchedRecords[entry] = true
     row.unit, row.guid, row.enemyName = entry.unit, entry.guid, entry.enemyName
+    row.enemyNameOpaque, row.hasOpaqueName = entry.enemyNameOpaque, entry.hasOpaqueName == true
     row.serial, row.root = entry.serial, entry.root
     local isTarget = entry.threatMobSource == "target"
     local marker = isTarget and "icon-target" or (Secret.SameUnit(entry.unit, "focus") and "icon-focus" or nil)
-    Themes.Icon(row.marker, marker, theme)
+    CellIcon(row.marker, marker, theme)
     SetSelected(row, isTarget)
-    local state = entry.holdState or (not entry.engaged and "IDLE") or (entry.loose and "LOOSE") or "TANK"
-    Themes.Icon(row.icon, STATE_ICONS[state], theme)
+    local state = HoldState(entry)
+    CellIcon(row.icon, STATE_ICONS[state], theme)
     local colour = StateColour(state)
-    row.name:SetText(entry.enemyName or L["Unknown enemy"])
-    row.name:SetTextColor(theme.text[1], theme.text[2], theme.text[3])
-    row.state:SetText(STATE_LABELS[state] or "")
-    row.state:SetTextColor(colour[1], colour[2], colour[3])
-    row.on:SetText(entry.engaged and entry.targetName or "")
-    row.on:SetTextColor(theme.text[1], theme.text[2], theme.text[3])
-    row.attackers:SetText(FormatCount(entry.activeAttackerCount, L["%d attacker"], L["%d attackers"]))
-    row.attackers:SetTextColor(MUTED[1], MUTED[2], MUTED[3])
-    row.gap:SetText("")
+    CellName(row.name, entry.enemyName, entry.enemyNameOpaque, entry.hasOpaqueName, L["Unknown enemy"])
+    CellTextColour(row.name, theme.text[1], theme.text[2], theme.text[3])
+    local picked = state == "UNKNOWN" and ShowPickedState(row, entry)
+    if not picked then
+        CellAlpha(row.state, 1)
+        CellText(row.stateAlt, "")
+        CellText(row.stateAlt2, "")
+        CellText(row.state, STATE_LABELS[state] or "")
+        CellTextColour(row.state, colour[1], colour[2], colour[3])
+    end
+    if entry.engaged then
+        CellName(row.on, entry.targetName, entry.targetNameOpaque, entry.hasOpaqueTargetName, L["Unknown target"])
+    else
+        CellText(row.on, "")
+    end
+    -- A target the group match could not place is coloured by its class, through the client's class
+    -- colour sink when the class is protected; that write is never cached.
+    if entry.engaged and entry.hasTargetClass and Secret.SetClassTextColour(row.on, entry.targetClass) then
+        ForgetText(row.on)
+    else
+        CellTextColour(row.on, theme.text[1], theme.text[2], theme.text[3])
+    end
+    CellText(row.attackers, AttackerText(entry))
+    CellTextColour(row.attackers, MUTED[1], MUTED[2], MUTED[3])
+    CellText(row.gap, "")
     if not entry.engaged then
-        row.value:SetText("")
+        CellText(row.value, "")
+        ThreatText.Forget(row.value)
+        CellAlpha(row.value, 1)
     else
         ThreatText.Apply(row.value, entry)
-        row.value:SetTextColor(ThreatText.Colour(entry))
+        row.value.threatText = nil
+        -- A kept gap ("~"): dimmed or fading as well (the profile's threatKeptStyle), so it never
+        -- reads as live; grey takes the colour instead (ThreatText.Colour).
+        CellAlpha(row.value, ThreatText.KeptAlpha(entry, KEPT_ALPHA))
+        if entry.hasOpaqueTanking and entry.tanking == nil then
+            -- Possibly folded from a protected flag: straight to the sink, and forgotten.
+            ThreatText.ApplyColour(row.value, entry)
+            ForgetText(row.value)
+        else
+            CellTextColour(row.value, ThreatText.Colour(entry))
+        end
     end
-    row:SetStatusBarColor(colour[1], colour[2], colour[3], 0.55)
+    if not picked then CellBarColour(row, colour[1], colour[2], colour[3], 0.55) end
     if not entry.engaged then
-        row:SetValue(0)
+        CellBarValue(row, 0)
     elseif type(entry.percent) == "number" then
-        row:SetValue(math.max(0, math.min(100, entry.percent)))
+        CellBarValue(row, math.max(0, math.min(100, entry.percent)))
     elseif entry.hasOpaquePercent then
         -- A protected percent goes straight into the bar's own sink.
-        if not pcall(row.SetValue, row, entry.percentOpaque) then row:SetValue(0) end
+        CellBarValue(row, entry.percentOpaque, true)
     else
-        row:SetValue(0)
+        CellBarValue(row, 0)
     end
 end
 
@@ -736,32 +971,50 @@ function Meter:FillMember(row, entry, record, pinned)
     local theme = self.theme
     row.kind, row.entry = "member", entry
     row.unit, row.guid, row.enemyName = record.unit, record.guid, record.enemyName
+    row.enemyNameOpaque, row.hasOpaqueName = record.enemyNameOpaque, record.hasOpaqueName == true
     row.serial, row.root = record.serial, record.root
-    Themes.Icon(row.icon, ROLE_ICONS[entry.role], theme)
+    ThreatText.Forget(row.value)
+    -- Settings › Experimental: the holder outside the group (the service's AddOutsideHolder) has the
+    -- loose icon and the losing colour, and shows its threat total rather than a percent.
+    local outside = entry.isOutside == true
+    CellIcon(row.icon, outside and STATE_ICONS.LOOSE or ROLE_ICONS[entry.role], theme)
     local marker = (entry.tanking == true and "icon-aggro") or (pinned and "icon-pin") or (entry.isPlayer and "icon-you") or nil
-    Themes.Icon(row.marker, marker, theme)
+    CellIcon(row.marker, marker, theme)
     SetSelected(row, entry.isPlayer == true)
     local r, g, b = ClassColour(entry)
-    row.name:SetText(entry.name or entry.unit or L["Unknown"])
-    row.name:SetTextColor(r, g, b)
-    row.state:SetText("")
-    row.on:SetText("")
-    row.attackers:SetText("")
-    local colour = MemberColour(entry, theme)
-    row.value:SetTextColor(colour[1], colour[2], colour[3])
-    if type(entry.percent) == "number" then
-        row.value:SetText(Format.Percent(entry.percent))
-        row:SetValue(math.max(0, math.min(100, entry.percent)))
-    elseif entry.hasOpaquePercent then
-        if not pcall(row.value.SetFormattedText, row.value, "%.0f%%", entry.percentOpaque) then row.value:SetText("--") end
-        if not pcall(row.SetValue, row, entry.percentOpaque) then row:SetValue(0) end
-    else
-        row.value:SetText("--")
-        row:SetValue(0)
+    if outside then
+        local losing = ThreatText.Palette().losing
+        r, g, b = losing[1], losing[2], losing[3]
     end
-    row.gap:SetText(type(entry.gap) == "number" and Format.SignedLead(entry.gap) or "")
-    row.gap:SetTextColor(MUTED[1], MUTED[2], MUTED[3])
-    row:SetStatusBarColor(r, g, b, 0.7)
+    CellName(row.name, entry.name, entry.nameOpaque, entry.hasOpaqueName, entry.unit or L["Unknown"])
+    CellTextColour(row.name, r, g, b)
+    CellAlpha(row.state, 1)
+    CellText(row.state, "")
+    CellText(row.stateAlt, "")
+    CellText(row.stateAlt2, "")
+    CellText(row.on, "")
+    CellText(row.attackers, "")
+    local colour = outside and ThreatText.Palette().losing or MemberColour(entry, theme)
+    CellTextColour(row.value, colour[1], colour[2], colour[3])
+    CellAlpha(row.value, 1)
+    local value = row.value
+    if outside and type(entry.raw) == "number" then
+        CellText(value, Format.Abbreviate(entry.raw))
+        CellBarValue(row, 100)
+    elseif type(entry.percent) == "number" then
+        CellText(value, Format.Percent(entry.percent))
+        CellBarValue(row, math.max(0, math.min(100, entry.percent)))
+    elseif entry.hasOpaquePercent then
+        value.threatText = nil
+        if not pcall(value.SetFormattedText, value, "%.0f%%", entry.percentOpaque) then CellText(value, "--") end
+        CellBarValue(row, entry.percentOpaque, true)
+    else
+        CellText(value, "--")
+        CellBarValue(row, 0)
+    end
+    CellText(row.gap, type(entry.gap) == "number" and Format.SignedLead(entry.gap) or "")
+    CellTextColour(row.gap, MUTED[1], MUTED[2], MUTED[3])
+    CellBarColour(row, r, g, b, 0.7)
 end
 
 -- Scroll piece names per theme, built once rather than on every render.
@@ -812,9 +1065,9 @@ end
 function Meter:Render(service)
     local config, body = self.config, self.body
     local visible = self.visibleRows
-    local count, entries, record, summary
+    local count, entries, record, summary, noThreat
     if config.mode == "threat" then
-        record, count, entries = service:GetGroupThreat()
+        record, count, entries, noThreat = service:GetGroupThreat()
         if not record then count = 0 end
         summary = record and (record.enemyName or "") or ""
     else
@@ -831,10 +1084,24 @@ function Meter:Render(service)
         end
         if pinnedIndex and pinnedIndex > self.offset and pinnedIndex <= self.offset + visible then pinnedIndex = nil end
     end
+    -- Tank mode with Target first: your current target is the first row, the rest keep the order.
+    local targetIndex
+    if not record and config.targetFirst ~= false then
+        for index = 1, count do
+            if entries[index].threatMobSource == "target" then targetIndex = index break end
+        end
+    end
     for index = 1, visible do
         local row = self.rows[index]
         local entryIndex = self.offset + index
         if pinnedIndex and index == visible then entryIndex = pinnedIndex end
+        if targetIndex and entryIndex <= count then
+            if entryIndex == 1 then
+                entryIndex = targetIndex
+            elseif entryIndex <= targetIndex then
+                entryIndex = entryIndex - 1
+            end
+        end
         local entry = entryIndex <= count and entries[entryIndex] or nil
         if entry then
             if record then
@@ -856,16 +1123,38 @@ function Meter:Render(service)
     if pinnedIndex and pinnedIndex <= self.offset then hidden = hidden + 1 end
     body.more:SetText(hidden > 0 and string.format(L["+%d more"], hidden) or "")
     if count == 0 then
-        body.empty:SetText(config.mode == "threat" and L["Target an enemy to measure threat."] or L["No enemies in view."])
+        if record and noThreat then
+            self:SetNoThreatText(record)
+        else
+            body.empty:SetText(config.mode == "threat" and L["Target an enemy to measure threat."] or L["No enemies in view."])
+        end
         body.empty:Show()
     else
         body.empty:Hide()
     end
     self.titleBar.text:SetText(config.name or "")
-    self.titleBar.summary:SetText(summary)
+    if record then
+        SetName(self.titleBar.summary, record.enemyName, record.enemyNameOpaque, record.hasOpaqueName, "")
+    else
+        self.titleBar.summary:SetText(summary)
+    end
     self:UpdateScrollbar(count)
 end
 
+-- The target is measured but nobody in the group is on its threat table yet. A protected name
+-- goes into the format sink as an argument, never through string.format.
+function Meter:SetNoThreatText(record)
+    local text = self.body.empty
+    local format = L["No threat on %s yet."]
+    if record.hasOpaqueName and pcall(text.SetFormattedText, text, format, record.enemyNameOpaque) then return end
+    if type(record.enemyName) == "string" then
+        text:SetText(string.format(format, record.enemyName))
+    else
+        text:SetText(L["No threat on this enemy yet."])
+    end
+end
+
 Meter._Test = {
-    ColumnLayout = ColumnLayout, FormatCount = FormatCount, StateColour = StateColour, StateLabels = STATE_LABELS,
+    ColumnLayout = ColumnLayout, FormatCount = FormatCount, AttackerText = AttackerText, StateColour = StateColour,
+    StateLabels = STATE_LABELS, SetName = SetName, HoldState = HoldState,
 }

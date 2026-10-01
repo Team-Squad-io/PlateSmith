@@ -111,7 +111,31 @@ function Controls.StyleCheckbox(checkbox, size)
     checkbox.studioBox, checkbox.studioFill = box, fill
 end
 
--- spec: label, x, y, get, set, name, labelTemplate, tooltip = { title, lines }
+-- A mixed box (it stands for several values that differ): a short bar in place of the tick. The
+-- box reads unticked underneath, so a click ticks it.
+local function AddMixedLook(checkbox, spec)
+    local mark = checkbox:CreateTexture(nil, "OVERLAY")
+    mark:SetSize(10, 3)
+    mark:SetPoint("CENTER")
+    mark:SetColorTexture(1, 0.82, 0.2, 1)
+    mark:Hide()
+    checkbox.mixedMark = mark
+    if not spec.mixedTip then return end
+    local function Show(instance)
+        if not instance.mixed or not GameTooltip then return end
+        GameTooltip:SetOwner(instance, "ANCHOR_RIGHT")
+        GameTooltip:SetText(spec.label or "")
+        GameTooltip:AddLine(spec.mixedTip, 1, 0.82, 0.45, true)
+        GameTooltip:Show()
+    end
+    local function Hide(instance) if instance.mixed and GameTooltip then GameTooltip:Hide() end end
+    local hook = checkbox.HookScript and "HookScript" or "SetScript"
+    checkbox[hook](checkbox, "OnEnter", Show)
+    checkbox[hook](checkbox, "OnLeave", Hide)
+end
+
+-- spec: label, x, y, get, set, name, labelTemplate, tooltip = { title, lines }; mixed(), when
+-- given, true shows the mixed look (and spec.mixedTip in the tooltip); clicking it sets true.
 function Controls.Checkbox(parent, spec)
     local checkbox = CreateFrame("CheckButton", spec.name, parent, "UICheckButtonTemplate")
     Controls.StyleCheckbox(checkbox, 18)
@@ -122,15 +146,25 @@ function Controls.Checkbox(parent, spec)
     RegisterSurfaceLabel(parent, text, spec.labelTemplate == "GameFontHighlightSmall")
     checkbox.label = text
     checkbox:SetScript("OnClick", function(instance)
-        if not instance.refreshing then spec.set(instance:GetChecked() and true or false) end
+        if instance.refreshing then return end
+        if instance.mixedMark then
+            instance.mixed = false
+            instance.mixedMark:Hide()
+        end
+        spec.set(instance:GetChecked() and true or false)
     end)
     function checkbox:Refresh()
         self.refreshing = true
-        self:SetChecked(spec.get() and true or false)
+        local mixed = spec.mixed and spec.mixed() and true or false
+        self.mixed = mixed
+        self:SetChecked(not mixed and spec.get() and true or false)
+        if self.mixedMark then self.mixedMark:SetShown(mixed) end
         self.refreshing = false
     end
     if spec.tooltip then Controls.AttachTooltip(checkbox, spec.tooltip.title or spec.label, spec.tooltip.lines) end
     Skin(parent, checkbox, "checkbox")
+    -- After the skin, so the bar draws over its box and its hover hooks stay.
+    if spec.mixed then AddMixedLook(checkbox, spec) end
     return checkbox
 end
 

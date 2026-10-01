@@ -41,6 +41,14 @@ function Options.BindSetting(key)
     return function() return PS.GetSettings()[key] end, SetAndRefresh(Write), SetAndQueue(Write)
 end
 
+-- get, set and mixed for a Show on plates or aura box (Schema's PART_SWITCHES): ticked while its
+-- part shows on every plate type, mixed while they differ; set shows or hides it on all of them.
+function Options.BindPartSwitch(key)
+    return function() return PS.GetPartShownState(key) == "all" end,
+        SetAndRefresh(function(value) return PS.SetPartShownEverywhere(key, value) end),
+        function() return PS.GetPartShownState(key) == "some" end
+end
+
 function Options:AddDropdown(parent, label, key, choices, x, y, controlID, helpText, width)
     local get, set = Options.BindSetting(key)
     return Register(Controls.Dropdown(parent, {
@@ -130,7 +138,7 @@ function Options:NewSettingsPage(page, title, description, withSaveBar)
         child:SetHeight(height + PAGE.top + PAGE.bottom)
     end
     page:HookScript("OnShow", function(owner) owner:Relayout() end)
-    page.settingsKit, page.settingsFlow = kit, flow
+    page.settingsKit, page.settingsFlow, page.settingsScroll = kit, flow, scroll
 
     local bar
     if withSaveBar then
@@ -166,6 +174,14 @@ local function BuildMainPage(panel)
     row.flowBefore = kit.SECTION_TOP
     kit.Add(flow, row)
     Options.editorButton = editor
+    -- The live Performance view (/ps perf): watching it captures no diagnostics report.
+    local troubleshooting = Options.SettingsSection(kit, flow, L["Troubleshooting"], { collapsible = false })
+    local perfRow, perf = kit.ButtonRow(troubleshooting, L["Open performance view"], 200)
+    perf:SetScript("OnClick", function() PS.DiagnosticUI.ShowPerformance() end)
+    kit.Add(troubleshooting, perfRow)
+    kit.Add(troubleshooting, kit.Help(troubleshooting, L["PlateSmith's live CPU cost, refreshed once a second while "
+        .. "shown (/ps perf). /ps diagnose opens the full report to share."]))
+    Options.performanceButton = perf
     panel:Relayout()
 end
 

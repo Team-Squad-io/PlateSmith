@@ -37,7 +37,29 @@ ProfilePresets.RULES = {
         { when = "not role.tank and threat.pulling", set = "colour", colour = { r = 1, g = 0.8, b = 0 } },
         { when = "not role.tank and threat.holding", set = "colour", colour = { r = 1, g = 0.11, b = 0 } },
     } },
+    -- For the cast bar. Where the client withholds the interrupt's readiness, neither of the first
+    -- two holds and the bar keeps its own colour; the cast bar's Colour by interrupt can still show
+    -- it through the client's colour sink.
+    { id = "castInterrupt", name = L["Cast colours by interrupt"], kind = "colour", rules = {
+        { when = "casting and interruptible and interruptReady", set = "colour", colour = { r = 0.25, g = 0.85, b = 0.35 } },
+        { when = "casting and interruptible and not interruptReady", set = "colour", colour = { r = 0.9, g = 0.3, b = 0.2 } },
+        { when = "casting and not interruptible", set = "colour", colour = { r = 0.55, g = 0.55, b = 0.55 } },
+    } },
+    -- Fades: Settings › Behaviour & display › Fading adds these to every shown part of the enemy
+    -- plates (Settings' SetFadeEverywhere finds them by their condition).
+    { id = "fadeNonTarget", name = L["Fade non-targets"], kind = "alpha", rules = {
+        { when = "hastarget and not targeted", set = "alpha", alpha = 0.5 },
+    } },
+    { id = "fadeOutOfRange", name = L["Fade out of range"], kind = "alpha", rules = {
+        { when = "not inrange", set = "alpha", alpha = 0.5 },
+    } },
 }
+
+function ProfilePresets.Rule(id)
+    for _, preset in ipairs(ProfilePresets.RULES) do
+        if preset.id == id then return preset end
+    end
+end
 
 -- Style presets: built-in looks for one part of a kind (Studio's Style > Presets lists them before
 -- the player's saved ones). Applying one replaces the part's style.
@@ -103,6 +125,16 @@ local function Pin(layout, key, parent, edge, gap)
     position.x, position.y = offset[1] * gap, offset[2] * gap
 end
 
+-- Combo points under the health bar, next in the Bars stack (what is under the bar moves down on
+-- your target's plate), for a preset whose name or marks leave no room above the bar.
+local function ComboUnderBar(layout)
+    local combo, health = layout.combo, layout.health
+    local group = health and health.parent and layout[health.parent]
+    if not (combo and group and group.stack == "down") then return end
+    combo.parent, combo.attach, combo.free, combo.x, combo.y = health.parent, nil, nil, 0, 0
+    combo.order = (health.order or 1) + 1
+end
+
 -- Places key on parent at (x, y) from its centre (Free placement), e.g. text inside a bar.
 local function Place(layout, key, parent, x, y)
     local position = layout[key]
@@ -114,7 +146,7 @@ end
 local function AddValue(profile, index, source, x, fontSize)
     local key = "value" .. index
     local slot = profile.valueSlots[key]
-    slot.source, slot.anchor, slot.fontSize = source, "health", fontSize or 9
+    slot.source, slot.anchor, slot.fontSize = source, "health", fontSize or slot.fontSize
     profile.layout[key].x, profile.layout[key].y, profile.layout[key].visible = x, 0, true
     return key, slot
 end
@@ -209,9 +241,10 @@ function BUILDERS.classic(settings)
         Pin(layout, "pvpIcon", "name", "left", 3)
         Pin(layout, "tagged", "name", "right", 4)
         Show(layout, false, "buffs", "threat")
+        ComboUnderBar(layout)
     end
     EachProfile(settings, function(profile)
-        profile.width, profile.healthHeight, profile.castHeight, profile.nameFontSize = 120, 10, 10, 12
+        profile.width, profile.healthHeight, profile.castHeight, profile.nameFontSize = 120, 10, 10, 14
         profile.castIcon, profile.castTime, profile.castName = "left", false, true
         for _, key in ipairs({ "name", "level", "guild", "tagged", "classification" }) do
             Style(profile, key, { font = "friz", outline = "none", shadow = true })
@@ -243,6 +276,7 @@ function BUILDERS.sleek(settings)
         Pin(layout, "quest", "classification", "left", 2)
         Pin(layout, "tagged", "name", "right", 4)
         Pin(layout, "raidIcon", "health", "right", 4)
+        ComboUnderBar(layout)
         local key = AddValue(profile, 1, "healthPercent", profile.width / 2 - 14, 10)
         for _, text in ipairs({ "name", "level", "guild", "threat", "tagged", "classification", key }) do
             Style(profile, text, { font = "arialn", outline = "none", shadow = true })
@@ -270,7 +304,7 @@ function BUILDERS.bold(settings)
         Show(layout, false, "buffs")
     end
     EachProfile(settings, function(profile)
-        profile.width, profile.healthHeight, profile.nameFontSize = 120, 14, 13
+        profile.width, profile.healthHeight, profile.nameFontSize = 120, 14, 14
         profile.auraLayouts.debuffs.size = 16
         Style(profile, "name", { font = "morpheus", outline = "thick" })
         for _, key in ipairs({ "level", "guild", "tagged", "classification" }) do
@@ -294,6 +328,7 @@ function BUILDERS.tank(settings)
     Pin(layout, "tagged", "name", "right", 4)
     Show(layout, false, "threat")
     Show(layout, true, "targetName")
+    ComboUnderBar(layout)
     AddRules(enemy, "health", "threatTank")
     local key, slot = AddValue(enemy, 1, "leadPercent", 0, 14)
     slot.colour = { r = 1, g = 0.85, b = 0.3 }
@@ -346,6 +381,7 @@ function BUILDERS.minimal(settings)
         -- 3 px: the raid mark beside the name (16 px, taller than it) clears the bar.
         Pin(layout, "name", "health", "top", 3)
         Pin(layout, "raidIcon", "name", "left", 3)
+        ComboUnderBar(layout)
     end
     for _, profileKey in ipairs({ "friendlyPlayer", "friendlyNPC" }) do
         Pin(Profiles(settings)[profileKey].namesLayout, "raidIcon", "name", "right", 3)
@@ -373,6 +409,7 @@ function BUILDERS.dungeon(settings)
         Place(layout, "relationshipIcon", "health", 36, 15)
         Place(layout, "quest", "health", -36, 15)
         Place(layout, "pvpIcon", "health", -36, 15)
+        ComboUnderBar(layout)
     end
     EachProfile(settings, function(profile)
         profile.width, profile.healthHeight, profile.castHeight, profile.nameFontSize = 90, 8, 14, 9

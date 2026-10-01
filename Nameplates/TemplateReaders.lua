@@ -45,17 +45,6 @@ PS._CreateTemplateReaders = function(context)
     end
     Readers.ReadPercent = ReadPercent
 
-    -- "<unit>target", made once per unit token.
-    local targetTokens = {}
-    function Readers.TargetToken(unit)
-        local token = targetTokens[unit]
-        if not token then
-            token = unit .. "target"
-            targetTokens[unit] = token
-        end
-        return token
-    end
-
     local function ReadClassification(unit)
         local kind = Call(UnitClassification, unit)
         if IsReadable(kind) and type(kind) == "string" then return kind end
@@ -127,6 +116,13 @@ PS._CreateTemplateReaders = function(context)
             if info.hasOpaqueRawThreat then return info.rawThreatOpaque end
             return info.rawThreat
         end,
+        -- Your threat as a percentage of the next highest (holding) or of the holder's.
+        ["threat.leadpercent"] = function(data)
+            local info = EngagedThreat(data)
+            if not info then return nil end
+            if info.hasOpaqueLeadPercent then return info.leadPercentOpaque end
+            return info.leadPercent
+        end,
         ["level"] = function(_, unit) return Call(UnitLevel, unit) end,
         ["name"] = function(_, unit) return UnitDisplayNameValue(unit) end,
         ["target"] = function(data)
@@ -152,13 +148,8 @@ PS._CreateTemplateReaders = function(context)
         end,
         ["casting"] = function(data) return data.casting == true end,
         ["combat"] = function() return Call(UnitAffectingCombat, "player") end,
-        ["tanking"] = function(data)
-            local info = data.threatInfo
-            if not info then return false end -- no threat record: not tanking it
-            local tanking = info.tanking
-            if not IsReadable(tanking) then return nil end
-            return tanking == true
-        end,
+        -- False out of combat; unknown on an untracked mob or when the threat read is withheld.
+        ["tanking"] = ThreatFact("holding"),
         ["targeted"] = function(_, unit) return Call(UnitIsUnit, unit, "target") end,
         ["player"] = function(_, unit) return Call(UnitIsPlayer, unit) end,
         ["focus"] = function(_, unit) return Call(UnitIsUnit, unit, "focus") end,
@@ -202,7 +193,12 @@ PS._CreateTemplateReaders = function(context)
             return reaction == 4
         end,
         ["interruptible"] = function(data) return data.casting == true and data.castInterruptible == true end,
-        ["questdrop"] = function(data) return data.questSource == "questiedb-item-drop" end,
+        -- Your interrupt is ready (false: on cooldown, or you have none); unknown while the client withholds it.
+        ["interruptReady"] = function()
+            local interrupt = PS.Interrupt
+            if interrupt then return interrupt.Ready() end
+        end,
+        ["questdrop"] = function(data) return data.questItemDrop == true end,
         ["pvp"] = function(_, unit) return Call(UnitIsPVP, unit) end,
         ["instance"] = function() return Call(IsInInstance) end,
         ["ingroup"] = function(_, unit) return FriendlyRelationship(unit) == "group" end,
@@ -221,20 +217,36 @@ PS._CreateTemplateReaders = function(context)
         ["threat.pulling"] = ThreatFact("pulling"),
         ["threat.other"] = ThreatFact("other"),
         ["threat.offtank"] = ThreatFact("offtank"),
+        -- Whether you have a target at all; unknown while the client withholds it.
+        ["hastarget"] = function() return Secret.ReadBoolean(UnitExists, "target") end,
+        -- The range service's answer (Nameplates/Range.lua): nil while unknown or not checked.
+        ["inrange"] = function(data) return data.inRange end,
+        -- The quest objective's progress (Nameplates/QuestProgress.lua), from readable quest data only.
+        ["quest.progress"] = function(data) return data.questProgressText end,
+        ["quest.percent"] = function(data) return data.questProgressPercent end,
+        -- Your combo points on this plate's unit while it is your target (Nameplates/ComboPoints.lua).
+        ["combo"] = function(data)
+            local combo = PS.ComboPoints
+            if combo then return combo.Read(data) end
+        end,
     }
 
     -- What a plate's custom parts and rules read, by the kind of change that marks it (Lifecycle's
     -- MarkValues). A token with no event of its own (combat, level, a module's token) is volatile:
     -- whatever reads it follows every change, as it always has. friendly is fixed by the layout.
-    local READ_KINDS = { "health", "power", "threat", "cast", "target", "targeted" }
+    local READ_KINDS = { "health", "power", "threat", "cast", "target", "targeted", "interrupt" }
     local TOKEN_KINDS = {
         ["health"] = "health", ["health.max"] = "health", ["health.percent"] = "health", ["health.missing"] = "health",
         ["power"] = "power", ["power.max"] = "power", ["power.percent"] = "power",
         ["threat.percent"] = "threat", ["threat.lead"] = "threat", ["threat.raw"] = "threat", ["threat.hold"] = "threat",
+        ["threat.leadpercent"] = "threat",
         ["tanking"] = "threat", ["threat.holding"] = "threat", ["threat.losing"] = "threat",
         ["threat.pulling"] = "threat", ["threat.other"] = "threat", ["threat.offtank"] = "threat",
-        ["casting"] = "cast", ["cast.name"] = "cast", ["interruptible"] = "cast",
+        ["casting"] = "cast", ["cast.name"] = "cast", ["interruptible"] = "cast", ["interruptReady"] = "interrupt",
         ["target"] = "target", ["targeted"] = "targeted", ["friendly"] = false,
+        -- Not in READ_KINDS: a volatile set does not start the range checks or follow quest progress.
+        ["hastarget"] = "targeted", ["inrange"] = "range", ["quest.progress"] = "quest", ["quest.percent"] = "quest",
+        ["combo"] = "combo",
     }
     local SOURCE_KINDS = {
         healthCurrent = "health", healthValue = "health", healthPercent = "health",
@@ -246,6 +258,8 @@ PS._CreateTemplateReaders = function(context)
     local function AddToken(set, token)
         local kind = TOKEN_KINDS[token]
         if kind == nil then set.volatile = true elseif kind then set[kind] = true end
+        -- Not a kind: marks that hastarget itself is read (reads.hasTarget).
+        if token == "hastarget" then set.hastarget = true end
     end
     local function AddCondition(set, node)
         if type(node) ~= "table" then return end
@@ -270,14 +284,13 @@ PS._CreateTemplateReaders = function(context)
             end
         end
     end
-    -- A volatile set reads every kind.
+    -- A volatile set reads every kind in READ_KINDS, and keeps the others it names.
     local function Merge(into, set)
         if set.volatile then
             into.volatile = true
             for _, kind in ipairs(READ_KINDS) do into[kind] = true end
-        else
-            for kind in pairs(set) do into[kind] = true end
         end
+        for kind in pairs(set) do into[kind] = true end
     end
 
     local function BuildReads(profile, layout)
@@ -303,16 +316,23 @@ PS._CreateTemplateReaders = function(context)
         end
         for _, list in pairs(profile.rules or {}) do
             for _, rule in ipairs(list) do
-                local set = {}
-                if rule.set == "blend" then set.health = true end
-                if type(rule.when) == "string" and rule.when:find("%S") then
-                    local tree = PS.Template.CompileCondition(rule.when)
-                    AddCondition(set, tree)
+                -- A rule turned off reads nothing.
+                if rule.enabled ~= false then
+                    local set = {}
+                    if rule.set == "blend" then set.health = true end
+                    if type(rule.when) == "string" and rule.when:find("%S") then
+                        local tree = PS.Template.CompileCondition(rule.when)
+                        AddCondition(set, tree)
+                    end
+                    Merge(reads.rules, set)
+                    reads.anyRules = true
                 end
-                Merge(reads.rules, set)
-                reads.anyRules = true
             end
         end
+        -- Whether "is there a target at all" can change what the plate shows; the targeted kind
+        -- alone changes only on the old and the new target's plates (Lifecycle's RefreshTargetState).
+        local values, rules = reads.values, reads.rules
+        reads.hasTarget = (values.hastarget or rules.hastarget or values.volatile or rules.volatile) == true
         return reads
     end
 

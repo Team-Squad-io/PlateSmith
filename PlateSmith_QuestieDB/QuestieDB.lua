@@ -362,7 +362,8 @@ function module:OnInitialize()
                     or string.format("quest=%d npc=%d", reasonEntry.questID, reasonEntry.npcID)
                 reasonEntry.detail = detail
             end
-            return true, reasonEntry.kind, detail
+            -- The quest log objective it matched, for the plate's progress text.
+            return true, reasonEntry.kind, detail, reasonEntry.questID, reasonEntry.objectiveIndex
         end,
         GetDiagnostics = function()
             return string.format("contract=%s, cache=%d, quests=%d, generation=%d",

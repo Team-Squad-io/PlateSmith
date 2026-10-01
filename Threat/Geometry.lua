@@ -7,10 +7,13 @@ local _, PS = ...
 local Geometry = {}
 PS.ThreatGeometry = Geometry
 
-Geometry.SNAP_DISTANCE = 8
+-- Edges this close snap. Shift-drag skips snapping, so this can be generous enough to catch easily.
+Geometry.SNAP_DISTANCE = 12
 Geometry.TOUCH_TOLERANCE = 1.5
 -- A new window with no free spot beside another steps this far down and right from the last one.
 Geometry.CASCADE_STEP = 24
+-- A window detached from its group is placed at least this far from every other window.
+Geometry.DETACH_GAP = 16
 -- The threat meter's GAP column needs this much row width; the minimum window width keeps it.
 Geometry.GAP_COLUMN_WIDTH = 200
 -- The windows' limits, shared by the windows and the Threat settings page: at most MAX_WINDOWS,
@@ -318,6 +321,29 @@ function Geometry.FreeSpot(rects, width, height, screenWidth, screenHeight)
         if not SameCorner(rects, left, top) then return left, top end
     end
     return Geometry.OnScreen(last.left, last.top, width, height, screenWidth, screenHeight)
+end
+
+-- A top-left for rect taken out of its group: clear of others (and of its own old place) by at
+-- least gap on every side, so it touches nothing and snaps to nothing it was joined to. Beside its
+-- old place first (right, below, left, above), then as FreeSpot. Returns left and top.
+function Geometry.DetachSpot(rect, others, screenWidth, screenHeight, gap)
+    gap = gap or Geometry.DETACH_GAP
+    local grown = {}
+    for index = 1, others and #others or 0 do
+        local other = others[index]
+        grown[index] = { left = other.left - gap, bottom = other.bottom - gap, right = other.right + gap, top = other.top + gap }
+    end
+    local width, height = rect.right - rect.left, rect.top - rect.bottom
+    local spots = {
+        rect.right + gap, rect.top, rect.left, rect.bottom - gap, rect.left - gap - width, rect.top, rect.left, rect.top + gap + height,
+    }
+    for spot = 1, #spots, 2 do
+        if FitsFree(grown, spots[spot], spots[spot + 1], width, height, screenWidth, screenHeight) then
+            return spots[spot], spots[spot + 1]
+        end
+    end
+    grown[#grown + 1] = { left = rect.left - gap, bottom = rect.bottom - gap, right = rect.right + gap, top = rect.top + gap }
+    return Geometry.FreeSpot(grown, width, height, screenWidth, screenHeight)
 end
 
 -- True when two rectangles share an edge (they touch and overlap along it).
