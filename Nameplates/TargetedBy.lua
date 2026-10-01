@@ -152,12 +152,12 @@ function TargetedBy._Reset()
 end
 
 -- The plate side. context: active (unit -> plate), RunBatch, MarkStacks, Styles, AnchorPart
--- (Placement), ApplyNameplateFont. A plate's row is made the first time it shows, events are
+-- (Placement). A plate's row is made the first time it shows, events are
 -- registered only while an enemy layout shows the part (SetWanted), and the group events and the
 -- backstop run only while grouped as well.
 PS._CreatePlateTargetedBy = function(context)
     local active, RunBatch, MarkStacks = context.active, context.RunBatch, context.MarkStacks
-    local Styles, AnchorPart, ApplyNameplateFont = context.Styles, context.AnchorPart, context.ApplyNameplateFont
+    local Styles, AnchorPart = context.Styles, context.AnchorPart
     local Pass = { wanted = false, grouped = false, rosterDirty = false, ticking = false, cursor = 0 }
     -- Plates showing a row, in a round-robin list (each keeps its index as targetedByIndex).
     local rows = {}
@@ -204,7 +204,7 @@ PS._CreatePlateTargetedBy = function(context)
                     r, g, b = FALLBACK_COLOUR[1], FALLBACK_COLOUR[2], FALLBACK_COLOUR[3]
                 end
                 if r then badge.fill:SetVertexColor(r, g, b) end
-                ApplyNameplateFont(badge.text, TargetedBy.InitialFontSize(size))
+                Styles.StyledFont(data, "targetedBy", badge.text, TargetedBy.InitialFontSize(size))
                 badge.text:SetText(member.initial or "")
                 badge.text:SetTextColor(0, 0, 0)
             end

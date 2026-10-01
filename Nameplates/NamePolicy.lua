@@ -174,6 +174,12 @@ function NamePolicy.Read(name)
     return tostring(value)
 end
 
+-- Whether Dungeon friendly names only (restrictedFriendlyNamesOnly) reaches players alone: the
+-- client has the players' CVar. Older clients have only nameplateShowOnlyNames, for every friendly.
+function NamePolicy.NamesOnlyIsPlayersOnly()
+    return NamePolicy.Read(restrictedFriendlyNameCVars[1]) ~= nil
+end
+
 -- A CVar write blocked in combat raises ADDON_ACTION_BLOCKED instead of an
 -- error, so it cannot be detected afterwards. Defer it until combat ends.
 function NamePolicy.Write(name, value, immediate)

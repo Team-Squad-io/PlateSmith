@@ -52,9 +52,10 @@ PS._CreatePlateFactory = function(context)
         return type(path) == "string" and path or nil, type(height) == "number" and height or nil, flags or ""
     end
 
-    -- The one route for plate text and Studio's preview: the plate font (settings.font) at size
-    -- times the profile's text size (settings.textScale), then the part's style (font, outline).
-    -- plateSmithFontSize keeps the part's own size, so applying it again never scales twice.
+    -- The one route for plate text and Studio's preview: the plate font (settings.font) at the part's
+    -- Font size (style.fontSize, points; without one, size: Auto) times the profile's text size
+    -- (settings.textScale), then the part's style (font, outline). plateSmithFontSize keeps the
+    -- part's Auto size, so applying it again never scales twice.
     -- The default font is Blizzard's multilingual family (CJK glyphs), scaled to size. The client
     -- keeps a face set with SetFont over a font object set later, so text that had its own face
     -- (another profile's style) is given the family's face, height and outline explicitly when the
@@ -64,7 +65,7 @@ PS._CreatePlateFactory = function(context)
         size = tonumber(size) or 12
         fontString.plateSmithFontSize = size
         local settings = GetSettings and GetSettings()
-        size = S.ScaledFontSize(size, settings and settings.textScale)
+        size = S.ScaledFontSize(S.StyledFontSize(size, style), settings and settings.textScale)
         local path = PS.Media.FontPath(style and style.font or (settings and settings.font))
         local flags = OUTLINE_FLAGS[style and style.outline or "outline"] or "OUTLINE"
         local family = _G.SystemFont_Outline or _G.SystemFont_NamePlate
@@ -393,9 +394,31 @@ PS._CreatePlateFactory = function(context)
         return beacon
     end
 
+    -- The spotlight's chevrons follow the plate font and the text size; with Blizzard's font at
+    -- 100% they keep the large font object they were made with. Set only when either changes. A face
+    -- set with SetFont outlasts a later font object, so going back sets the object's own face too.
+    local function ApplyChevronFont(data)
+        local settings = GetSettings and GetSettings()
+        local font, textScale = settings and settings.font, settings and settings.textScale or 1
+        if not data.beaconLeft or (data.beaconFont == font and data.beaconTextScale == textScale) then return end
+        data.beaconFont, data.beaconTextScale = font, textScale
+        local large = _G.GameFontNormalLarge
+        local path = PS.Media.FontPath(font)
+        local own = path ~= nil or textScale ~= 1
+        local largePath, largeHeight, largeFlags = ReadFont(large)
+        for _, chevron in ipairs({ data.beaconLeft, data.beaconRight }) do
+            if large and chevron.SetFontObject then chevron:SetFontObject(large) end
+            if chevron.SetFont and (own or chevron.plateSmithOwnFace) then
+                chevron:SetFont(path or largePath or STANDARD_TEXT_FONT, S.ScaledFontSize(largeHeight or 16, textScale),
+                    largeFlags or "")
+            end
+            chevron.plateSmithOwnFace = own or nil
+        end
+    end
+
     return {
         CreatePlate = CreatePlate, StartPlate = StartPlate, FinishPlate = FinishPlate, AttachPlate = AttachPlate,
-        ApplyNameplateFont = ApplyNameplateFont,
+        ApplyNameplateFont = ApplyNameplateFont, ApplyChevronFont = ApplyChevronFont,
         EnsureValueSlot = EnsureValueSlot, EnsureTargetGlows = EnsureTargetGlows, EnsureBeacon = EnsureBeacon,
     }
 end

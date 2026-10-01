@@ -2532,6 +2532,9 @@ function ThreatService:TargetingReport()
             -- The plate the client gives for the member's target, the record it is, and whether threat
             -- reads through "<member>target" (the player's own tuple, and the rest of the group).
             local frame, plateState = ReadTargetPlate(token)
+            -- Forever raises an error for a compound token ("party1target"): a known refusal, not a
+            -- fault (the summary flags "error"), and the record is matched by GUID below.
+            if plateState == "error" then plateState = "refused" end
             local plateRecord = "none"
             for enemyIndex = 1, frame and self.enemyCount or 0 do
                 if self.enemyOrder[enemyIndex].root == frame then plateRecord = self.enemyOrder[enemyIndex].unit break end

@@ -5,7 +5,7 @@ local Table = assert(PS.Table, "PlateSmith Table missing")
 local Media = assert(PS.Media, "PlateSmith Media missing")
 
 local defaults = {
-    schemaVersion = 26,
+    schemaVersion = 27,
     enabled = true,
     mode = "auto",       -- auto, own, overlay
     friendly = "names",  -- names, full, off
@@ -201,13 +201,25 @@ end
 -- How each aura row lays out its icons: how many, how many per line, their size and gap,
 -- which way a line grows from the component's position, and which way extra lines stack.
 local auraLayoutRanges = { count = { 1, 8, true }, columns = { 1, 8, true }, size = { 12, 32, true },
-    spacing = { 0, 6, true } }
+    spacing = { 0, 6, true }, timeSize = { 30, 90, true } }
 local auraGrowX = { right = true, left = true, centre = true }
 local auraGrowY = { up = true, down = true }
+-- A text's outline (a part's style, and an aura row's countdown): none, outline or thick.
+local STYLE_OUTLINES = { none = true, outline = true, thick = true }
+-- A text part's Font size in points (before the profile's text size); nil is Auto, the size the plate
+-- gives it (PartTextSize), as before. An aura row's countdown (timeFontSize) takes the same range.
+local STYLE_FONT_SIZE = { 6, 32, true }
+-- The countdown text's font (timeFont, a media key), outline (timeOutline) and shadow (timeShadow):
+-- each optional. Absent: the plate font (Friz Quadrata while that is Blizzard's), outlined, and the
+-- client's own shadow. Where it sits (timePosition): centred on the icon's bottom edge (absent),
+-- its middle or its top edge, or the bottom right corner it used to take.
+local auraTimeFields = { timeFont = true, timeOutline = true, timeShadow = true, timePosition = true, timeFontSize = true }
+local auraTimePositions = { bottom = true, centre = true, top = true, bottomright = true }
 local defaultAuraLayouts = {
     -- Both rows sit above the name, centred on it, and further lines grow away from it.
-    buffs = { count = 4, columns = 4, size = 18, spacing = 2, growX = "centre", growY = "up", showDuration = true },
-    debuffs = { count = 4, columns = 4, size = 18, spacing = 2, growX = "centre", growY = "up", showDuration = true },
+    buffs = { count = 4, columns = 4, size = 18, spacing = 2, growX = "centre", growY = "up", showDuration = true, timeSize = 45 },
+    debuffs = { count = 4, columns = 4, size = 18, spacing = 2, growX = "centre", growY = "up", showDuration = true,
+        timeSize = 45 },
 }
 
 local function NormalizeAuraLayouts(layouts, fallback)
@@ -225,6 +237,16 @@ local function NormalizeAuraLayouts(layouts, fallback)
         row.growY = auraGrowY[layout.growY] and layout.growY or rowDefaults.growY
         if layout.showDuration == nil then row.showDuration = rowDefaults.showDuration ~= false
         else row.showDuration = layout.showDuration ~= false end
+        row.timeFont = Media.IsFont(layout.timeFont) and layout.timeFont or nil
+        row.timeOutline = STYLE_OUTLINES[layout.timeOutline] and layout.timeOutline or nil
+        if type(layout.timeShadow) == "boolean" then row.timeShadow = layout.timeShadow end
+        row.timePosition = auraTimePositions[layout.timePosition] and layout.timePosition or nil
+        -- Timed only: the row skips auras with no time limit; absent (off) shows them all.
+        if layout.timedOnly == true then row.timedOnly = true end
+        local points = tonumber(layout.timeFontSize)
+        if points and points == points then
+            row.timeFontSize = math.floor(math.max(STYLE_FONT_SIZE[1], math.min(STYLE_FONT_SIZE[2], points)) + 0.5)
+        end
         normalized[kind] = row
     end
     return normalized
@@ -451,6 +473,25 @@ end
 local DRAWN_FONT_RANGE = { 6, 32, true }
 local function ScaledFontSize(size, textScale)
     return Bounded(DRAWN_FONT_RANGE, (tonumber(size) or 12) * Bounded(settingRanges.textScale, textScale, 1))
+end
+
+-- A text part's size: its style's Font size in points, or (Auto) the size the plate gives it.
+local function StyledFontSize(size, style)
+    local points = type(style) == "table" and tonumber(style.fontSize)
+    return points or size
+end
+
+-- Auto Font size: the size the plate gives a part's text, from this plate type's name size (the
+-- name's own; the level, guild, target, threat, elite mark, quest progress and combo count 2 pt less,
+-- at least 8; the tagged mark 3 less; the cast bar's text 4 less, at least 7). Nil for a part whose
+-- size follows something else (a badge, an aura icon). Lifecycle, Studio and the tests agree on it.
+local PART_TEXT_SIZES = { level = { 8, -2 }, guild = { 8, -2 }, targetName = { 8, -2 }, threat = { 8, -2 },
+    classification = { 8, -2 }, quest = { 8, -2 }, combo = { 8, -2 }, tagged = { 8, -3 }, cast = { 7, -4 } }
+local function PartTextSize(key, nameFontSize)
+    local size = tonumber(nameFontSize) or 14
+    if key == "name" then return size end
+    local rule = PART_TEXT_SIZES[key]
+    return rule and math.max(rule[1], size + rule[2]) or nil
 end
 
 -- Component scale snaps to 5% steps.
@@ -971,13 +1012,13 @@ local function NormalizeCastColours(colours, fallback)
 end
 
 -- Styles: per part, how it is drawn beyond position and size. Text parts: font (a media key;
--- nil is the plates' font), outline, shadow, and an optional box behind the text (fill,
+-- nil is the plates' font), font size (a percentage), outline, shadow, and an optional box behind the text (fill,
 -- border, padding). Bars: texture, background, border. Pips (combo points): the filled and empty
 -- colours, each pip's size and the gap between them. Everything is optional; nil keeps the
 -- part as it draws today. Colour by health is a blend rule: an older style's gradient becomes
 -- one (GradientRules) and is not kept.
-local STYLE_OUTLINES = { none = true, outline = true, thick = true }
 local STYLE_PADDING, STYLE_BORDER = { 0, 12, true }, { 0, 4, true }
+
 -- Pips (combo points): each pip's width and height and the gap between them, in pixels.
 local STYLE_PIPS = { pipWidth = { 4, 24, true }, pipHeight = { 2, 12, true }, pipSpacing = { 0, 8, true } }
 -- Badges ("Targeted by"): each badge's size and the gap, in pixels; the row's direction; and whether
@@ -1020,6 +1061,7 @@ local function NormalizeStyles(styles)
                 pipFill = StyleColour(style.pipFill),
                 pipEmpty = StyleColour(style.pipEmpty),
             }
+            entry.fontSize = tonumber(style.fontSize) and Bounded(STYLE_FONT_SIZE, style.fontSize) or nil
             for field, range in pairs(STYLE_PIPS) do
                 entry[field] = tonumber(style[field]) and Bounded(range, style[field]) or nil
             end
@@ -1630,6 +1672,17 @@ local settingsMigrations = {
         if disabled > 0 then migrationNotes[settings] = { threatRulesDisabled = disabled } end
         settings.schemaVersion = 26
     end,
+    [26] = function(settings)
+        -- The dungeon friendly overlay test never drew on Forever (the game blocks it): it starts off,
+        -- so Studio's Dungeon Players and Friendly NPCs show Blizzard's name. It is now on Experimental.
+        if settings.experimentalDungeonFriendlyText == true then
+            settings.experimentalDungeonFriendlyText = false
+            local note = migrationNotes[settings] or {}
+            note.dungeonOverlayOff = true
+            migrationNotes[settings] = note
+        end
+        settings.schemaVersion = 27
+    end,
 }
 
 local function MigrateSettings(settings)
@@ -1895,10 +1948,15 @@ PS.ProfileSchema = {
     auraLayoutRanges = auraLayoutRanges,
     auraGrowX = auraGrowX,
     auraGrowY = auraGrowY,
+    auraTimeFields = auraTimeFields,
+    auraTimePositions = auraTimePositions,
     Bounded = Bounded,
     InRange = InRange,
     ComponentScale = ComponentScale,
     ScaledFontSize = ScaledFontSize,
+    StyledFontSize = StyledFontSize,
+    PartTextSize = PartTextSize,
+    STYLE_FONT_SIZE = STYLE_FONT_SIZE,
     DRAWN_FONT_RANGE = DRAWN_FONT_RANGE,
     characterDefaults = characterDefaults,
     validTankRoles = validTankRoles,

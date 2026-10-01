@@ -223,7 +223,8 @@ local profileFields = Set("scale", "width", "healthHeight", "powerHeight", "powe
     "healthColourMode", "healthColour", "layout", "namesLayout", "dungeonNamesLayout", "valueSlots", "auraLayouts",
     "rules", "styles")
 local castColourFields = Set("ready", "cooldown", "locked")
-local auraLayoutFields = Set("count", "columns", "size", "spacing", "growX", "growY", "showDuration")
+local auraLayoutFields = Set("count", "columns", "size", "spacing", "growX", "growY", "showDuration", "timeSize", "timeFont",
+    "timeOutline", "timeShadow", "timePosition", "timeFontSize", "timedOnly")
 
 -- Each aura row's layout: every field optional, each checked against its range or choices.
 local function CheckAuraLayouts(value, path, target)
@@ -238,6 +239,25 @@ local function CheckAuraLayouts(value, path, target)
         if layout.growY ~= nil then target[kind].growY = CheckEnum(layout.growY, rowPath .. ".growY", S.auraGrowY) end
         if layout.showDuration ~= nil then
             target[kind].showDuration = CheckBoolean(layout.showDuration, rowPath .. ".showDuration")
+        end
+        -- The countdown's text: absent keeps the plate font, outline and the client's shadow.
+        if layout.timeFont ~= nil then
+            if not PS.Media.IsFont(layout.timeFont) then Reject(rowPath .. ".timeFont", "has an unsupported value") end
+            target[kind].timeFont = layout.timeFont
+        end
+        if layout.timeOutline ~= nil then
+            target[kind].timeOutline = CheckEnum(layout.timeOutline, rowPath .. ".timeOutline", S.STYLE_OUTLINES)
+        end
+        if layout.timeShadow ~= nil then target[kind].timeShadow = CheckBoolean(layout.timeShadow, rowPath .. ".timeShadow") end
+        if layout.timeFontSize ~= nil then
+            target[kind].timeFontSize = CheckRange(layout.timeFontSize, rowPath .. ".timeFontSize", S.STYLE_FONT_SIZE)
+        end
+        if layout.timePosition ~= nil then
+            target[kind].timePosition = CheckEnum(layout.timePosition, rowPath .. ".timePosition", S.auraTimePositions)
+        end
+        -- Timed only; absent or false is off.
+        if layout.timedOnly ~= nil then
+            target[kind].timedOnly = CheckBoolean(layout.timedOnly, rowPath .. ".timedOnly") or nil
         end
     end
 end
@@ -347,12 +367,12 @@ local function ApplyProfile(target, value, path, allowNames)
         target.rules = S.NormalizeRules(rules)
     end
     if value.styles ~= nil then
-        -- Styles: part -> { font, outline, shadow, box, boxColour, boxBorder, padding, texture,
+        -- Styles: part -> { font, fontSize, outline, shadow, box, boxColour, boxBorder, padding, texture,
         -- background, border, borderColour, pipFill, pipEmpty, pipWidth, pipHeight, pipSpacing,
         -- badgeSize, badgeSpacing, badgeOrientation, badgeInitial }; colours are { r, g, b, a } from 0 to 1. An older
         -- Blueprint's gradient (low, mid, high) becomes the part's leading blend rule.
         CheckObject(value.styles, path .. ".styles")
-        local fields = Set("font", "outline", "shadow", "box", "boxColour", "boxBorder", "padding", "texture",
+        local fields = Set("font", "fontSize", "outline", "shadow", "box", "boxColour", "boxBorder", "padding", "texture",
             "background", "border", "borderColour", "gradient", "pipFill", "pipEmpty", "pipWidth", "pipHeight", "pipSpacing",
             "badgeSize", "badgeSpacing", "badgeOrientation", "badgeInitial")
         local function CheckUnitColour(colour, colourPath)
@@ -386,6 +406,7 @@ local function ApplyProfile(target, value, path, allowNames)
             if style.box ~= nil then CheckBoolean(style.box, stylePath .. ".box") end
             if style.outline ~= nil then CheckEnum(style.outline, stylePath .. ".outline", S.STYLE_OUTLINES) end
             if style.padding ~= nil then CheckRange(style.padding, stylePath .. ".padding", S.STYLE_PADDING) end
+            if style.fontSize ~= nil then CheckRange(style.fontSize, stylePath .. ".fontSize", S.STYLE_FONT_SIZE) end
             if style.border ~= nil then CheckRange(style.border, stylePath .. ".border", S.STYLE_BORDER) end
             if style.gradient ~= nil then
                 CheckObject(style.gradient, stylePath .. ".gradient", Set("low", "mid", "high"))
@@ -412,7 +433,19 @@ for key in pairs(settingRanges) do settingFields[key] = true end
 -- its parts' eyes off in the code's layouts (Schema's ApplyLegacySwitches).
 for _, switch in ipairs(S.PART_SWITCHES) do settingFields[switch.key] = true end
 
--- Returns a complete, normalized settings table built from defaults plus the document.
+-- Whether a Blueprint was exported before addon version major.minor.patch (its addon field); one
+-- that does not say is taken as older.
+local function ExportedBefore(addon, major, minor, patch)
+    local a, b, c = tostring(addon or ""):match("^(%d+)%.(%d+)%.(%d+)")
+    if not a then return true end
+    a, b, c = tonumber(a), tonumber(b), tonumber(c)
+    if a ~= major then return a < major end
+    if b ~= minor then return b < minor end
+    return c < patch
+end
+
+-- Returns a complete, normalized settings table built from defaults plus the document, the number
+-- of threat rules a 1.0.3 code turns off, and whether the dungeon overlay test was turned off.
 local function BuildCandidate(document)
     CheckObject(document, "blueprint", documentFields)
     if document.format ~= FORMAT then Reject("format", "is not a PlateSmith Blueprint") end
@@ -424,6 +457,9 @@ local function BuildCandidate(document)
     for _, key in ipairs(booleanSettings) do
         if settings[key] ~= nil then candidate[key] = CheckBoolean(settings[key], "settings." .. key) end
     end
+    -- As a saved profile's migration does: before 1.1.1 the dungeon overlay test arrives off.
+    local overlayOff = candidate.experimentalDungeonFriendlyText == true and ExportedBefore(document.addon, 1, 1, 1)
+    if overlayOff then candidate.experimentalDungeonFriendlyText = false end
     for key, allowed in pairs(enumSettings) do
         if settings[key] ~= nil then candidate[key] = CheckEnum(settings[key], "settings." .. key, allowed) end
     end
@@ -478,7 +514,7 @@ local function BuildCandidate(document)
     if legacy.threat == false and settings.tankWarning == nil then candidate.tankWarning = false end
     -- A code whose threat switch was off also turns off its threat rules (the count is returned).
     local disabled = S.ApplyLegacySwitches(candidate, legacy)
-    return NormalizeSettings(candidate), disabled
+    return NormalizeSettings(candidate), disabled, overlayOff
 end
 
 -- Unused custom parts (off, and everything else at its default) are left out: an import fills
@@ -561,7 +597,10 @@ local function ExportProfile(profile, includeNames)
     end
     for kind, layout in pairs(profile.auraLayouts or {}) do
         result.auraLayouts[kind] = { count = layout.count, columns = layout.columns, size = layout.size,
-            spacing = layout.spacing, growX = layout.growX, growY = layout.growY, showDuration = layout.showDuration }
+            spacing = layout.spacing, growX = layout.growX, growY = layout.growY, showDuration = layout.showDuration,
+            timeSize = layout.timeSize, timeFont = layout.timeFont, timeOutline = layout.timeOutline,
+            timeShadow = layout.timeShadow, timePosition = layout.timePosition,
+            timeFontSize = layout.timeFontSize, timedOnly = layout.timedOnly == true or nil }
     end
     if includeNames then
         result.namesLayout = ExportLayout(profile.namesLayout, profile.valueSlots)
@@ -675,10 +714,10 @@ local function ImportBlueprint(text, selection)
     local document, parseError = Json.Decode(text, MAX_JSON_BYTES)
     if document == nil then return false, "invalid JSON: " .. tostring(parseError) end
 
-    local modules, disabledRules = {}, 0
+    local modules, disabledRules, overlayOff = {}, 0, false
     local built, candidate = pcall(function()
         local result
-        result, disabledRules = BuildCandidate(document)
+        result, disabledRules, overlayOff = BuildCandidate(document)
         if document.modules ~= nil then
             CheckObject(document.modules, "modules")
             -- Data for companion addons that are not installed here is skipped.
@@ -763,8 +802,10 @@ local function ImportBlueprint(text, selection)
         if PS.NamePolicy and PS.NamePolicy.Apply then PS.NamePolicy.Apply() end
     end
     PS.Refresh()
-    if disabledRules > 0 and (Selected("styles") or Selected("dungeon")) and PS.Profiles then
-        PS.Profiles.NoteMigration(PS.Profiles.Active(), { threatRulesDisabled = disabledRules })
+    if PS.Profiles then
+        local rules = disabledRules > 0 and (Selected("styles") or Selected("dungeon"))
+        PS.Profiles.NoteMigration(PS.Profiles.Active(), { threatRulesDisabled = rules and disabledRules or 0,
+            dungeonOverlayOff = overlayOff and Selected("settings") })
     end
     -- Imports across clients succeed; the third result names the other client
     -- so the caller can say some options may behave differently here.

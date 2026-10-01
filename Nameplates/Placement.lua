@@ -6,7 +6,7 @@ local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
 PS._CreatePlatePlacement = function(context)
     local IsReadable, ReadNumber = PS.Secret.IsReadable, PS.Secret.ReadNumber
     local Styles, MarkVisibility, Counters = context.Styles, context.MarkVisibility, context.Counters
-    local GetSettings, ApplyNameplateFont = context.GetSettings, context.ApplyNameplateFont
+    local GetSettings = context.GetSettings
     local VALUE_SLOT_COUNT = S.VALUE_SLOT_COUNT
     local VALUE_KEYS, IS_VALUE_KEY, EMPTY = Styles.VALUE_KEYS, Styles.IS_VALUE_KEY, Styles.EMPTY
     local UpdateValueAnchors
@@ -433,8 +433,9 @@ PS._CreatePlatePlacement = function(context)
         else
             icon:SetPoint("TOPRIGHT", cast, "TOPLEFT", -2, 0)
         end
-        ApplyNameplateFont(time, NAME_CAST_FONT)
-        ApplyNameplateFont(name, NAME_CAST_FONT)
+        -- In the cast part's Display choices, as on the full bar.
+        Styles.StyledFont(data, "cast", time, NAME_CAST_FONT)
+        Styles.StyledFont(data, "cast", name, NAME_CAST_FONT)
         time:ClearAllPoints()
         time:SetPoint("TOPRIGHT", cast, "BOTTOMRIGHT", 0, -1)
         name:ClearAllPoints()

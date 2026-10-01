@@ -828,6 +828,8 @@ function Layout.New(config)
     -- pointed at; pointing at it or the label shows the label and the help.
     local HELP_ICON_FILE = "Interface\\RaidFrame\\ReadyCheck-Waiting"
     local HELP_ALPHA, HELP_ALPHA_LIT = 0.55, 1
+    -- Shared with other "?" buttons (Studio's Rules and Custom text help), so every one looks alike.
+    K.HELP_ICON_FILE, K.HELP_ALPHA, K.HELP_ALPHA_LIT = HELP_ICON_FILE, HELP_ALPHA, HELP_ALPHA_LIT
     local function PlaceHelpIcon(row)
         local icon, label = row.helpIcon, row.label
         local room = K.LABEL_W - row.inset

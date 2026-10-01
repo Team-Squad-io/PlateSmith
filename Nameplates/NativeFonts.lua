@@ -11,11 +11,16 @@ local NativeFonts = {}
 PS.NativeFonts = NativeFonts
 
 -- Globals checked; a client without one skips it, and an alias of one already listed is changed once.
+-- Reported in /ps diagnose; only WRITTEN are changed.
 NativeFonts.OBJECTS = {
     "SystemFont_NamePlate", "SystemFont_NamePlateFixed", "SystemFont_LargeNamePlate",
     "SystemFont_LargeNamePlateFixed", "SystemFont_NamePlate_Outlined",
     "NamePlateFixed", "LargeNamePlate", "LargeNamePlateFixed",
 }
+-- The objects Blizzard's plates draw names with (the name inherits SystemFont_NamePlate and is set
+-- to the _Outlined one above the health bar). The Fixed and Large objects are legacy ones no plate
+-- uses; the client keeps the Fixed ones at their fixed height whatever is written.
+local WRITTEN = { SystemFont_NamePlate = true, SystemFont_NamePlate_Outlined = true }
 NativeFonts.OUTLINES = { none = "", outline = "OUTLINE", thick = "THICKOUTLINE" }
 -- The readable outdoor treatment (nativeNameFont): at least this size, outlined, Blizzard's face.
 NativeFonts.READABLE_SIZE = 13
@@ -73,7 +78,7 @@ local function CollectObjects()
     local count = 0
     for _, name in ipairs(NativeFonts.OBJECTS) do
         local object = _G[name]
-        if Usable(object) and not seen[object] then
+        if WRITTEN[name] and Usable(object) and not seen[object] then
             seen[object] = true
             count = count + 1
             names[count], objects[count] = name, object
@@ -94,20 +99,40 @@ local function Capture(name, object)
     return record
 end
 
+-- The original's flags other than its outline (SLUG, the client's text renderer; FIXEDHEIGHT, a
+-- font drawn at a large size and scaled down), kept on every write: dropping them changes how the
+-- client draws the names.
+local function OtherFlags(flags)
+    local kept = {}
+    for token in string.gmatch(string.upper(flags or ""), "[%w]+") do
+        if token ~= "OUTLINE" and token ~= "THICKOUTLINE" and token ~= "THICK" then kept[#kept + 1] = token end
+    end
+    return kept
+end
+local function JoinFlags(outline, flags)
+    local parts = OtherFlags(flags)
+    if outline ~= "" then table.insert(parts, 1, outline) end
+    return table.concat(parts, ", ")
+end
+
 local function Target(settings, record)
     if mode == "custom" then
         local S = PS.ProfileSchema
         local range = S and S.settingRanges and S.settingRanges.blizzardNameFontSize or { 8, 20, true }
         local size = S and S.Bounded(range, settings.blizzardNameFontSize, 12) or 12
         return Media.FontPath(settings.blizzardNameFontFace) or record.path, size,
-            NativeFonts.OUTLINES[settings.blizzardNameFontOutline] or "OUTLINE"
+            JoinFlags(NativeFonts.OUTLINES[settings.blizzardNameFontOutline] or "OUTLINE", record.flags)
     end
-    return record.path, math.max(record.size, NativeFonts.READABLE_SIZE), "OUTLINE"
+    return record.path, math.max(record.size, NativeFonts.READABLE_SIZE), JoinFlags("OUTLINE", record.flags)
 end
 
+-- force: Blizzard gives each name its own text height on every plate add and options pass, over
+-- the object's size; only a real change of the object makes the client lay its names out again, so
+-- a forced write sets a different size first, then the target (what Plater and EUI do).
 local function Write(name, object, path, size, flags, force)
     local last = written[name]
     if not force and last and last[1] == path and last[2] == size and last[3] == flags then return end
+    if force then pcall(object.SetFont, object, path, size + 1, flags) end
     if pcall(object.SetFont, object, path, size, flags) then
         written[name] = { path, size, flags }
     end
@@ -142,6 +167,13 @@ local function HookDriver()
         if not hooked[method] and type(driver[method]) == "function" then
             hooked[method] = pcall(hooksecurefunc, driver, method, function() ScheduleReapply() end)
         end
+    end
+    -- Each plate add re-stamps that name's height; in instances (where the names are Blizzard's own
+    -- and cannot be sized one by one) the objects are re-asserted once per frame after adds.
+    if not hooked.OnNamePlateAdded and type(driver.OnNamePlateAdded) == "function" then
+        hooked.OnNamePlateAdded = pcall(hooksecurefunc, driver, "OnNamePlateAdded", function()
+            if mode and InInstance() then NativeFonts.AfterAdd() end
+        end)
     end
 end
 
@@ -201,6 +233,32 @@ ScheduleReapply = function()
 end
 NativeFonts.ScheduleReapply = ScheduleReapply
 
+-- After a plate add: straight away (the hook runs after Blizzard set the new name's height and
+-- before the frame is drawn, so the name never shows at Blizzard's size), for the first few adds of
+-- a frame; then one pass next frame for any later in it. Each pass lays every name out again.
+local IMMEDIATE_PER_FRAME = 3
+local addFrameTime, addFrameCount = nil, 0
+function NativeFonts.AfterAdd()
+    local now = type(GetTime) == "function" and GetTime() or nil
+    if now ~= addFrameTime then addFrameTime, addFrameCount = now, 0 end
+    addFrameCount = addFrameCount + 1
+    if addFrameCount <= IMMEDIATE_PER_FRAME then ReapplyNow() end
+    NativeFonts.ScheduleFrame()
+end
+
+-- One forced pass next frame, however many plates were added this one.
+local framePassScheduled = false
+local function FramePass()
+    framePassScheduled = false
+    ReapplyNow()
+end
+function NativeFonts.ScheduleFrame()
+    if not mode or framePassScheduled then return end
+    if not (C_Timer and type(C_Timer.After) == "function") then return ReapplyNow() end
+    framePassScheduled = true
+    C_Timer.After(0, FramePass)
+end
+
 -- The backstop for a reset no event announced: an object that lost the written size or outline is
 -- written again. One the client changes straight back is left (unsettled) rather than rewritten
 -- every pass.
@@ -219,6 +277,16 @@ function NativeFonts.CheckKept()
 end
 
 function NativeFonts.Mode() return mode end
+
+-- Blizzard's own font for an object (Studio's preview of its names): the captured original while
+-- PlateSmith has changed it, else what the object holds now; nil when neither can be read. Reads only.
+function NativeFonts.Original(name)
+    local record = captured[name]
+    if record then return record.path, record.size, record.flags end
+    local object = WRITTEN[name] and _G[name]
+    if mode or not Usable(object) then return nil end
+    return Read(object)
+end
 
 -- For /ps diagnose: the owner's state and every listed object (none when this client lacks it).
 function NativeFonts.Report()
@@ -255,7 +323,8 @@ end
 
 local RESET_CVARS = { nameplate = true, uiscale = true, useuiscale = true }
 local eventFrame = CreateFrame("Frame")
-for _, event in ipairs({ "PLAYER_ENTERING_WORLD", "UI_SCALE_CHANGED", "DISPLAY_SIZE_CHANGED", "CVAR_UPDATE" }) do
+for _, event in ipairs({ "PLAYER_ENTERING_WORLD", "UI_SCALE_CHANGED", "DISPLAY_SIZE_CHANGED", "CVAR_UPDATE",
+    "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED" }) do
     PS._RegisterEvent(eventFrame, event, "platesmith.native-fonts")
 end
 eventFrame:SetScript("OnEvent", function(_, event, name)

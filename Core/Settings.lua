@@ -684,15 +684,23 @@ PS._CreatePlateSettings = function(context)
     end
 
     -- One field of a plate type's buff or debuff row layout (count, columns, size, spacing,
-    -- growX, growY, showDuration); out-of-range or unknown values are refused.
+    -- growX, growY, showDuration, timeSize, and the countdown's timeFont, timeFontSize, timeOutline, timeShadow and timePosition,
+    -- which nil clears, and timedOnly, which nil or false turns off); out-of-range or unknown values are refused.
     local function SetProfileAuraLayout(profileKey, kind, field, value)
-        local range = S.auraLayoutRanges[field]
+        local range = S.auraLayoutRanges[field] or field == "timeFontSize" and S.STYLE_FONT_SIZE or nil
         local choices = field == "growX" and S.auraGrowX or field == "growY" and S.auraGrowY
-        local flag = field == "showDuration"
-        if (kind ~= "buffs" and kind ~= "debuffs") or not (range or choices or flag) then return false end
-        if range and not S.InRange(range, value) then return false end
-        if choices and not choices[value] then return false end
-        if flag and type(value) ~= "boolean" then return false end
+            or field == "timeOutline" and S.STYLE_OUTLINES or field == "timePosition" and S.auraTimePositions
+        local flag = field == "showDuration" or field == "timeShadow" or field == "timedOnly"
+        local optional = (S.auraTimeFields[field] or field == "timedOnly") and value == nil
+        if (kind ~= "buffs" and kind ~= "debuffs") or not (range or choices or flag or field == "timeFont") then return false end
+        if not optional then
+            if range and not S.InRange(range, value) then return false end
+            if choices and not choices[value] then return false end
+            if flag and type(value) ~= "boolean" then return false end
+            if field == "timeFont" and not PS.Media.IsFont(value) then return false end
+        end
+        -- Off is stored as absent, as the Schema keeps it.
+        if field == "timedOnly" and value == false then value = nil end
         -- A new table, not an edit in place: the plates key their aura containers by it.
         return MutateProfile(profileKey, function(profile)
             local aura = Table.DeepCopy(profile.auraLayouts[kind])
@@ -810,12 +818,13 @@ PS._CreatePlateSettings = function(context)
 
     -- One field of a part's style (Schema's NormalizeStyles); nil clears it. Colour by health is
     -- a blend rule (SetPartRules), not a style field.
-    local STYLE_FIELDS = { font = true, outline = true, shadow = true, box = true, boxColour = true, boxBorder = true,
+    local STYLE_FIELDS = { font = true, fontSize = true, outline = true, shadow = true, box = true, boxColour = true, boxBorder = true,
         padding = true, texture = true, background = true, border = true, borderColour = true,
         pipFill = true, pipEmpty = true, pipWidth = true, pipHeight = true, pipSpacing = true,
         badgeSize = true, badgeSpacing = true, badgeOrientation = true, badgeInitial = true }
     local function SetPartStyle(profileKey, key, field, value)
         if not S.PartKey(key) or not STYLE_FIELDS[field] then return false end
+        if field == "fontSize" and value ~= nil and not S.InRange(S.STYLE_FONT_SIZE, value) then return false end
         return MutateProfile(profileKey, function(profile)
             profile.styles = profile.styles or {}
             local style = Table.DeepCopy(profile.styles[key] or {})

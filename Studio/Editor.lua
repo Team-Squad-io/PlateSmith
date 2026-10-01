@@ -20,9 +20,17 @@ local editorContextForKey = {
     name = "name", level = "level", guild = "guild", targetName = "targetName",
     health = "health", power = "power", cast = "cast", quest = "quest", questLoot = "questLoot",
     raidIcon = "raidIcon", relationshipIcon = "relationshipIcon", pvpIcon = "pvpIcon", classification = "classification",
-    buffs = "buffs", debuffs = "debuffs", threat = "threat", combo = "combo", targetedBy = "targetedBy",
+    buffs = "buffs", debuffs = "debuffs", threat = "threat", combo = "combo", targetedBy = "targetedBy", tagged = "tagged",
 }
 for index = 1, VALUE_SLOT_COUNT do editorContextForKey["value" .. index] = "value" end
+-- Settings search finds a part's Display rows through it (Search.lua).
+Options.editorContextForKey = editorContextForKey
+
+-- The inspector context for a part now: Blizzard's own name has its font rows only.
+function Options:EditorPartContext(key)
+    if key == "name" and self:IsEditorBlizzardNames() then return "blizzardName" end
+    return editorContextForKey[key]
+end
 local editorDescriptions = {
     name = L["The unit's name."],
     level = L["The unit's level. By default it is pinned left of the name."],
@@ -148,6 +156,7 @@ end
 
 -- A component's name in Studio: a custom value's own name when it has one.
 function Options:EditorComponentLabel(key)
+    if key == "name" and self:IsEditorBlizzardNames() then return L["Name (drawn by Blizzard)"] end
     local position = type(key) == "string" and not key:match("^group%.%d+$") and self.editorLayout and self.editorLayout[key]
     if position and position.name and not key:match("^value%d+$") then return position.name end
     if type(key) == "string" and key:match("^value%d+$") then
@@ -366,6 +375,10 @@ function Options:RefreshEditorComponentList(settings, revealKey)
     end
     local width, y, revealTop, tops, rows = content:GetWidth(), 0, nil, {}, {}
     local headers = {}
+    -- Blizzard's own friendly plate (dungeons): its name is the one part; nothing can be added,
+    -- grouped, hidden or placed.
+    local native = self:IsEditorBlizzardNames(settings)
+    if self.editorAddButton then PS.SaveBar.SetAvailable(self.editorAddButton, not native) end
     -- The Plate row: the whole plate's size and scale.
     local plateRow = self.editorPlateRow
     if plateRow then
@@ -373,8 +386,8 @@ function Options:RefreshEditorComponentList(settings, revealKey)
         plateRow:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
         plateRow:SetWidth(width)
         plateRow:SetSelected(self.editorInspectingPlate)
-        plateRow:SetShown(query == "")
-        if query == "" then
+        plateRow:SetShown(query == "" and not native)
+        if query == "" and not native then
             tops[#tops + 1] = 0
             rows[#rows + 1] = { frame = plateRow, top = 0, height = HEADER_HEIGHT - 2 }
             y = HEADER_HEIGHT + 2
@@ -426,6 +439,8 @@ function Options:RefreshEditorComponentList(settings, revealKey)
             button:SetPoint("TOPLEFT", content, "TOPLEFT", indent, -y)
             button:SetWidth(width - indent)
             button.label:SetText(self:EditorComponentLabel(key))
+            -- Without its eye (Blizzard's own name), the label takes the eye's place.
+            button.label:SetPoint("LEFT", button, "LEFT", native and 35 or 70, 0)
             tops[#tops + 1] = y
             rows[#rows + 1] = { frame = button, top = y, height = ROW_HEIGHT - 1, key = key, partKey = key,
                 parentKey = parentKey, depth = depth }
@@ -438,7 +453,10 @@ function Options:RefreshEditorComponentList(settings, revealKey)
                 end
                 button.connectors[1]:SetHeight(last and 15 or ROW_HEIGHT)
             end
-            if button.visibility then button.visibility:SetChecked(self:IsEditorPartShown(key, settings)) end
+            if button.visibility then
+                button.visibility:SetChecked(self:IsEditorPartShown(key, settings))
+                button.visibility:SetShown(not native)
+            end
             -- A part with children folds like a group.
             if button.fold then
                 button.fold:SetShown(#children > 0)
@@ -779,7 +797,10 @@ function Options:ShowEditorMenu(entries, anchor)
 end
 
 function Options:OpenEditorAddMenu(anchor) self:ShowEditorMenu(self:EditorAddMenuEntries(), anchor) end
-function Options:OpenEditorContextMenu(key, anchor) self:ShowEditorMenu(self:EditorContextMenuEntries(key), anchor) end
+function Options:OpenEditorContextMenu(key, anchor)
+    if self:IsEditorBlizzardNames() then return end
+    self:ShowEditorMenu(self:EditorContextMenuEntries(key), anchor)
+end
 
 function Options:RefreshEditorInspectorContext()
     local key = self.selectedComponent
@@ -801,17 +822,23 @@ function Options:RefreshEditorInspectorContext()
         nameEdit:SetShown(renamable)
         if self.editorComponentTitle then self.editorComponentTitle:SetShown(not renamable) end
     end
+    local selectedContext = group and "group" or plate and "plate" or key and (self:EditorPartContext(key) or "other")
+    local native = selectedContext == "blizzardName"
     if self.editorComponentDescription then
         self.editorComponentDescription:SetText(group and L["A group of parts."]
             or plate and L["The whole plate, for this plate type: its scale, and a quick layout to place parts by position."]
+            or native and L["Blizzard draws friendly plates in dungeons and raids. It allows names only, class "
+                .. "colours and the name's font; the font changes Blizzard's shared nameplate fonts (all text on "
+                .. "Blizzard's plates)."]
             or key and (editorDescriptions[key] or L["A part of the plate."]) or "")
     end
-    local selectedContext = group and "group" or plate and "plate" or key and (editorContextForKey[key] or "other")
-    local movable = key and self:IsEditorComponentRelevant(key)
+    local movable = key and not native and self:IsEditorComponentRelevant(key)
         and editorDefinitions[key] and editorDefinitions[key].movable ~= false
     -- What the inspector shows (Inspector's sections read it as they lay out).
     self.editorInspectorSelection = { key = key, group = group and groupKey or nil, plate = plate,
         context = selectedContext, movable = movable and true or false }
+    -- A part's own rows are built the first time it is selected.
+    if self.BuildEditorContext then self:BuildEditorContext(selectedContext) end
     if group and self.groupControlsRefresh then self.groupControlsRefresh() end
     for contextKey, frame in pairs(self.editorContextFrames or {}) do
         frame:SetShown(contextKey == selectedContext)
@@ -864,6 +891,11 @@ end
 function Options:SelectEditorComponent(key, plate)
     -- An open colour picker belongs to the part it was opened for: close it before the selection
     -- changes, so it cannot write to the next part.
+    -- Blizzard's own friendly plate has one part, always selected.
+    if self:IsEditorBlizzardNames() then
+        key, plate = "name", nil
+        self.editorSelectedGroup = nil
+    end
     if key ~= self.selectedComponent and ColorPickerFrame and ColorPickerFrame.IsShown and ColorPickerFrame:IsShown() then
         ColorPickerFrame:Hide()
     end
@@ -1292,7 +1324,7 @@ function Options:UpdateEditorResize()
 end
 
 function Options:StartEditorResize(handle)
-    if type(GetCursorPosition) ~= "function" then return end
+    if type(GetCursorPosition) ~= "function" or self:IsEditorBlizzardNames() then return end
     local key = self.selectedComponent
     local groupKey = not key and self.editorSelectedGroup
     local cursorX, cursorY = GetCursorPosition()
@@ -1523,8 +1555,12 @@ function Options:UpdateEditorSelectionHandles()
     else
         local component = key and self.editorComponents and self.editorComponents[key]
         local position = component and self.editorLayout and self.editorLayout[key]
-        if component and position and position.visible ~= false and component:IsShown() then target = component end
+        if component and position and (position.visible ~= false or component.previewNative) and component:IsShown() then
+            target = component
+        end
     end
+    -- Blizzard's own name: the outline only, as nothing on its plate can be resized.
+    local fixed = target ~= nil and target.previewNative
     if not target then
         handles:Hide()
         self:UpdateEditorFamilyOutline(nil)
@@ -1567,7 +1603,9 @@ function Options:UpdateEditorSelectionHandles()
         -- else its corners, as it scales evenly.
         local corner = handle.sx ~= 0 and handle.sy ~= 0
         local usable
-        if groupKey then
+        if fixed then
+            usable = false
+        elseif groupKey then
             usable = corner
         elseif bar then
             usable = (handle.sx ~= 0 and handle.sy == 0 and bar.width) or (handle.sy ~= 0 and handle.sx == 0 and bar.height)
@@ -1582,7 +1620,7 @@ function Options:UpdateEditorSelectionHandles()
 end
 
 function Options:SetEditorComponentVisibility(key, visible)
-    if not self:IsEditorComponentRelevant(key) then return false end
+    if not self:IsEditorComponentRelevant(key) or self:IsEditorBlizzardNames() then return false end
     if not (self.editorLayout and self.editorLayout[key]) then return false end
     -- The refresh redraws the tree and the inspector; clicking another part's eye selects it.
     WritePartVisibility(self, key, visible and true or false)
@@ -1597,6 +1635,9 @@ function Options:PositionEditorComponent(key)
     if not component or not position then return end
     component:ClearAllPoints()
     local originX, originY, positionScale, scale = self:EditorPlacement(key)
+    -- Blizzard's own dungeon names: no PlateSmith layout applies (an old layout's scale would draw
+    -- one tab's sample smaller than the other's at the same font size).
+    if self:IsEditorBlizzardNames() then scale = 1 end
     component:SetScale(scale)
     -- Pinned to a parent's edge: anchored to the parent's drawn text or frame, as on the plates,
     -- so it meets the name exactly however wide it renders.
@@ -1654,8 +1695,10 @@ function Options:EditorTreeIndex(settings)
     local layout, rank, shown, tree = self.editorLayout or {}, {}, {}, {}
     for position, key in ipairs(editorOrder) do rank[key] = position end
     local buttons = self.editorComponentButtons
+    -- Blizzard's own name stands alone: no groups.
+    local groups = not self:IsEditorBlizzardNames(settings)
     for key, position in pairs(layout) do
-        if type(position) == "table" and (key:match("^group%.%d+$")
+        if type(position) == "table" and ((groups and key:match("^group%.%d+$"))
             or (buttons and buttons[key] ~= nil and self:IsEditorComponentRelevant(key, settings))) then
             shown[key] = true
         end
@@ -1723,7 +1766,7 @@ end
 
 -- A selected group: the inspector shows it, and dragging any member in the preview moves them all.
 function Options:SelectEditorGroup(groupKey)
-    if not (self.editorLayout and self.editorLayout[groupKey]) then return false end
+    if not (self.editorLayout and self.editorLayout[groupKey]) or self:IsEditorBlizzardNames() then return false end
     self.editorSelectedGroup = groupKey
     self:SelectEditorComponent(nil)
     self:RefreshEditorGroupOutlines()
@@ -1873,6 +1916,7 @@ function Options:ShowEditorTreeDrop(place)
 end
 
 function Options:StartEditorTreeDrag(kind, key)
+    if self:IsEditorBlizzardNames() then return end
     self.editorTreeDrag = { kind = kind, key = key }
     local editor = self.editor
     if editor and not self.editorTreeGhost then
@@ -2092,6 +2136,7 @@ end
 
 function Options:SetEditorComponentPosition(key, x, y, snap)
     if not self:IsEditorComponentRelevant(key) or editorDefinitions[key].movable == false then return false end
+    if self:IsEditorBlizzardNames() then return false end
     x, y = tonumber(x), tonumber(y)
     if not x or not y or x ~= x or y ~= y then return false end
     if snap then
@@ -2111,7 +2156,7 @@ end
 
 -- light (a slider step): only the preview's layout follows; letting go refreshes the inspector.
 function Options:SetEditorComponentScale(key, scale, light)
-    if not self:IsEditorComponentRelevant(key) then return false end
+    if not self:IsEditorComponentRelevant(key) or self:IsEditorBlizzardNames() then return false end
     scale = tonumber(scale)
     if not scale or scale ~= scale then return false end
     scale = Schema.ComponentScale(scale)
@@ -2239,6 +2284,10 @@ end
 
 function Options:StartEditorDrag(key, component)
     if editorDefinitions[key].movable == false then return end
+    if self:IsEditorBlizzardNames() then
+        if self.selectedComponent ~= key then self:SelectEditorComponent(key) end
+        return
+    end
     -- With a custom group selected, dragging one of its members moves the whole group.
     local groupKey = self.editorSelectedGroup
     local member = groupKey and self:IsEditorUnder(key, groupKey)
@@ -2265,6 +2314,7 @@ end
 
 function Options:StopEditorDrag(key, component)
     if editorDefinitions[key].movable == false then return end
+    if self:IsEditorBlizzardNames() and not self.editorDrag then return end
     if self.editorDrag and self.editorDrag.key == key then self:UpdateEditorDrag() end
     component:SetScript("OnUpdate", nil)
     if self.editorSnapGuideX then self.editorSnapGuideX:Hide() end
@@ -2371,8 +2421,28 @@ function Options:Refresh(light)
     end
     self.refreshing = false
     if failure then PS.Chat.ReportError("options refresh", failure) end
-    self:RefreshEditorAppearance(settings)
+    -- Dungeon Players and Friendly NPCs switch between Blizzard's name and the overlay's parts with a
+    -- setting (the overlay test, a Revert or an import), not only with the plate type.
+    local native = self:IsEditorBlizzardNames(settings)
+    if self.editorComponents and self.editorBlizzardNamesShown ~= nil and native ~= self.editorBlizzardNamesShown then
+        self:RebuildEditorPlateView()
+    else
+        self.editorBlizzardNamesShown = native
+        self:RefreshEditorAppearance(settings)
+    end
     if not light then self:ApplyEditorTheme() end
+end
+
+-- The open plate type's view changed under it: the tree, preview and inspector start again as a
+-- plate-type switch does (the name selected, the preview fitted), without leaving Settings.
+function Options:RebuildEditorPlateView()
+    self.editorBlizzardNamesShown = self:IsEditorBlizzardNames()
+    self.editorSelectedGroup, self.editorInspectingPlate = nil, false
+    self.editorPreviewFit = true
+    self:ReloadEditorLayoutCopy()
+    self:RefreshEditorAppearance(PS.GetSettings())
+    self:SelectEditorComponent("name")
+    if self.LayoutEditorSettingsPanels then self:LayoutEditorSettingsPanels() end
 end
 
 -- What a dragged slider changes, and nothing else: the preview's look, layout and outline (as

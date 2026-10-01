@@ -579,6 +579,40 @@ local function SkinDropdown(dropdown)
     dropdown.studioSkin = { dropdown }
 end
 
+-- The inspector's labels and the kit's segments, cards and sections in the current look, from
+-- position marks[list] + 1 of each list (marks nil: all of them). Studio builds pages and contexts
+-- on demand (Inspector.lua), so their pieces are given the look as they are made.
+local THEMED_LISTS = { "editorSegments", "editorCards", "editorSections" }
+local function PaintKitObjects(self, marks)
+    local kit, inspector = self.inspectorKit, self.editorInspector
+    local labels = kit and inspector and inspector.studioInkLabels or {}
+    for index = (marks and marks.labels or 0) + 1, #labels do
+        local entry = labels[index]
+        local label = entry.label
+        kit.Ink(label, label.studioInk or (entry.colour[1] > 0.9 and entry.colour[3] < 0.5 and "title" or "label"))
+    end
+    for _, key in ipairs(THEMED_LISTS) do
+        local list = self[key] or {}
+        for index = (marks and marks[key] or 0) + 1, #list do list[index]:Paint() end
+    end
+end
+
+-- Where each themed list ends now, for PaintEditorThemeSince after something is built.
+function Options:EditorThemeMarks()
+    local inspector = self.editorInspector
+    local marks = { labels = inspector and inspector.studioInkLabels and #inspector.studioInkLabels or 0,
+        fields = #(self.editorKitFields or {}) }
+    for _, key in ipairs(THEMED_LISTS) do marks[key] = #(self[key] or {}) end
+    return marks
+end
+
+function Options:PaintEditorThemeSince(marks)
+    if not self.editor then return end
+    PaintKitObjects(self, marks)
+    local fields = self.editorKitFields or {}
+    for index = (marks.fields or 0) + 1, #fields do fields[index]:Layout() end
+end
+
 function Options:ApplyEditorTheme()
     local editor = self.editor
     if not editor then return end
@@ -599,13 +633,7 @@ function Options:ApplyEditorTheme()
     -- The inspector's kit (UI/Layout.lua) inks in the palette for the current look: each label
     -- keeps its role; one the kit did not ink is a heading when its template was gold, else a label.
     local kit = self.inspectorKit
-    for _, entry in ipairs(kit and self.editorInspector and self.editorInspector.studioInkLabels or {}) do
-        local label = entry.label
-        kit.Ink(label, label.studioInk or (entry.colour[1] > 0.9 and entry.colour[3] < 0.5 and "title" or "label"))
-    end
-    for _, list in ipairs({ self.editorSegments, self.editorCards, self.editorSections }) do
-        for _, object in ipairs(list or {}) do object:Paint() end
-    end
+    PaintKitObjects(self)
     if kit and self.editorComponentNameEdit then kit.Ink(self.editorComponentNameEdit, "label") end
     if kit and self.editorComponentTitle then kit.Ink(self.editorComponentTitle, "label") end
     -- Small hints grow and brighten in high contrast.
@@ -648,21 +676,17 @@ local SETTINGS_CATEGORIES = {
     { key = "studio", label = L["Studio"], summary = L["Studio's size and accessibility. Personal; never needs Save."] },
     { key = "help", label = L["Help"], summary = L["How Blueprint Studio works, and PlateSmith's commands."] },
 }
-local DUNGEON_CATEGORY = { key = "dungeonFriendly", label = L["Dungeon friendlies"],
-    summary = L["Blizzard keeps friendly plates in dungeons; these are the options it allows."] }
 
 function Options:SettingsCategoryList()
     local list = {}
     for _, category in ipairs(SETTINGS_CATEGORIES) do
         if not category.hidden then list[#list + 1] = category end
     end
-    if self.editorContext == "dungeon" then table.insert(list, 2, DUNGEON_CATEGORY) end
     return list
 end
 
--- A category's key, label and summary, listed now or not (Dungeon friendlies).
+-- A category's key, label and summary, listed now or not.
 function Options:SettingsCategoryInfo(key)
-    if key == DUNGEON_CATEGORY.key then return DUNGEON_CATEGORY end
     for _, category in ipairs(SETTINGS_CATEGORIES) do
         if category.key == key then return category end
     end
@@ -708,6 +732,8 @@ function Options:LayoutEditorSettingsPanels()
     -- Search results replace the category's page (which is not laid out: it lent them its rows).
     local search = self.settingsSearch
     local searching = search and search.IsActive() or false
+    -- A page is built the first time it shows.
+    if settingsOpen and not searching and self.EditorSettingsPage then self:EditorSettingsPage(current) end
     -- The shown page is laid out at the page's width (its sections in one or two columns).
     for _, panel in ipairs(self.editorSettingsPanels or {}) do
         panel:ClearAllPoints()
@@ -737,6 +763,7 @@ end
 
 -- Studio or Settings (the header toggle). "components" is Studio; any settings page opens Settings.
 function Options:SetEditorInspectorPage(page)
+    if page ~= "components" and self.EditorSettingsPage then self:EditorSettingsPage(page) end
     if not self.editorInspectorPages or not self.editorInspectorPages[page] then return end
     self.editorInspectorPage = page
     local settingsOpen = page ~= "components"
@@ -1058,12 +1085,16 @@ function Options:FitVisualEditorToScreen()
         editor:SetResizeBounds(1440, 900, math.max(1440, math.floor((screenWidth - 40) / chosen)),
             math.max(900, math.floor((screenHeight - 40) / chosen)))
     end
-    if self.editorStudioScaleText then
-        self.editorStudioScaleText:SetText(PS.UI.Controls.PercentText(self:GetStudioScale()))
-        self.editorStudioSmaller:SetEnabled(self:GetStudioScale() > PS.ProfileSchema.studioScaleRange[1])
-        self.editorStudioLarger:SetEnabled(self:GetStudioScale() < PS.ProfileSchema.studioScaleRange[2])
-    end
+    self:RefreshStudioScaleControls()
     self:ReflowVisualEditor()
+end
+
+-- Settings › Studio's size row (built with that page, when it is first shown).
+function Options:RefreshStudioScaleControls()
+    if not self.editorStudioScaleText then return end
+    self.editorStudioScaleText:SetText(PS.UI.Controls.PercentText(self:GetStudioScale()))
+    self.editorStudioSmaller:SetEnabled(self:GetStudioScale() > PS.ProfileSchema.studioScaleRange[1])
+    self.editorStudioLarger:SetEnabled(self:GetStudioScale() < PS.ProfileSchema.studioScaleRange[2])
 end
 
 -- The client loads a texture file the first time something shows it, drawing nothing until it

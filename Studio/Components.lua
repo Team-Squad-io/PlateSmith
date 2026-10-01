@@ -215,6 +215,7 @@ PS.RegisterEditorComponent("cast", {
         component.previewIcon = bar:CreateTexture(nil, "OVERLAY")
         component.previewIcon:SetTexture("Interface\\Icons\\Spell_Fire_FlameBolt")
         component.previewIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        component.previewStyleTexts = { component.previewSpell, component.previewTime }
     end,
     -- Test values: casting fills it with the spell's name; one that cannot be interrupted is grey,
     -- or with Colour by interrupt, the colour interruptible and interruptReady choose.
@@ -454,7 +455,7 @@ local SAMPLE_CLASS_COLOURS = { WARRIOR = { 0.78, 0.61, 0.43 }, PRIEST = { 1, 1, 
 PS.RegisterEditorComponent("targetedBy", {
     label = L["Targeted by"], x = -90, y = 0, width = 46, height = 10, visible = false,
     create = function(component)
-        component.previewBadges = {}
+        component.previewBadges, component.previewStyleTexts = {}, {}
         for index = 1, #TARGETED_BY_SAMPLES do
             local badge = { edge = component:CreateTexture(nil, "BORDER"), fill = component:CreateTexture(nil, "ARTWORK"),
                 text = component:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall") }
@@ -462,6 +463,7 @@ PS.RegisterEditorComponent("targetedBy", {
             badge.fill:SetPoint("BOTTOMRIGHT", badge.edge, "BOTTOMRIGHT", -1, 1)
             badge.text:SetPoint("CENTER", badge.edge, "CENTER", 0, 0)
             component.previewBadges[index] = badge
+            component.previewStyleTexts[index] = badge.text
         end
     end,
     refresh = function(component, profile)
@@ -516,6 +518,8 @@ PS.RegisterEditorComponent("quest", {
         component.previewText:SetTextColor(1, 0.82, 0)
         component.previewProgress = component:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         component.previewProgress:SetTextColor(1, 0.82, 0)
+        -- Its style is the progress text's: on the plates the mark is a picture.
+        component.previewStyleTexts = { component.previewProgress }
     end,
     -- Test values: lit on a quest unit, faint otherwise (so it can still be found and placed). The
     -- progress text shows its sample beside the mark or in its place.
@@ -614,12 +618,24 @@ PS.RegisterEditorComponent("classification", {
 
 -- Aura previews hold a full row of sample icons and are laid out by the plates' own aura
 -- layout (PS.LayoutAuraRow), so count, size, spacing and growth read the same in Studio.
+-- Each sample icon has a sample countdown, drawn by the plates' own countdown rules
+-- (PS.AuraCountdownFont, PS.PlaceAuraCountdown): its Display font, size, outline, shadow and place.
+local SAMPLE_COUNTDOWNS = { "12", "2m", "15m", "9", "45", "1h", "3m", "8" }
 local function CreateAuraPreview(component, textures)
-    component.auraIcons = {}
+    component.auraIcons, component.auraCountdowns = {}, {}
     for index = 1, 8 do
         local icon = component:CreateTexture(nil, "OVERLAY")
         icon:SetTexture(textures[(index - 1) % #textures + 1])
         component.auraIcons[index] = icon
+        local countdown = component:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        if countdown.SetDrawLayer then countdown:SetDrawLayer("OVERLAY", 7) end
+        countdown:SetText(SAMPLE_COUNTDOWNS[index])
+        -- Its own shadow, to go back to when the row's Shadow choice is cleared.
+        local okColour, r, g, b, a = pcall(countdown.GetShadowColor, countdown)
+        local okOffset, x, y = pcall(countdown.GetShadowOffset, countdown)
+        countdown.plateSmithPlainShadow = okColour and { r, g, b, a } or nil
+        countdown.plateSmithPlainOffset = okOffset and { x, y } or { 0, 0 }
+        component.auraCountdowns[index] = countdown
     end
 end
 
@@ -628,7 +644,29 @@ local function RefreshAuraPreview(kind)
         local layout = profile and profile.auraLayouts and profile.auraLayouts[kind]
         if not layout or not PS.LayoutAuraRow then return end
         PS.LayoutAuraRow(component, component.auraIcons, layout, layout.count)
-        for index, icon in ipairs(component.auraIcons) do icon:SetShown(index <= layout.count) end
+        local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
+        local path, size, flags, shadow, position
+        if PS.AuraCountdownFont then path, size, flags, shadow, position = PS.AuraCountdownFont(layout, settings) end
+        for index, icon in ipairs(component.auraIcons) do
+            local shown = index <= layout.count
+            icon:SetShown(shown)
+            local countdown = component.auraCountdowns and component.auraCountdowns[index]
+            if countdown then
+                countdown:SetShown(shown and layout.showDuration ~= false and path ~= nil)
+                if path then
+                    countdown:SetFont(path, size, flags)
+                    PS.PlaceAuraCountdown(countdown, icon, position)
+                    local plain, offset = countdown.plateSmithPlainShadow, countdown.plateSmithPlainOffset
+                    if shadow ~= nil then
+                        countdown:SetShadowColor(0, 0, 0, shadow and 1 or 0)
+                        countdown:SetShadowOffset(1, -1)
+                    elseif plain and plain[1] then
+                        countdown:SetShadowColor(plain[1], plain[2], plain[3], plain[4])
+                        countdown:SetShadowOffset(offset[1] or 0, offset[2] or 0)
+                    end
+                end
+            end
+        end
     end
 end
 

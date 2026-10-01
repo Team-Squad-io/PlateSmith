@@ -235,7 +235,7 @@ function PS.CreateVisualEditor()
         Options:UpdateEditorPulse()
         if PS.Profiles.IsDirty() then UnsavedChangesDialog():Show() end
     end)
-    editor:SetScript("OnShow", function()
+    local function Opened()
         -- Tree moves keep a stacked part where its stack draws it (the preview's sizes).
         Options:SupplyEditorMeasure()
         Options:FitVisualEditorToScreen()
@@ -244,6 +244,11 @@ function PS.CreateVisualEditor()
         Options:SelectEditorComponent(Options.selectedComponent or "health")
         Options:UpdateEditorPulse()
         Options:FitEditorPreview() -- opens fitted: as large as fits, up to 200%, centred
+    end
+    -- The client reports an error in a script handler itself, so OnShow catches its own and closes.
+    editor:SetScript("OnShow", function()
+        local ok, failure = pcall(Opened)
+        if not ok then Options:FailEditorOpen(failure) end
     end)
     -- The kit's controls take Studio's look as they are made inside it.
     editor.skinControl = chrome.SkinControl
@@ -818,9 +823,30 @@ end
 -- Studio (DIALOG) opens above Blizzard's Settings window (HIGH) rather than closing it: closing it from addon
 -- code (HideUIPanel) tainted the panel manager, which later blocked the spellbook, action
 -- bar layout and Escape's SpellStopCasting.
+--
+-- A build or open that fails (the client stops a script that runs too long, which it did to Studio's
+-- first open in a dungeon) must not leave the window shown but undrawn: it is hidden, the error is
+-- reported, and one chat line says what to do. A half-built Studio is not shown again until /reload.
+function Options:FailEditorOpen(failure, broken)
+    if broken then self.editorBroken = true end
+    self.editorJustBuilt = nil
+    if self.editor and self.editor:IsShown() then self.editor:Hide() end
+    PS.Chat.ReportError("studio open", failure)
+    PS.Chat.Print(L["Blueprint Studio could not open. Type /reload, then /ps to try again."])
+end
+
 function PS.OpenVisualEditor()
+    if Options.editorBroken then
+        PS.Chat.Print(L["Blueprint Studio could not open. Type /reload, then /ps to try again."])
+        return false
+    end
     local built = Options.editor == nil
-    local editor = PS.CreateVisualEditor()
+    local ok, editor = pcall(PS.CreateVisualEditor)
+    if not ok then
+        Options:FailEditorOpen(editor, true)
+        return false
+    end
     Options.editorJustBuilt = built or nil
     editor:Show()
+    return editor:IsShown() and true or false
 end

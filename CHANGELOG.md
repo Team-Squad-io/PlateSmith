@@ -2,6 +2,49 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.1.1
+
+Your profiles and Blueprints carry over and look the same as before.
+
+### New
+
+- **Display: one place for every text's look.** Every part that draws text has a **Display**
+  section in Blueprint Studio: first what it shows, then always **Font**, **Font size**, **Font
+  style** and **Shadow**. **Style** now holds only looks (the box behind text, bar textures, pips
+  and badges).
+  - **Font size** is in points. Left on **Auto**, a text keeps today's size; move the slider to set
+    your own, tick Auto to go back.
+  - Cast bar text, quest progress, the combo count, Targeted by initials and buff/debuff countdowns
+    now take a font, size and style too.
+- **Bigger, tidier countdowns on buffs and debuffs.** Select Buffs or Debuffs and change
+  **Display › Font size**. Countdowns now sit centred on the icon so "15m" and "2m" line up;
+  **Text position** offers Bottom centre, Centre, Top centre or the old corner. Studio's preview
+  shows sample countdowns.
+- **Hide permanent auras.** A buff or debuff row's **Display › Permanent** hides auras without a time
+  limit (passives, Devotion Aura, Find Herbs), so the row shows what will run out. Off by default.
+  In dungeons, where the game keeps aura times private, every aura still shows.
+- **Dungeon friendlies in Studio.** In dungeons Blizzard draws friendly plates itself. Studio's
+  **Dungeon** layout now shows just that: on Players and Friendly NPCs, one part, **Name (drawn by
+  Blizzard)**, with everything the game allows (change Blizzard's names, where, names only, class
+  colours, font, size and style) and a preview of the name.
+  - The **Settings › Dungeon friendlies** page is gone. Its options are in that Studio view,
+    **Readable Blizzard names outdoors** is in Behaviour & display › Names, and **Test editable
+    overlay** is in Settings › Experimental. Search finds each in its new place.
+  - The overlay test never drew (the game blocks it), so it is turned off once on updating; a chat
+    line says so if it was on. Turn it back on under Experimental to try it.
+
+### Fixed
+
+- **Studio opening invisible** after a reload, mostly in dungeons or combat. Studio now builds each
+  part and Settings page when you first open it, so it opens quickly; if it ever fails, it closes
+  and says to /reload.
+- **Dungeon friendly names at different sizes**, or resetting in combat. Blizzard name size now
+  applies to every name, straight after each plate appears, and keeps the game's own font flags.
+- **Countdowns in dungeons** keep your font, size and position on new auras.
+- **Error floods:** "Box behind" text in Orgrimmar and dungeons ("attempt to perform arithmetic on
+  local 'width'"), and "blocked by secret aspects" from aura countdowns in dungeons.
+- `/ps diagnose` no longer lists a known, harmless lookup the game refuses as a problem.
+
 ## 1.1.0
 
 A feature update. Profiles from 1.0.3 carry over; nothing needs setting up again.

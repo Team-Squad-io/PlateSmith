@@ -108,11 +108,14 @@ local function IndexPage(root, place, fields)
 end
 
 -- The index's sources, one per page: Studio's Settings pages, then PlateSmith's Blizzard pages.
+-- Studio builds a Settings page the first time it is wanted, so a source builds its page (one a
+-- step, within the budget) before reading its rows.
 local function Sources()
     local sources = {}
-    for _, panel in ipairs(Options.editorSettingsPanels or {}) do
-        local key = panel.settingsKey
+    for _, key in ipairs(Options.editorSettingsPageOrder or {}) do
         sources[#sources + 1] = function()
+            local panel = Options:EditorSettingsPage(key)
+            if not panel then return end
             local info = Options:SettingsCategoryInfo(key)
             IndexPage(panel, "studio", { category = key, panel = panel, pageLabel = info and info.label or key })
         end
@@ -172,24 +175,44 @@ function Search.Reset()
     PS.Ticker.SetEnabled(INDEX_TICKER, false)
 end
 
--- The parts this plate type's tree lists, as entries (built for each search: plate types differ).
+-- The parts this plate type's tree lists, as entries (built for each search: plate types differ),
+-- each one's Display rows (Font, Font size, Font style, Shadow; an aura row's Timed only and Text
+-- position too) as "Part › Display" rows, and
+-- Blizzard's name rows on Dungeon › Players.
 local function PartEntries()
     local entries, settings = {}, PS.GetSettings and PS.GetSettings()
     local order = #index.entries
     for key in pairs(Options.editorLayout or {}) do
         if not key:match("^group%.%d+$") and Options:IsEditorComponentRelevant(key, settings) then
             order = order + 1
-            entries[#entries + 1] = Prepare({ place = "part", key = key, label = Options:EditorComponentLabel(key),
+            local label = Options:EditorComponentLabel(key)
+            entries[#entries + 1] = Prepare({ place = "part", key = key, label = label,
                 path = L["Part in the Studio tree"], order = order })
+            for _, row in ipairs(Options.EditorDisplayRows and Options:EditorDisplayRows(key) or {}) do
+                order = order + 1
+                entries[#entries + 1] = Prepare({ place = "partRow", key = key, label = row.label, frame = row.frame,
+                    section = row.section, partLabel = label, path = Path(label, L["Display"]), order = order })
+            end
+        end
+    end
+    -- Blizzard's name rows on Dungeon › Players (names only, class colours, its font) while another
+    -- view is open. With the overlay test on, that tab shows the overlay's parts instead.
+    if not Options:IsEditorBlizzardNames(settings) and not (settings and settings.experimentalDungeonFriendlyText == true)
+        and Options.EditorDungeonNameRows then
+        local partLabel = L["Name (drawn by Blizzard)"]
+        for _, row in ipairs(Options:EditorDungeonNameRows()) do
+            order = order + 1
+            entries[#entries + 1] = Prepare({ place = "dungeonNameRow", key = "name", label = row.label, partLabel = partLabel,
+                path = Path(L["Dungeon"], L["Players"], partLabel, L["Display"]), order = order })
         end
     end
     return entries
 end
 
--- Whether an entry can be shown now: its category is listed (Dungeon friendlies only in the
--- Dungeon layout), and its row was not hidden by its page (a folded section's rows still count).
+-- Whether an entry can be shown now: its category is listed, and its row was not hidden by its
+-- page (a folded section's rows still count).
 local function Available(entry, categories)
-    if entry.place == "part" then return true end
+    if entry.place == "part" or entry.place == "partRow" or entry.place == "dungeonNameRow" then return true end
     if entry.place == "studio" and not categories[entry.category] then return false end
     local frame, kit = entry.frame, entry.place == "studio" and Options.settingsKit or entry.page and entry.page.settingsKit
     if frame.IsShown and not frame:IsShown() then
@@ -341,12 +364,42 @@ local function RevealPart(entry)
     Flash(Options.editorComponentButtons and Options.editorComponentButtons[entry.key])
 end
 
+-- A part's Display row: the part selected, its section unfolded, the inspector scrolled to the row.
+-- A row listed before its part's rows were built is found once selecting the part has built them.
+local function RevealPartRow(entry)
+    RevealPart(entry)
+    local frame, section = entry.frame, entry.section
+    if not frame then
+        for _, row in ipairs(Options:EditorDisplayRows(entry.key) or {}) do
+            if row.label == entry.label and row.frame then frame, section = row.frame, row.section end
+        end
+    end
+    if not frame then return end
+    Unfold(Options.inspectorKit, section)
+    Options:LayoutEditorInspector()
+    local offset = OffsetIn(frame, Options.editorComponentContent)
+    local bar = Options.editorComponentScrollBar
+    if offset and bar and bar.ScrollToOffset then bar:ScrollToOffset(math.max(0, offset - REVEAL_MARGIN)) end
+    Flash(frame)
+end
+
+-- A row of Blizzard's name on Dungeon › Players: Studio opens that tab, then the row as a part's.
+local function RevealDungeonNameRow(entry)
+    Options:SetEditorContext("dungeon")
+    Options:SetEditorProfile("friendlyPlayer")
+    RevealPartRow({ key = entry.key, label = entry.label })
+end
+
 -- Goes to a result: its category, section unfolded, scrolled to and flashed.
 function Search.Pick(entry)
     if not entry then return false end
     Search.Clear()
     if entry.place == "part" then
         RevealPart(entry)
+    elseif entry.place == "partRow" then
+        RevealPartRow(entry)
+    elseif entry.place == "dungeonNameRow" then
+        RevealDungeonNameRow(entry)
     elseif entry.place == "blizzard" then
         return RevealBlizzardSetting(entry)
     else
@@ -440,6 +493,12 @@ end
 
 local function LineText(entry)
     if entry.place == "part" then return string.format(L["Select part in Studio › %s"], entry.label) end
+    if entry.place == "partRow" then
+        return string.format(L["Select part in Studio › %s"], Path(entry.partLabel, L["Display"], entry.label))
+    end
+    if entry.place == "dungeonNameRow" then
+        return string.format(L["Select part in Studio › %s"], Path(entry.path, entry.label))
+    end
     return string.format(L["Open in Blizzard Settings › %s"], Path(entry.pageLabel, entry.sectionTitle, entry.label))
 end
 

@@ -169,7 +169,8 @@ local NAME_LETTERS, LETTER_WIDTH = 12, 0.5
 local function StaticMeasure(profile, textScale)
     local width = tonumber(profile.width) or 112
     local healthHeight = tonumber(profile.healthHeight) or 10
-    local font = S.ScaledFontSize(tonumber(profile.nameFontSize) or 14, textScale)
+    local styles = type(profile.styles) == "table" and profile.styles or nil
+    local font = S.ScaledFontSize(S.StyledFontSize(tonumber(profile.nameFontSize) or 14, styles and styles.name), textScale)
     return function(key)
         if key == "health" then return width, healthHeight end
         if key == "power" then return tonumber(profile.powerWidth) or width, tonumber(profile.powerHeight) or 5 end

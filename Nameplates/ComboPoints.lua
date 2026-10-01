@@ -134,12 +134,12 @@ function Combo._Reset()
 end
 
 -- The plate side. context: active (unit -> plate), RunBatch, MarkStacks, MarkValues, Styles,
--- AnchorPart (Placement), ApplyNameplateFont. The part's frames are made the first time a plate
+-- AnchorPart (Placement). The part's frames are made the first time a plate
 -- shows it, so a class without combo points never makes any, and its events are registered only
 -- while a layout shows the part or reads {combo} (SetWanted) and the class can have them.
 PS._CreatePlateCombo = function(context)
     local active, RunBatch, MarkStacks, MarkValues = context.active, context.RunBatch, context.MarkStacks, context.MarkValues
-    local Styles, AnchorPart, ApplyNameplateFont = context.Styles, context.AnchorPart, context.ApplyNameplateFont
+    local Styles, AnchorPart = context.Styles, context.AnchorPart
     local Pass = { wanted = false }
     -- target: the plate of your target, as UpdateTarget last said.
     local watch = {}
@@ -176,7 +176,7 @@ PS._CreatePlateCombo = function(context)
             pip.fill:SetColorTexture(fill.r, fill.g, fill.b, fill.a or 1)
         end
         local profile = data.profile or EMPTY
-        ApplyNameplateFont(data.comboText, math.max(8, (profile.nameFontSize or 14) - 2))
+        Styles.StyledFont(data, "combo", data.comboText, math.max(8, (profile.nameFontSize or 14) - 2))
         data.comboText:SetTextColor(fill.r, fill.g, fill.b)
         data.comboDrawn = nil
     end

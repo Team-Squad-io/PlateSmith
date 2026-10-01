@@ -52,7 +52,6 @@ PS._CreatePlateStyles = function(context)
     local DEFAULT_BOX_EDGE = S.STYLE_DEFAULTS.boxBorder
     local DEFAULT_BAR_EDGE = { r = 0, g = 0, b = 0, a = 1 }
     -- Backdrops are shared, never changed after creation: SetBackdrop keeps a reference.
-    local BOX_BACKDROP = { bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 }
     local borderBackdrops = {}
     local function BorderBackdrop(size)
         local backdrop = borderBackdrops[size]
@@ -148,6 +147,23 @@ PS._CreatePlateStyles = function(context)
         StyledShadow(data, style, region)
     end
 
+    -- The box's fill and 1 px edges as plain textures, not a backdrop: it is anchored to its text,
+    -- whose width the client keeps secret in instances, and a backdrop works out its texture
+    -- coordinates from its size (Blizzard's Backdrop errors on a secret width).
+    local function BoxFrame(parent)
+        local box = CreateFrame("Frame", nil, parent)
+        box.fill = box:CreateTexture(nil, "BACKGROUND")
+        box.fill:SetAllPoints(box)
+        local top, bottom = box:CreateTexture(nil, "BORDER"), box:CreateTexture(nil, "BORDER")
+        local left, right = box:CreateTexture(nil, "BORDER"), box:CreateTexture(nil, "BORDER")
+        top:SetPoint("TOPLEFT", box, "TOPLEFT") top:SetPoint("TOPRIGHT", box, "TOPRIGHT") top:SetHeight(1)
+        bottom:SetPoint("BOTTOMLEFT", box, "BOTTOMLEFT") bottom:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT") bottom:SetHeight(1)
+        left:SetPoint("TOPLEFT", box, "TOPLEFT") left:SetPoint("BOTTOMLEFT", box, "BOTTOMLEFT") left:SetWidth(1)
+        right:SetPoint("TOPRIGHT", box, "TOPRIGHT") right:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT") right:SetWidth(1)
+        box.edges = { top, bottom, left, right }
+        return box
+    end
+
     -- A box behind a text part (the "level box"): fill, border and padding around the text. It
     -- follows the text's size and, through SyncStyleBoxes, its shown state and opacity.
     function Styles.StyledBox(data, key, region)
@@ -159,21 +175,17 @@ PS._CreatePlateStyles = function(context)
             return
         end
         if not box then
-            box = CreateFrame("Frame", nil, data.overlay, "BackdropTemplate")
+            box = BoxFrame(data.overlay)
             data.styleBoxes[key] = box
         end
         local padding = style.padding or S.STYLE_DEFAULTS.padding
         box:ClearAllPoints()
         box:SetPoint("TOPLEFT", region, "TOPLEFT", -padding, padding)
         box:SetPoint("BOTTOMRIGHT", region, "BOTTOMRIGHT", padding, -padding)
-        if box.plateSmithBackdrop ~= BOX_BACKDROP then
-            box:SetBackdrop(BOX_BACKDROP)
-            box.plateSmithBackdrop = BOX_BACKDROP
-        end
         local fill = style.boxColour or DEFAULT_BOX_FILL
-        box:SetBackdropColor(fill.r, fill.g, fill.b, fill.a or 1)
+        box.fill:SetColorTexture(fill.r, fill.g, fill.b, fill.a or 1)
         local edge = style.boxBorder or DEFAULT_BOX_EDGE
-        box:SetBackdropBorderColor(edge.r, edge.g, edge.b, edge.a or 1)
+        for _, line in ipairs(box.edges) do line:SetColorTexture(edge.r, edge.g, edge.b, edge.a or 1) end
         box.plateSmithStyled = true
     end
 

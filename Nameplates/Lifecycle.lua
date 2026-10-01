@@ -1080,8 +1080,9 @@ local function ApplyCastLayout(data, height, fontSize)
         icon:SetPoint("RIGHT", cast, "LEFT", -2, 0)
     end
     if profile.castIcon == "off" then icon:Hide() end
-    ApplyNameplateFont(time, fontSize)
-    ApplyNameplateFont(name, fontSize)
+    -- The spell's name and time in the cast part's Display choices (font, size, outline, shadow).
+    Styles.StyledFont(data, "cast", time, fontSize)
+    Styles.StyledFont(data, "cast", name, fontSize)
     time:ClearAllPoints()
     time:SetPoint("RIGHT", cast, "RIGHT", -3, 0)
     time:SetJustifyH("RIGHT")
@@ -1832,6 +1833,7 @@ local function FitSpotlight(data)
         beacon:SetAllPoints(overlay)
         rect.left, rect.right, rect.bottom, rect.top, rect.centre = nil, nil, nil, nil, nil
     end
+    PlateParts.ApplyChevronFont(data)
     data.beaconLeft:ClearAllPoints()
     data.beaconLeft:SetPoint("RIGHT", beacon, "LEFT", -2, chevronY)
     data.beaconRight:ClearAllPoints()
@@ -2637,6 +2639,8 @@ for _, name in ipairs({ "CreateComponentGroup", "RenameComponentGroup", "SetComp
     PS[name] = PlateSettings[name]
 end
 PS.ApplyNameplateFont = ApplyNameplateFont
+-- A part's text in its style (font, Font size, outline, shadow), for parts drawn outside this file.
+PS.StyledPartFont = Styles.StyledFont
 PS.ApplyThreatText = ApplyThreatText
 PS.HighlightPlate = HighlightPlate
 PS.ExternalProvider = ExternalProvider

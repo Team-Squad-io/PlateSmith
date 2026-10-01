@@ -461,8 +461,12 @@ function QuestProgress.Display(data, markShown)
     end
     if label then
         if shown then
-            if PS.ApplyNameplateFont then
-                PS.ApplyNameplateFont(label, math.max(8, ((data.profile and data.profile.nameFontSize) or 12) - 2))
+            -- In the quest part's Display choices (font, size, outline, shadow).
+            local size = math.max(8, ((data.profile and data.profile.nameFontSize) or 12) - 2)
+            if PS.StyledPartFont then
+                PS.StyledPartFont(data, "quest", label, size)
+            elseif PS.ApplyNameplateFont then
+                PS.ApplyNameplateFont(label, size)
             end
             label:SetText(text)
             label:ClearAllPoints()

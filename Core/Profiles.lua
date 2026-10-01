@@ -149,6 +149,10 @@ function Profiles.NoteMigration(name, note)
         PS.Chat.Print(string.format(PS.L["Threat rules in %s were turned off because Show threat details was off in "
             .. "1.0.3. Turn them on in Studio › Rules."], tostring(name)))
     end
+    if type(note) == "table" and note.dungeonOverlayOff then
+        PS.Chat.Print(string.format(PS.L["The dungeon friendly overlay test was turned off in %s; it is now under "
+            .. "Settings › Experimental if you want to try it again."], tostring(name)))
+    end
 end
 
 function Profiles.Load()

@@ -64,9 +64,20 @@ local function MakeEditorComponent(parent, key, width, height)
     return component
 end
 
+-- In dungeons and raids Blizzard draws friendly plates itself, and addons cannot draw on or size
+-- them. Unless the test overlay is on, Studio's Dungeon Players and Friendly NPCs show only what
+-- can change there: the name's font, which is Blizzard's shared one (Nameplates/NativeFonts.lua).
+function Options:IsEditorBlizzardNames(settings)
+    if self.editorContext ~= "dungeon" then return false end
+    if self.editorProfile ~= "friendlyPlayer" and self.editorProfile ~= "friendlyNPC" then return false end
+    settings = settings or (type(PS.GetSettings) == "function" and PS.GetSettings())
+    return not (settings and settings.experimentalDungeonFriendlyText == true)
+end
+
 -- Whether this plate type uses key (and it is on the plate: not deleted, unless includeRemoved).
 function Options:IsEditorComponentRelevant(key, settings, includeRemoved)
     if not editorDefinitions[key] then return false end
+    if self:IsEditorBlizzardNames(settings) then return key == "name" end
     -- The quest loot bag is the quest marker's other look (it swaps in, in the same place), so
     -- Studio shows the one Quest marker.
     if key == "questLoot" then return false end
@@ -95,9 +106,20 @@ function Options:IsEditorComponentRelevant(key, settings, includeRemoved)
     return key ~= "relationshipIcon" and key ~= "pvpIcon" and key ~= "classification" and key ~= "guild"
 end
 
--- Styles in the preview, over what each component's refresh has just drawn: fonts, outline,
--- shadow and box on text; texture, background and border on bars.
+-- Styles in the preview, over what each component's refresh has just drawn: font, Font size,
+-- outline, shadow and box on text; texture, background and border on bars. A part whose text is not
+-- its previewText (the cast bar's spell and time, the quest mark's progress, the badges' initials)
+-- lists it as previewStyleTexts.
 local PREVIEW_WHITE = "Interface\\Buttons\\WHITE8X8"
+local function PreviewTextStyle(text, style, settings)
+    if style.font or style.outline or style.fontSize then
+        PS.ApplyNameplateFont(text, text.plateSmithFontSize or settings.nameFontSize or 12, style)
+    end
+    if style.shadow ~= nil and text.SetShadowColor then
+        text:SetShadowColor(0, 0, 0, style.shadow and 1 or 0)
+        text:SetShadowOffset(1, -1)
+    end
+end
 function Options:ApplyEditorPreviewStyles(profile)
     local styles = profile and profile.styles or {}
     -- The health bar shows the test health % (Test values).
@@ -106,19 +128,21 @@ function Options:ApplyEditorPreviewStyles(profile)
     if health and health.previewBar and testPercent then health.previewBar:SetValue(testPercent) end
     local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or {}
     for key, component in pairs(self.editorComponents or {}) do
-        local style = styles[key]
+        -- Blizzard's own name takes none of PlateSmith's styles.
+        local style = not component.previewNative and styles[key] or nil
         local text, bar = component.previewText, component.previewBar
+        local styled = component.previewStyleTexts
         -- The plates' own font route (Nameplates/Factory), at the size the part's refresh gave it.
-        if text and style and (style.font or style.outline) and type(PS.ApplyNameplateFont) == "function" then
-            PS.ApplyNameplateFont(text, text.plateSmithFontSize or settings.nameFontSize or 12, style)
-        end
-        if text and style and style.shadow ~= nil and text.SetShadowColor then
-            text:SetShadowColor(0, 0, 0, style.shadow and 1 or 0)
-            text:SetShadowOffset(1, -1)
+        if style and type(PS.ApplyNameplateFont) == "function" then
+            if styled then
+                for _, region in ipairs(styled) do PreviewTextStyle(region, style, settings) end
+            elseif text then
+                PreviewTextStyle(text, style, settings)
+            end
         end
         -- The box behind the text.
         local box = component.styleBox
-        if text and style and style.box then
+        if text and not styled and style and style.box then
             if not box then
                 box = CreateFrame("Frame", nil, component, "BackdropTemplate")
                 box:SetFrameLevel(math.max(0, component:GetFrameLevel() - 1))
@@ -201,7 +225,7 @@ function Options:ApplyEditorPreviewRules(profile)
     end
     for key, component in pairs(components) do
         local parent = layout[key] and layout[key].parent
-        if component.targetPreviewVisible and parent and HiddenUnder(parent, 0) then
+        if component.targetPreviewVisible and not component.previewNative and parent and HiddenUnder(parent, 0) then
             component:SetAlpha((component.GetAlpha and component:GetAlpha() or 1) * 0.12)
             component.previewRuleHidden = true
         end
@@ -216,7 +240,7 @@ function Options:ApplyEditorPreviewPartRules(profile)
     local percent = tonumber(samples["health.percent"]) or 72
     for key, list in pairs(rules) do
         local component = self.editorComponents and self.editorComponents[key]
-        if component and component:IsShown() then
+        if component and component:IsShown() and not component.previewNative then
             local colour, alpha, hide
             for _, rule in ipairs(list) do
                 -- A rule turned off never applies, not even as if its condition held.
@@ -244,12 +268,13 @@ function Options:ApplyEditorPreviewPartRules(profile)
 end
 
 local function SetTargetPreviewStrength(options, strength)
+    -- Blizzard's own name keeps its look (PlateSmith's target glow is not on its plates).
     for _, component in ipairs(options.targetPreviewTexts or {}) do
-        local text = component.previewText
-        if strength and component.targetPreviewVisible then
+        local text = not component.previewNative and component.previewText
+        if text and strength and component.targetPreviewVisible then
             text:SetShadowColor(1, 0.7, 0.14, strength)
             text:SetShadowOffset(1, -1)
-        else
+        elseif text then
             local original = component.targetPreviewShadow
             text:SetShadowColor(original[1], original[2], original[3], original[4])
             text:SetShadowOffset(original[5], original[6])
@@ -321,12 +346,72 @@ local function SampleNameColour(samples)
     return 1, 0.9, 0.35
 end
 
+-- Blizzard's friendly names in a dungeon, as its plates draw them: a class-coloured player, a green
+-- NPC. Its font: the chosen Blizzard name font while that is on (it applies in every instance
+-- whatever its Where), else Blizzard's own (NativeFonts' original, else the client's standard face).
+local BLIZZARD_NAME_SAMPLES = {
+    friendlyPlayer = { text = L["Judgement Misclicked"], class = "PALADIN", colour = { 0.96, 0.55, 0.73 } },
+    friendlyNPC = { text = L["Innkeeper Allison"], colour = { 0, 1, 0 } },
+}
+local BLIZZARD_NAME_OBJECT = "SystemFont_NamePlate_Outlined"
+local BLIZZARD_NAME_FALLBACK = { size = 9, flags = "OUTLINE" }
+function Options:EditorBlizzardNameFont(settings)
+    local NativeFonts = PS.NativeFonts
+    local path, size, flags
+    if NativeFonts and NativeFonts.Original then
+        path, size, flags = NativeFonts.Original(BLIZZARD_NAME_OBJECT)
+        if not path then path, size, flags = NativeFonts.Original("SystemFont_NamePlate") end
+    end
+    path = path or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+    size, flags = size or BLIZZARD_NAME_FALLBACK.size, flags or BLIZZARD_NAME_FALLBACK.flags
+    if not (settings and settings.blizzardNameFont == true) then return path, size, flags end
+    local Schema = PS.ProfileSchema
+    local outlines = NativeFonts and NativeFonts.OUTLINES or {}
+    return PS.Media.FontPath(settings.blizzardNameFontFace) or path,
+        Schema.Bounded(Schema.settingRanges.blizzardNameFontSize, settings.blizzardNameFontSize, 12),
+        outlines[settings.blizzardNameFontOutline] or "OUTLINE"
+end
+
+function Options:ApplyEditorBlizzardName(settings)
+    local component = self.editorComponents and self.editorComponents.name
+    local text = component and component.previewText
+    local sample = BLIZZARD_NAME_SAMPLES[self.editorProfile]
+    if not (text and sample) then return end
+    text:SetText(sample.text)
+    local class = sample.class and type(RAID_CLASS_COLORS) == "table" and RAID_CLASS_COLORS[sample.class]
+    local colour = sample.colour
+    if type(class) == "table" and type(class.r) == "number" then colour = { class.r, class.g, class.b } end
+    text:SetTextColor(colour[1], colour[2], colour[3])
+    local path, size, flags = self:EditorBlizzardNameFont(settings)
+    -- The plates' font route (Factory) keeps its own size mark and gives the face back on the next
+    -- refresh after this layout is left.
+    if text.SetTextScale then text:SetTextScale(1) end
+    if text.SetFont then text:SetFont(path, size, flags) end
+    -- One line, as on Blizzard's plates (a long name measured as wrapped makes a tall outline).
+    if text.SetWordWrap then
+        text:SetWordWrap(false)
+        text.previewNoWrap = true
+    end
+    text.plateSmithOwnFace = true
+    if text.SetShadowColor then
+        text:SetShadowColor(0, 0, 0, 1)
+        text:SetShadowOffset(flags == "" and 1 or 0, flags == "" and -1 or 0)
+    end
+end
+
 -- The preview's look from the settings, then its layout (sizes and text widths move stacked and
 -- pinned parts). light: a value is being dragged, so the tree and the inspector are left alone.
 function Options:RefreshEditorAppearance(settings, light)
     if not self.editorComponents or not settings then return end
     local profile = type(PS.GetPlateProfileSettings) == "function" and PS.GetPlateProfileSettings(self.editorProfile) or settings
+    local blizzardNames = self:IsEditorBlizzardNames(settings)
     for key, component in pairs(self.editorComponents) do
+        component.previewNative = blizzardNames and key == "name" or nil
+        local wrapped = component.previewText
+        if not component.previewNative and wrapped and wrapped.previewNoWrap then
+            wrapped:SetWordWrap(true)
+            wrapped.previewNoWrap = nil
+        end
         local definition = editorDefinitions[key]
         local baseText, baseFont, baseBar = component.previewBaseText, component.previewBaseFont, component.previewBaseBar
         if baseText and component.previewText then component.previewText:SetTextColor(unpack(baseText)) end
@@ -347,10 +432,14 @@ function Options:RefreshEditorAppearance(settings, light)
         local relevant = self:IsEditorComponentRelevant(key, settings)
         local globallyEnabled = relevant
             and (key ~= "pvpIcon" or settings.friendlyPvpStyle == "icon" or settings.friendlyPvpStyle == "both")
-        component.targetPreviewVisible = globallyEnabled and position and position.visible ~= false
+        -- Blizzard's own name always shows: its eye and rules are PlateSmith's, not on its plates.
+        component.targetPreviewVisible = component.previewNative
+            or globallyEnabled and position and position.visible ~= false
         component.previewFitVisible = component.targetPreviewVisible
         component:SetShown(relevant)
-        if relevant then
+        if component.previewNative then
+            component:SetAlpha(1)
+        elseif relevant then
             component:SetAlpha((position and position.visible == false) and 0.18 or (globallyEnabled and 1 or 0.35))
         end
     end
@@ -409,11 +498,14 @@ function Options:RefreshEditorAppearance(settings, light)
     -- Styles and rules last, over every colour and text set above (the sample name's colour too).
     self:ApplyEditorPreviewStyles(profile)
     self:ApplyEditorPreviewRules(profile)
+    if blizzardNames then self:ApplyEditorBlizzardName(settings) end
     -- Again, now what the rules hide is known: a hidden part's ghost goes under the drawn ones.
     self:RefreshEditorComponentLayers()
     -- Sizes and text are final: lay the parts out again from them.
     self:InvalidateEditorTransforms()
     self:RefreshEditorLayout()
+    -- Blizzard's name was given its font after the selection outline was placed: hug it again.
+    if blizzardNames then self:UpdateEditorSelectionHandles() end
     if self.editorPreviewFit and not self.editorDrag then self:FitEditorPreview(self.editorPreviewFitZoom) end
 end
 
@@ -469,12 +561,14 @@ function Options:SetEditorProfile(profileKey)
     if self.editorResetButton and self.editorResetButton.label then
         self.editorResetButton.label:SetText(profileKey == "enemyDungeon" and L["Use World"] or L["Reset settings"])
     end
+    -- This switch selects for the new view itself (below); Refresh only rebuilds a view a setting changes.
+    self.editorBlizzardNamesShown = self:IsEditorBlizzardNames()
     self:Refresh(true)
     -- Changing the plate type goes back to Studio.
     if self.editorWorkspacePage == "settings" or self.editorInspectorPage ~= "components" then
         self:SetEditorInspectorPage("components")
     elseif self.LayoutEditorSettingsPanels then
-        self:LayoutEditorSettingsPanels() -- the context decides Settings' categories
+        self:LayoutEditorSettingsPanels()
     end
     -- The Plate row (and its Quick layout) stays selected across plate types.
     if self.editorInspectingPlate and not self.selectedComponent then
