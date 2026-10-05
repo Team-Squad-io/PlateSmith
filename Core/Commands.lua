@@ -46,7 +46,9 @@ local USAGE = {
     { "/ps friendly names|full|off", L["How friendly plates show outdoors."] },
     { string.format("/ps quest on|off, threat on|off, scale %s-%s, reset", SCALE[1], SCALE[2]),
         L["Quick settings; /ps save keeps them."] },
+    { "/ps fetch <Name-Realm> <id>", L["Ask for a Blueprint shared in chat, if its link isn't clickable."] },
     { "/ps playerprobe", L["Test tools for bug reports."] },
+    { "/ps testname [text|cn|kr|ru]", L["Show text as your target's name, to check your font; no text clears it."] },
 }
 
 local function Usage()
@@ -91,6 +93,31 @@ local function Profile(name)
     end
 end
 
+-- The target's plate draws text as its name (Lifecycle's SetTestName) until cleared or the target
+-- changes; cn, kr and ru are Studio's sample names (Media.sampleNames).
+local function TestName(text)
+    if text == "" then
+        PS.SetTestName(nil)
+        return Chat.Print(L["Test name cleared."])
+    end
+    for _, sample in ipairs(PS.Media.sampleNames) do
+        if text:lower() == sample.short then text = sample.name end
+    end
+    if Secret.ReadBoolean(UnitExists, "target") == false then
+        PS.SetTestName(nil)
+        return Chat.Print(L["Target a unit first: /ps testname shows the text on your target's plate."])
+    end
+    local ok, reason = PS.SetTestName(text)
+    if ok then
+        Chat.Print(string.format(L["Your target's plate shows %s as its name until you change target. "
+            .. "/ps testname clears it."], text))
+    elseif reason == "withheld" then
+        Chat.Print(L["The game does not say which plate is your target's here."])
+    else
+        Chat.Print(L["Your target has no PlateSmith plate."])
+    end
+end
+
 -- Commands that only change a setting; each is applied through PS.SetOption, which clamps scale.
 local function Choice(key) return function(value) return S.enumSettings[key][value] and value or nil end end
 local function Switch(value) if value == "on" then return true elseif value == "off" then return false end end
@@ -127,8 +154,15 @@ function Commands.Run(text)
         Diagnose(value)
     elseif command == "perf" or command == "performance" then
         PS.DiagnosticUI.ShowPerformance()
+    elseif command == "fetch" then
+        -- The chat text's "#id" may be typed with or without its "#".
+        local sender, id = rawValue:match("^(%S+)%s+#?(%S+)$")
+        if not sender then return Usage() end
+        PS.BlueprintLink.Request(sender, id)
     elseif command == "playerprobe" then
         PS.ProbePlayerPlate()
+    elseif command == "testname" then
+        TestName(rawValue)
     elseif command == "reset" then
         PS.ResetSettings()
         if PS.Options and PS.Options.Refresh then PS.Options:Refresh() end

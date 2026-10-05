@@ -123,7 +123,8 @@ local TICK_BUDGETS = { ["plates.spares"] = 4 }
 Summary.tickBudgetMs, Summary.frameBudgetMs, Summary.maxProblems = TICK_BUDGET_MS, FRAME_BUDGET_MS, MAX_PROBLEMS
 -- Report paths a named check below already explains; the generic walk skips them.
 local EXPLAINED = { "^questProviders", "^protectedAction", "^dungeonFriendlyOverlay", "^target%.debuffs%.nativeContainerError",
-    "^conflicts", "^addons", "^modules", "^stacking%.originals" }
+    "^target%.buffs%.nativeContainerError", "^target%.%a+%.container%.", "^conflicts", "^addons", "^modules",
+    "^stacking%.originals" }
 
 local function Field(value, ...)
     for index = 1, select("#", ...) do
@@ -234,6 +235,10 @@ local function PerformanceText(performance)
     local average = type(profiler.recentAverageMs) == "number"
         and string.format(L["%.2f ms/frame"], profiler.recentAverageMs)
         or Text(profiler.state or profiler.recentAverageMs, L["profiler unavailable"])
+    -- PlateSmith's own timed work first when the report has it; the client profiler's figure covers all
+    -- PlateSmith code (Studio, untimed hooks, this report) over the client's own window.
+    local timed = Field(performance, "frames", "recentAverageMs")
+    if type(timed) == "number" then average = string.format(L["%.2f ms/frame timed (client profiler %s)"], timed, average) end
     -- The recent window's own peak (ticker runs and timed events), else the profiler's.
     local peak
     for _, entry in pairs(type(performance.ticker) == "table" and performance.ticker or {}) do
@@ -326,6 +331,14 @@ function Summary.Problems(report, extras)
     if type(studio) == "string" and type(active) == "string" and studio ~= "" and studio ~= "none"
         and studio ~= "nil" and studio ~= active then
         Add(string.format(L["Studio is editing profile \"%s\", but the plates use \"%s\"."], studio, active))
+    else
+        -- Same profile, another design: edits to it do not show on the plates here.
+        local studioDesign, platesDesign = Field(report, "profile", "studioDesign"), Field(report, "profile", "platesDesign")
+        if type(studioDesign) == "string" and type(platesDesign) == "string" and studioDesign ~= "none"
+            and platesDesign ~= "none" and studioDesign ~= platesDesign then
+            Add(string.format(L["Studio is editing the %s design, but the plates here use %s."], studioDesign,
+                platesDesign))
+        end
     end
     -- The report's stacking section, else (a live report, not a saved capture) the engine's own.
     local stacking = report.stacking
@@ -360,6 +373,8 @@ function Summary.Problems(report, extras)
     end
     local containerError = Field(report, "target", "debuffs", "nativeContainerError")
     if containerError then Add(string.format(L["The debuff container failed: %s"], OneLine(containerError, 100))) end
+    local buffContainerError = Field(report, "target", "buffs", "nativeContainerError")
+    if buffContainerError then Add(string.format(L["The buff container failed: %s"], OneLine(buffContainerError, 100))) end
     for _, provider in ipairs(type(report.questProviders) == "table" and report.questProviders or {}) do
         if Field(provider, "status") == "failed" then
             Add(string.format(L["Quest provider %s failed and was switched off."], Text(provider.id)))
@@ -378,7 +393,8 @@ function Summary.Problems(report, extras)
         Add(string.format(L["The client's %s setting is on (%s); it costs frame time. /console %s 0 turns it off."], name,
             Text(Field(report, "performance", "debugSettings", name)), name))
     end
-    local average = Field(report, "performance", "profiler", "recentAverageMs")
+    local average = Field(report, "performance", "frames", "recentAverageMs")
+    if type(average) ~= "number" then average = Field(report, "performance", "profiler", "recentAverageMs") end
     if type(average) == "number" and average > FRAME_BUDGET_MS then
         Add(string.format(L["PlateSmith averages %.2f ms per frame (budget %.1f ms)."], average, FRAME_BUDGET_MS))
     end

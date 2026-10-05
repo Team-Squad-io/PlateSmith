@@ -35,6 +35,9 @@ local Controls = assert(PS.UI and PS.UI.Controls, "PlateSmith Controls missing")
 --   ruleUnder               a section's rule runs under its title (default: a divider above it)
 --   helpAsTooltip           a row's help (ControlHelp) is its tooltip, on its label and a "?" after
 --                           the label, not a paragraph under it; its state (Note) stays under it
+--   marks                   what ChangedMark asks about an area (the kit knows nothing of what an
+--                           area is): State(area) -> changed, elsewhere, resettable; Tip(area) -> lines
+--                           or nil; Reset(area); resetLabel (the reset button's tooltip title)
 local Layout = {}
 PS.UI.Layout = Layout
 
@@ -49,6 +52,8 @@ Layout.TOKENS = {
     -- of the x it is given and is 20 px wider than its width (Controls.Dropdown).
     CHECK_W = 26, CHECK_INSET = 4, CHECK_TEXT_GAP = 6, DROPDOWN_INSET = 16, DROPDOWN_PADDING = 20,
     LINE_H = 14, FONT = 12, SEGMENT_FONT = 11, FIELD_FONT = 12, FONT_PATH = "Fonts\\FRIZQT__.TTF",
+    -- ChangedMark: the diamond's side (turned 45 degrees), its gap to the row, the reset button's size.
+    MARK_SIZE = 7, MARK_GAP = 5, RESET_ICON = 14,
 }
 
 -- Palettes: text ink by role (label, value, muted, title, sub, error, ok, hint), text shadow,
@@ -67,6 +72,7 @@ Layout.PALETTES = {
             error = { 0.62, 0.08, 0.03 },
             ok = { 0.10, 0.40, 0.10 },
             hint = { 0.60, 0.55, 0.46 },    -- a placeholder inside a dark field
+            changed = { 0.58, 0.38, 0.0 },  -- #946100: changed in the open design (ChangedMark)
         },
         shadow = 0,
         divider = PARCHMENT_LINE,
@@ -79,7 +85,8 @@ Layout.PALETTES = {
     -- Studio in high contrast: a dark panel, white text, gold titles.
     contrast = {
         ink = { label = { 1, 1, 1 }, value = { 0.92, 0.92, 0.9 }, muted = { 0.86, 0.86, 0.82 }, title = { 1, 0.86, 0.3 },
-            sub = { 0.86, 0.86, 0.82 }, error = { 1, 0.5, 0.45 }, ok = { 0.55, 1, 0.55 }, hint = { 0.6, 0.6, 0.6 } },
+            sub = { 0.86, 0.86, 0.82 }, error = { 1, 0.5, 0.45 }, ok = { 0.55, 1, 0.55 }, hint = { 0.6, 0.6, 0.6 },
+            changed = { 1, 0.82, 0 } },
         shadow = 1,
         divider = { 0.6, 0.6, 0.6, 1 },
         hover = { 1, 1, 1, 0.1 },
@@ -92,7 +99,7 @@ Layout.PALETTES = {
     studio = {
         ink = { label = { 0.87, 0.85, 0.81 }, value = { 0.95, 0.93, 0.88 }, muted = { 0.72, 0.70, 0.66 },
             title = { 0.89, 0.75, 0.13 }, sub = { 0.80, 0.70, 0.45 }, error = { 1, 0.45, 0.38 }, ok = { 0.55, 0.9, 0.5 },
-            hint = { 0.55, 0.53, 0.5 } },
+            hint = { 0.55, 0.53, 0.5 }, changed = { 1, 0.82, 0 } },
         shadow = 1,
         divider = { 0.55, 0.45, 0.28, 0.7 },
         hover = { 1, 0.9, 0.6, 0.06 },
@@ -104,7 +111,8 @@ Layout.PALETTES = {
     -- normal gold titles, grey help).
     blizzard = {
         ink = { label = { 1, 1, 1 }, value = { 1, 1, 1 }, muted = { 0.62, 0.62, 0.62 }, title = { 1, 0.82, 0 },
-            sub = { 1, 0.82, 0 }, error = { 1, 0.1, 0.1 }, ok = { 0.1, 1, 0.1 }, hint = { 0.5, 0.5, 0.5 } },
+            sub = { 1, 0.82, 0 }, error = { 1, 0.1, 0.1 }, ok = { 0.1, 1, 0.1 }, hint = { 0.5, 0.5, 0.5 },
+            changed = { 1, 0.82, 0 } },
         shadow = 1,
         divider = { 0.45, 0.45, 0.45, 0.8 },
         hover = { 1, 1, 1, 0.06 },
@@ -558,6 +566,133 @@ function Layout.New(config)
         return frame
     end
 
+    -- A "changed here" mark on row (or a section: its band and title) for the area areaFn names: a
+    -- table, or a function returning one (nil: no mark now). config.marks says what it is. Changed:
+    -- the text is inked "changed", a small diamond sits MARK_GAP left of the row (in the panel's
+    -- padding) and a reset button follows the text, its tooltip config.marks.Tip's lines. Otherwise
+    -- the row looks as it does, but when the area is changed elsewhere, pointing at the text shows
+    -- those lines. options: text (the text inked; default the row's label, a label-less check's text
+    -- or the section's title), anchor (what the diamond sits left of; default the row or band),
+    -- after (the reset button follows it instead of the text), tipFrame (a frame whose own tooltip
+    -- gets the lines, instead of a zone over the text), resetLeft (the button sits left of the
+    -- diamond: a mark on a control rather than a label). K.RefreshMarks() redraws every mark.
+    local RESET_FILE = "Interface\\Buttons\\UI-RefreshButton"
+    local marks = config.marks
+    K.marks = {}
+    -- owned: owner's tooltip is already up (its own title); else the row's label is the title.
+    local function ShowMarkTip(mark, owner, owned)
+        local lines = mark.current and marks and marks.Tip(mark.current)
+        if not (lines and #lines > 0 and GameTooltip) then return false end
+        if not (owned or GameTooltip.IsOwned and GameTooltip:IsOwned(owner)) then
+            GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+            GameTooltip:SetText(mark.row.kitSearchLabel or mark.text and mark.text:GetText() or "", 1, 1, 1)
+        end
+        for _, line in ipairs(lines) do GameTooltip:AddLine(line, 1, 0.82, 0, true) end
+        GameTooltip:Show()
+        return true
+    end
+    local function HideMarkTip() if GameTooltip then GameTooltip:Hide() end end
+    -- The reset button after the text (a label too long for both is cut short while it shows).
+    local function PlaceReset(mark)
+        local reset, text, options = mark.reset, mark.text, mark.options
+        reset:ClearAllPoints()
+        local after = options.after or mark.row.helpIcon
+        if options.resetLeft or not (after or text) then
+            reset:SetPoint("RIGHT", mark.diamond, "LEFT", -K.MARK_GAP, 0)
+            return
+        end
+        if after then
+            reset:SetPoint("LEFT", after, "RIGHT", K.MARK_GAP, 0)
+            return
+        end
+        local width = text.GetStringWidth and text:GetStringWidth() or 0
+        if mark.room then
+            local fit = mark.room - K.MARK_GAP - K.RESET_ICON
+            local narrow = reset:IsShown() and width > fit
+            text:SetWidth(narrow and fit or mark.room)
+            if narrow then width = fit end
+        end
+        reset:SetPoint("LEFT", text, "LEFT", width + K.MARK_GAP, 0)
+    end
+    -- The diamond and reset button, made the first time the area is changed (most rows never are).
+    local function MarkPieces(mark)
+        if mark.diamond then return end
+        local holder, options = mark.holder, mark.options
+        local diamond = holder:CreateTexture(nil, "OVERLAY")
+        diamond:SetSize(K.MARK_SIZE, K.MARK_SIZE)
+        if diamond.SetRotation then diamond:SetRotation(math.pi / 4) end
+        diamond:SetPoint("RIGHT", options.anchor or holder, "LEFT", -K.MARK_GAP, 0)
+        mark.diamond = diamond
+        local reset = CreateFrame("Button", nil, holder)
+        reset:SetSize(K.RESET_ICON, K.RESET_ICON)
+        reset:SetNormalTexture(RESET_FILE)
+        reset:SetHighlightTexture(RESET_FILE, "ADD")
+        reset:SetScript("OnClick", function()
+            if mark.current and marks then marks.Reset(mark.current) end
+        end)
+        reset:SetScript("OnEnter", function(button)
+            if not GameTooltip then return end
+            GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+            GameTooltip:SetText(marks and marks.resetLabel or "", 1, 1, 1)
+            if not ShowMarkTip(mark, button, true) then GameTooltip:Show() end
+        end)
+        reset:SetScript("OnLeave", HideMarkTip)
+        mark.reset = reset
+    end
+    -- Pointing at the text shows the lines: through a frame's own tooltip, or a zone over the text
+    -- (made when first needed; it takes the pointer only while it has something to say).
+    local function MarkZone(mark)
+        if mark.zone or mark.hooked then return end
+        local tipFrame = mark.options.tipFrame or mark.row.helpZone or mark.row.band
+        if tipFrame then
+            tipFrame:HookScript("OnEnter", function(frame) ShowMarkTip(mark, frame) end)
+            tipFrame:HookScript("OnLeave", HideMarkTip)
+            mark.hooked = true
+        elseif mark.text then
+            local zone = CreateFrame("Frame", nil, mark.holder)
+            zone:SetAllPoints(mark.text)
+            zone:SetScript("OnEnter", function(frame) ShowMarkTip(mark, frame) end)
+            zone:SetScript("OnLeave", HideMarkTip)
+            mark.zone = zone
+        end
+    end
+    function K.ChangedMark(row, areaFn, options)
+        options = options or {}
+        local text = options.text or row.label or row.title or (row.control and row.control.label)
+        local mark = { row = row, holder = row.band or row, area = areaFn, text = text, options = options,
+            room = text ~= nil and text == row.label and row.labelRoom or nil }
+        function mark:Refresh()
+            local area = self.area
+            if type(area) == "function" then area = area() end
+            local changed, elsewhere, resettable = false, false, false
+            if area and marks then changed, elsewhere, resettable = marks.State(area) end
+            self.current, self.changed, self.elsewhere = area, changed and true or false, elsewhere and true or false
+            if self.changed then MarkPieces(self) end
+            if self.changed or self.elsewhere then MarkZone(self) end
+            if self.diamond then
+                Paint(self.diamond, K.Palette().ink.changed or K.Palette().ink.title)
+                self.diamond:SetShown(self.changed)
+                self.reset:SetShown(self.changed and resettable and true or false)
+                PlaceReset(self)
+            end
+            local label = self.text
+            if label and self.changed then
+                if label.studioInk ~= "changed" then self.ink = label.studioInk or "label" end
+                K.Ink(label, "changed")
+            elseif label and label.studioInk == "changed" then
+                K.Ink(label, self.ink or "label")
+            end
+            if self.zone then self.zone:EnableMouse(self.changed or self.elsewhere) end
+        end
+        row.changedMark = mark
+        K.marks[#K.marks + 1] = mark
+        mark:Refresh()
+        return mark
+    end
+    function K.RefreshMarks()
+        for _, mark in ipairs(K.marks) do mark:Refresh() end
+    end
+
     -- A sub-heading: SUB_TOP above it, SUB_GAP below, at the labels' size in its own ink.
     function K.SubHeader(parent, text)
         local frame = CreateFrame("Frame", nil, parent)
@@ -571,6 +706,8 @@ function Layout.New(config)
 
     -- A row: ROW_H tall, its label in the label column. inset (a card's padding) moves the label
     -- in and the row's right end (row.right) back; the control column stays where every row has it.
+    -- row.labelX is where the label starts and row.labelRoom how wide it may be: a row with a widget
+    -- before its label (a swatch, a rule's box) sets both, so a "?" after the text finds its end.
     function K.Row(parent, label, inset)
         local row = CreateFrame("Frame", nil, parent)
         row:SetSize(K.WIDTH, K.ROW_H)
@@ -580,7 +717,8 @@ function Layout.New(config)
         if label then
             row.label = K.Text(row, label, "label")
             row.label:SetPoint("LEFT", row, "LEFT", row.inset, 0)
-            row.label:SetWidth(K.LABEL_W - row.inset)
+            row.labelX, row.labelRoom = row.inset, K.LABEL_W - row.inset
+            row.label:SetWidth(row.labelRoom)
             if row.label.SetWordWrap then row.label:SetWordWrap(false) end
         end
         return row
@@ -764,7 +902,9 @@ function Layout.New(config)
         swatch:SetPoint("LEFT", row, "LEFT", row.inset, 0)
         if label then
             row.label = K.Text(row, label, "label")
-            row.label:SetPoint("LEFT", row, "LEFT", row.inset + K.SWATCH + K.SWATCH_GAP, 0)
+            row.labelX = row.inset + K.SWATCH + K.SWATCH_GAP
+            row.label:SetPoint("LEFT", row, "LEFT", row.labelX, 0)
+            row.labelRoom = K.LABEL_W - row.labelX
             row.kitSearchLabel = label
         end
         local slider = swatch.alphaSlider
@@ -832,13 +972,15 @@ function Layout.New(config)
     K.HELP_ICON_FILE, K.HELP_ALPHA, K.HELP_ALPHA_LIT = HELP_ICON_FILE, HELP_ALPHA, HELP_ALPHA_LIT
     local function PlaceHelpIcon(row)
         local icon, label = row.helpIcon, row.label
-        local room = K.LABEL_W - row.inset
+        -- From where the label starts (past a swatch or box before it), within its room.
+        local start = row.labelX or row.inset
+        local room = row.labelRoom or K.LABEL_W - start
         local textWidth = label.GetStringWidth and label:GetStringWidth() or 0
         local width = room
         if textWidth + K.HELP_ICON_GAP + K.HELP_ICON > room then width = room - K.HELP_ICON_GAP - K.HELP_ICON end
         label:SetWidth(width)
         row.labelWidth = width
-        local x = row.inset + math.min(textWidth, width) + K.HELP_ICON_GAP
+        local x = start + math.min(textWidth, width) + K.HELP_ICON_GAP
         icon:ClearAllPoints()
         icon:SetPoint("LEFT", row, "LEFT", x, 0)
         if row.helpZone then row.helpZone:SetWidth(x + K.HELP_ICON) end
@@ -917,7 +1059,8 @@ function Layout.New(config)
     -- A row of mutually exclusive choices, equal widths from the control column. spec: choices
     -- ({ value, label, icon, tooltip }; icon "left", "right", "top" or "bottom" draws that arrow
     -- through config.segmentIcon), get, set, enabled(value) (a segment it refuses keeps its fill
-    -- with its word or arrow dimmed, and its tooltip adds spec.disabledTip), name, x, width
+    -- with its word or arrow dimmed, and its tooltip adds spec.disabledTip, text or a function
+    -- returning it), name, x, width
     -- (default: to the row's end, following it).
     function K.Segmented(parent, spec)
         local control = CreateFrame("Frame", spec.name, parent)
@@ -950,9 +1093,9 @@ function Layout.New(config)
                 if not GameTooltip then return end
                 GameTooltip:SetOwner(instance, "ANCHOR_RIGHT")
                 GameTooltip:SetText(choice.tooltip or choice.label)
-                if not instance:IsEnabled() and spec.disabledTip then
-                    GameTooltip:AddLine(spec.disabledTip, 1, 0.82, 0.45, true)
-                end
+                local tip = spec.disabledTip
+                if type(tip) == "function" then tip = tip() end
+                if not instance:IsEnabled() and tip then GameTooltip:AddLine(tip, 1, 0.82, 0.45, true) end
                 GameTooltip:Show()
             end)
             segment:SetScript("OnLeave", function(instance)

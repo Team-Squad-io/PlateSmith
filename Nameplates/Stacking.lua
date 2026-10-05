@@ -186,6 +186,10 @@ local function StaticMeasure(profile, textScale)
             return nil
         end
         if S.IsGroupKey(key) or key:match("^value%d+$") then return nil end
+        -- Combo points show on your target's plate only, so in a stack they take no room here. Blocks (no
+        -- shape: every profile before 1.2.0) keep the size they always had, so those plates keep theirs.
+        local combo = key == "combo" and styles and styles.combo
+        if combo and combo.pipShape then return 0, 0, true end
         return 16, 12
     end
 end
@@ -227,21 +231,31 @@ local function Union(sizes)
 end
 
 -- The plate sizes the shown layouts draw: { enemy = { w, h }, friendly = { w, h } | nil,
--- friendlyLocked = true in a dungeon or raid, where Blizzard owns friendly plates }. Enemies use
--- the dungeon override inside a group instance; friendly plates use the names-only or full
--- layouts (players' and NPCs', whichever is larger), or none while friendly plates are off.
+-- friendlyLocked = true in a dungeon or raid, where Blizzard owns friendly plates }. Each plate type
+-- uses its design for where the player is (PlateContext); enemy plates the Enemies' and Enemy
+-- players' (one size covers both), friendly plates the names-only or full layouts (players' and
+-- NPCs'), whichever is larger, or none while friendly plates are off.
+local function DesignHere(settings, plateType)
+    local context = PS.PlateContext
+    local design = context and context.DesignFor(plateType, settings) or "world"
+    return PS.Designs.For(settings, plateType, design) or settings.plateProfiles[plateType]
+end
+
 function Stacking.FrameSizes(settings)
     settings = settings or Settings()
     local profiles = settings and settings.plateProfiles
     if type(profiles) ~= "table" then return {} end
     local inInstance = NamePolicy.InGroupInstance()
-    local enemy = inInstance and profiles.enemyDungeon or profiles.enemy
-    local result = { enemy = Union({ { LayoutBounds(enemy, enemy and enemy.layout, settings.textScale) } }) }
+    local enemy, players = DesignHere(settings, "enemy"), DesignHere(settings, "enemyPlayer")
+    local enemySizes = { { LayoutBounds(enemy, enemy and enemy.layout, settings.textScale) } }
+    -- Without a layer of their own enemy players draw with the Enemies' table.
+    if players ~= enemy then enemySizes[2] = { LayoutBounds(players, players and players.layout, settings.textScale) } end
+    local result = { enemy = Union(enemySizes) }
     if inInstance then
         result.friendlyLocked = true
     elseif settings.friendly ~= "off" then
         local field = settings.friendly == "full" and "layout" or "namesLayout"
-        local player, npc = profiles.friendlyPlayer, profiles.friendlyNPC
+        local player, npc = DesignHere(settings, "friendlyPlayer"), DesignHere(settings, "friendlyNPC")
         result.friendly = Union({ { LayoutBounds(player, player and player[field], settings.textScale) },
             { LayoutBounds(npc, npc and npc[field], settings.textScale) } })
     end

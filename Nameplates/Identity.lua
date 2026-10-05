@@ -208,11 +208,8 @@ PS._CreatePlateIdentity = function(context)
                     or defaultRelationshipColours[relationship]
                 if colour then return colour.r, colour.g, colour.b end
             end
-            local _, class = UnitClass(unit)
-            if IsReadable(class) and class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class] then
-                local colour = RAID_CLASS_COLORS[class]
-                return colour.r, colour.g, colour.b
-            end
+            local r, g, b = PS.Secret.ClassColour((PS.Secret.ClassFile(unit)))
+            if r then return r, g, b end
             return 0.35, 0.75, 1
         end
 
@@ -223,14 +220,11 @@ PS._CreatePlateIdentity = function(context)
         return 0.9, 0.16, 0.16
     end
 
+    -- The plate type only; which of its designs draws here is PlateContext.DesignFor's answer. One
+    -- UnitIsPlayer read: a hostile unit is an enemy player only while the client says so readably
+    -- (withheld or secret: an NPC, the Enemies' own design).
     local function ProfileKeyForUnit(unit, friendly)
-        local db = GetSettings()
-        if not friendly then
-            if PS.NamePolicy.InGroupInstance() and db and db.plateProfiles and db.plateProfiles.enemyDungeon then
-                return "enemyDungeon"
-            end
-            return "enemy"
-        end
+        if not friendly then return IsPlayerUnit(unit) == true and "enemyPlayer" or "enemy" end
         local player = IsPlayerUnit(unit)
         if player == false then return "friendlyNPC" end
         return "friendlyPlayer"
@@ -239,7 +233,8 @@ PS._CreatePlateIdentity = function(context)
     -- Writes a plate text (name, level) unless the region already shows that readable value, as a
     -- reused frame for the same unit, a level or a social update often does. region.plateSmithText
     -- is the readable value last written; the caller is the region's only writer. A protected value
-    -- goes to the sink every time and clears the record. Returns whether the region shows value.
+    -- goes to the sink every time and clears the record. Returns whether the region shows value. The
+    -- record is written before the text, so a SetText hook (the soft glow's long name) reads the new one.
     local function SetPlateText(region, value)
         if not IsReadable(value) then
             region.plateSmithText = nil
@@ -247,8 +242,9 @@ PS._CreatePlateIdentity = function(context)
         end
         if value == nil then value = "" end
         if region.plateSmithText == value then return true end
+        region.plateSmithText = value
         local ok = pcall(region.SetText, region, value)
-        region.plateSmithText = ok and value or nil
+        if not ok then region.plateSmithText = nil end
         return ok
     end
 

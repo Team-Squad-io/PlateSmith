@@ -22,11 +22,13 @@ end
 
 local tankChoices = {
     { value = "adaptive", label = L["Adaptive"],
-        help = L["Your group role; without one, a tanking stance, presence, Righteous Fury or bear form "
-            .. "(not on a mostly Balance or Restoration druid); else your specialization."] },
+        help = L["A group Tank role; else a tanking stance, presence, Righteous Fury or bear form (not on a "
+            .. "mostly Balance or Restoration druid); else your other group role, then your specialization."] },
     { value = "always", label = L["Always"], help = L["Always treat this character as a tank."] },
     { value = "never", label = L["Never"], help = L["Never treat this character as a tank."] },
 }
+-- Studio's Threat colours has the same control (Studio/ThreatColours.lua).
+Options.tankRoleChoices = tankChoices
 local paletteChoices = {
     { value = "auto", label = L["Follow colour-blind mode"] },
     { value = "standard", label = L["Standard"] },
@@ -153,7 +155,7 @@ local function BuildRole(kit, flow)
     })
     Register(dropdown)
     kit.Add(section, row)
-    kit.Add(section, kit.ControlHelp(section, L["When threat colours, rules (role.tank) and the threat windows treat you "
+    kit.Add(section, kit.ControlHelp(section, L["When threat colours, rules and the threat windows treat you "
         .. "as a tank. Saved for this character only."]))
 end
 

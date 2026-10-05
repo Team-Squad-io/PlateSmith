@@ -4,33 +4,57 @@ local L = PS.L
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
 local BAR_BACKGROUND = S.STYLE_DEFAULTS.background -- behind every bar (Schema defines it once)
 
+-- A frame edged with four plain textures, not a backdrop: plate frames can have a size the client
+-- keeps secret, and Blizzard's Backdrop works out texture coordinates from its size on every resize
+-- (it errors on a secret width). SetBackdropBorderColor keeps the backdrop call its callers use.
+local function SetEdgeColour(frame, red, green, blue, alpha)
+    for _, edge in ipairs(frame.plateSmithEdges) do edge:SetColorTexture(red, green, blue, alpha or 1) end
+end
+local function SetEdgeSize(frame, size)
+    local edges = frame.plateSmithEdges
+    local top, bottom, left, right = edges[1], edges[2], edges[3], edges[4]
+    top:SetHeight(size) bottom:SetHeight(size) left:SetWidth(size) right:SetWidth(size)
+    frame.plateSmithEdgeSize = size
+end
+function PS.EdgeFrame(parent, size)
+    local frame = CreateFrame("Frame", nil, parent)
+    local top, bottom = frame:CreateTexture(nil, "BORDER"), frame:CreateTexture(nil, "BORDER")
+    local left, right = frame:CreateTexture(nil, "BORDER"), frame:CreateTexture(nil, "BORDER")
+    top:SetPoint("TOPLEFT", frame, "TOPLEFT") top:SetPoint("TOPRIGHT", frame, "TOPRIGHT")
+    bottom:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT") bottom:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT")
+    left:SetPoint("TOPLEFT", frame, "TOPLEFT") left:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT")
+    right:SetPoint("TOPRIGHT", frame, "TOPRIGHT") right:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT")
+    frame.plateSmithEdges = { top, bottom, left, right }
+    frame.SetBackdropBorderColor, frame.SetEdgeSize = SetEdgeColour, SetEdgeSize
+    SetEdgeSize(frame, size or 1)
+    return frame
+end
+local EdgeFrame = PS.EdgeFrame
+
 PS._CreatePlateFactory = function(context)
     local CreateAuraRow = context.CreateAuraRow
     local GetSettings = context.GetSettings
 
     local function CreateBorder(parent)
-        local border = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+        local border = EdgeFrame(parent, 1)
         border:SetPoint("TOPLEFT", parent, "TOPLEFT", -1, 1)
         border:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", 1, -1)
-        border:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
         border:SetBackdropBorderColor(0.05, 0.05, 0.05, 1)
         return border
     end
 
     local function CreateTargetBarGlow(bar)
         -- Keep both layers attached to the bar itself, never to the whole plate canvas.
-        local steady = CreateFrame("Frame", nil, bar, "BackdropTemplate")
+        local steady = EdgeFrame(bar, 1)
         steady:SetPoint("TOPLEFT", bar, "TOPLEFT", -1, 1)
         steady:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 1, -1)
-        steady:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
         steady:SetBackdropBorderColor(1, 0.72, 0.16, 0.65)
         steady:EnableMouse(false)
         steady:Hide()
 
-        local pulse = CreateFrame("Frame", nil, bar, "BackdropTemplate")
+        local pulse = EdgeFrame(bar, 2)
         pulse:SetPoint("TOPLEFT", bar, "TOPLEFT", -3, 3)
         pulse:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 3, -3)
-        pulse:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 2 })
         pulse:SetBackdropBorderColor(1, 0.68, 0.1, 0.55)
         pulse:EnableMouse(false)
         pulse:Hide()
@@ -45,12 +69,7 @@ PS._CreatePlateFactory = function(context)
     end
 
     local OUTLINE_FLAGS = { none = "", outline = "OUTLINE", thick = "THICKOUTLINE" }
-    local function ReadFont(object)
-        if not (object and object.GetFont) then return nil end
-        local ok, path, height, flags = pcall(object.GetFont, object)
-        if not ok then return nil end
-        return type(path) == "string" and path or nil, type(height) == "number" and height or nil, flags or ""
-    end
+    local ReadFont = PS.Media.ReadFont
 
     -- The one route for plate text and Studio's preview: the plate font (settings.font) at the part's
     -- Font size (style.fontSize, points; without one, size: Auto) times the profile's text size
@@ -88,9 +107,12 @@ PS._CreatePlateFactory = function(context)
             end
             flags = familyFlags or flags
         end
+        -- Never the text's current face: that may be the stale one. A chosen face or outline keeps
+        -- Blizzard's faces for other alphabets (Media.FontFamily); SetFont only where that cannot be.
+        path = path or familyPath
+        if path and PS.Media.SetFamilyFont(fontString, path, size, flags) then return end
         if not fontString.SetFont then return end
-        -- Never the text's current face: that may be the stale one.
-        path = path or familyPath or STANDARD_TEXT_FONT
+        path = path or STANDARD_TEXT_FONT
         if fontString.SetTextScale then fontString:SetTextScale(1) end
         fontString:SetFont(path, size, flags)
         fontString.plateSmithOwnFace = true
@@ -280,7 +302,7 @@ PS._CreatePlateFactory = function(context)
         castName:SetPoint("CENTER")
         ApplyNameplateFont(castName, 8)
         -- The time left inside the bar's right end, and the spell's icon beside the bar; the
-        -- profile places both (Lifecycle's ApplyCastLayout).
+        -- profile places both (Placement's CastLayout).
         local castTime = cast:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         castTime:SetPoint("RIGHT", cast, "RIGHT", -3, 0)
         ApplyNameplateFont(castTime, 8)
@@ -348,14 +370,12 @@ PS._CreatePlateFactory = function(context)
     -- The threat spotlight: a thin line with a faint glow just outside it (Lifecycle fits it).
     local function EnsureBeacon(data)
         if data.beacon then return data.beacon end
-        local beacon = CreateFrame("Frame", nil, data.overlay, "BackdropTemplate")
+        local beacon = EdgeFrame(data.overlay, 1)
         beacon:SetAllPoints(data.overlay)
-        beacon:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
         beacon:SetBackdropBorderColor(1, 0.78, 0.3, 1)
-        local beaconGlow = CreateFrame("Frame", nil, beacon, "BackdropTemplate")
+        local beaconGlow = EdgeFrame(beacon, 2)
         beaconGlow:SetPoint("TOPLEFT", beacon, "TOPLEFT", -2, 2)
         beaconGlow:SetPoint("BOTTOMRIGHT", beacon, "BOTTOMRIGHT", 2, -2)
-        beaconGlow:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 2 })
         beaconGlow:SetBackdropBorderColor(1, 0.78, 0.3, 0.22)
         beaconGlow:EnableMouse(false)
         local beaconLeft = beacon:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
@@ -371,10 +391,9 @@ PS._CreatePlateFactory = function(context)
         beaconHalo:EnableMouse(false)
         local haloRings = {}
         for index, ring in ipairs({ { 0, 1, 0.9 }, { 1, 2, 0.4 }, { 3, 2, 0.16 } }) do
-            local frame = CreateFrame("Frame", nil, beaconHalo, "BackdropTemplate")
+            local frame = EdgeFrame(beaconHalo, ring[2])
             frame:SetPoint("TOPLEFT", beaconHalo, "TOPLEFT", -ring[1], ring[1])
             frame:SetPoint("BOTTOMRIGHT", beaconHalo, "BOTTOMRIGHT", ring[1], -ring[1])
-            frame:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = ring[2] })
             frame:SetBackdropBorderColor(1, 0.78, 0.3, ring[3])
             frame:EnableMouse(false)
             frame.plateSmithAlpha = ring[3]

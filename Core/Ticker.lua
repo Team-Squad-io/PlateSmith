@@ -60,10 +60,13 @@ local function Run(entry, elapsed, now)
         entry.reportedAt = now
         PS.Chat.ReportError("ticker " .. entry.id, failure)
     end
+    return started and finished and finished - started or 0
 end
 
+-- The pass's timed entries together are the frame's ticker cost (Performance.RecordFrame).
 function Ticker.Step(elapsed)
     local now = type(GetTime) == "function" and GetTime() or 0
+    local spent = 0
     for index = 1, #entries do
         local entry = entries[index]
         if entry.enabled then
@@ -71,10 +74,11 @@ function Ticker.Step(elapsed)
             if entry.waited >= entry.interval then
                 local waited = entry.waited
                 entry.waited = entry.interval > 0 and math.min(entry.waited - entry.interval, entry.interval) or 0
-                Run(entry, waited, now)
+                spent = spent + Run(entry, waited, now)
             end
         end
     end
+    if PS.Performance and PS.Performance.RecordFrame and Clock() then PS.Performance.RecordFrame(spent) end
 end
 
 -- Each entry's peak starts again from its next run (the diagnostics' Reset peaks).

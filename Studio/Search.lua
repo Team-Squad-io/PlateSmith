@@ -177,8 +177,8 @@ end
 
 -- The parts this plate type's tree lists, as entries (built for each search: plate types differ),
 -- each one's Display rows (Font, Font size, Font style, Shadow; an aura row's Timed only and Text
--- position too) as "Part › Display" rows, and
--- Blizzard's name rows on Dungeon › Players.
+-- position too) as "Part › Display" rows, Blizzard's name rows on Players › Dungeons & raids, and the
+-- Plate row's Target highlight rows.
 local function PartEntries()
     local entries, settings = {}, PS.GetSettings and PS.GetSettings()
     local order = #index.entries
@@ -193,9 +193,19 @@ local function PartEntries()
                 entries[#entries + 1] = Prepare({ place = "partRow", key = key, label = row.label, frame = row.frame,
                     section = row.section, partLabel = label, path = Path(label, L["Display"]), order = order })
             end
+            for _, row in ipairs(Options.EditorStyleSearchRows and Options:EditorStyleSearchRows(key) or {}) do
+                order = order + 1
+                entries[#entries + 1] = Prepare({ place = "partStyleRow", key = key, label = row.label, help = row.help,
+                    partLabel = label, path = Path(label, L["Style"]), order = order })
+            end
         end
     end
-    -- Blizzard's name rows on Dungeon › Players (names only, class colours, its font) while another
+    for _, row in ipairs(Options.EditorTargetHighlightRows and Options:EditorTargetHighlightRows() or {}) do
+        order = order + 1
+        entries[#entries + 1] = Prepare({ place = "plateRow", label = row.label, help = row.help, shown = row.shown,
+            path = Path(L["Plate settings"], L["Target highlight"]), order = order })
+    end
+    -- Blizzard's name rows on Players › Dungeons & raids (names only, class colours, its font) while another
     -- view is open. With the overlay test on, that tab shows the overlay's parts instead.
     if not Options:IsEditorBlizzardNames(settings) and not (settings and settings.experimentalDungeonFriendlyText == true)
         and Options.EditorDungeonNameRows then
@@ -203,7 +213,7 @@ local function PartEntries()
         for _, row in ipairs(Options:EditorDungeonNameRows()) do
             order = order + 1
             entries[#entries + 1] = Prepare({ place = "dungeonNameRow", key = "name", label = row.label, partLabel = partLabel,
-                path = Path(L["Dungeon"], L["Players"], partLabel, L["Display"]), order = order })
+                path = Path(L["Players"], L["Dungeons & raids"], partLabel, L["Display"]), order = order })
         end
     end
     return entries
@@ -212,7 +222,11 @@ end
 -- Whether an entry can be shown now: its category is listed, and its row was not hidden by its
 -- page (a folded section's rows still count).
 local function Available(entry, categories)
-    if entry.place == "part" or entry.place == "partRow" or entry.place == "dungeonNameRow" then return true end
+    if entry.place == "part" or entry.place == "partRow" or entry.place == "partStyleRow" or entry.place == "dungeonNameRow" then
+        return true
+    end
+    -- A Target highlight row its style hides (the glow's rows under Gold edge) is not offered.
+    if entry.place == "plateRow" then return not entry.shown or entry.shown() and true or false end
     if entry.place == "studio" and not categories[entry.category] then return false end
     local frame, kit = entry.frame, entry.place == "studio" and Options.settingsKit or entry.page and entry.page.settingsKit
     if frame.IsShown and not frame:IsShown() then
@@ -383,11 +397,61 @@ local function RevealPartRow(entry)
     Flash(frame)
 end
 
--- A row of Blizzard's name on Dungeon › Players: Studio opens that tab, then the row as a part's.
+-- A part's Style row (EditorStyleSearchRows): the part selected, the Style section unfolded and scrolled to
+-- the row with that label.
+local function RevealPartStyleRow(entry)
+    RevealPart(entry)
+    local section = Options.editorStyleBlock
+    if not section then return end
+    local function Find(flow)
+        for _, item in ipairs(flow.flowItems or {}) do
+            if item.frame.kitSearchLabel == entry.label then return item.frame end
+            local found = Find(item.frame)
+            if found then return found end
+        end
+    end
+    Unfold(Options.inspectorKit, section)
+    Options:LayoutEditorInspector()
+    local frame = Find(section) or section
+    local offset = OffsetIn(frame, Options.editorComponentContent)
+    local bar = Options.editorComponentScrollBar
+    if offset and bar and bar.ScrollToOffset then bar:ScrollToOffset(math.max(0, offset - REVEAL_MARGIN)) end
+    Flash(frame)
+end
+
+-- A row of Blizzard's name on Players › Dungeons & raids: Studio opens that design, then the row as a part's.
 local function RevealDungeonNameRow(entry)
-    Options:SetEditorContext("dungeon")
-    Options:SetEditorProfile("friendlyPlayer")
+    Options:OpenEditorDesign("friendlyPlayer", "dungeon")
     RevealPartRow({ key = entry.key, label = entry.label })
+end
+
+-- The Plate row's Target highlight (Settings' link, a search result): Studio's editor with the Plate row
+-- selected, the section open, scrolled to the row labelled label (else the section) and flashed.
+function Search.RevealTargetHighlight(label)
+    if not (Options.editor and Options.editor:IsShown()) and not (PS.OpenVisualEditor and PS.OpenVisualEditor()) then
+        return false
+    end
+    -- Blizzard's own dungeon plate and the Enemy players gate have no Plate row: World's has.
+    if Options.editorPlayersGated then
+        Options:OpenEditorDesign("enemy", "world")
+    elseif Options:IsEditorBlizzardNames() then
+        Options:OpenEditorDesign(Options.editorProfile, "world")
+    end
+    Options:SetEditorInspectorPage("components")
+    Options:SelectEditorPlate()
+    local section = Options.editorTargetHighlightSection
+    if not section then return false end
+    Unfold(Options.inspectorKit, section)
+    Options:LayoutEditorInspector()
+    local target = section
+    for _, row in ipairs(Options:EditorTargetHighlightRows()) do
+        if label and row.label == label and row.frame and row.frame:IsShown() then target = row.frame end
+    end
+    local offset = OffsetIn(target, Options.editorComponentContent)
+    local bar = Options.editorComponentScrollBar
+    if offset and bar and bar.ScrollToOffset then bar:ScrollToOffset(math.max(0, offset - REVEAL_MARGIN)) end
+    Flash(target)
+    return true
 end
 
 -- Goes to a result: its category, section unfolded, scrolled to and flashed.
@@ -398,8 +462,12 @@ function Search.Pick(entry)
         RevealPart(entry)
     elseif entry.place == "partRow" then
         RevealPartRow(entry)
+    elseif entry.place == "partStyleRow" then
+        RevealPartStyleRow(entry)
     elseif entry.place == "dungeonNameRow" then
         RevealDungeonNameRow(entry)
+    elseif entry.place == "plateRow" then
+        return Search.RevealTargetHighlight(entry.label)
     elseif entry.place == "blizzard" then
         return RevealBlizzardSetting(entry)
     else
@@ -496,9 +564,13 @@ local function LineText(entry)
     if entry.place == "partRow" then
         return string.format(L["Select part in Studio › %s"], Path(entry.partLabel, L["Display"], entry.label))
     end
+    if entry.place == "partStyleRow" then
+        return string.format(L["Select part in Studio › %s"], Path(entry.partLabel, L["Style"], entry.label))
+    end
     if entry.place == "dungeonNameRow" then
         return string.format(L["Select part in Studio › %s"], Path(entry.path, entry.label))
     end
+    if entry.place == "plateRow" then return string.format(L["Open in Studio › %s"], Path(entry.path, entry.label)) end
     return string.format(L["Open in Blizzard Settings › %s"], Path(entry.pageLabel, entry.sectionTitle, entry.label))
 end
 

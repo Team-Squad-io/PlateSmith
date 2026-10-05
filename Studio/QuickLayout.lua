@@ -344,7 +344,7 @@ end
 -- showing source). One layout write, then the preview, tree and inspector follow. Save keeps it.
 function Options:SetQuickLayoutSlot(slotKey, index, choice)
     if not SLOT_BY_KEY[slotKey] or type(choice) ~= "string" or choice == "custom" then return false end
-    local variant, profileKey = self:CurrentEditorVariant(), self.editorProfile
+    local variant, profileKey = self:CurrentEditorVariant(), self:EditorTarget()
     local anchor, usable = self:QuickLayoutAnchor(), self:QuickLayoutUsable()
     if SLOT_BY_KEY[slotKey].centre and anchor == "name" then return false end
     local created
@@ -372,9 +372,6 @@ function Options:SetQuickLayoutSlot(slotKey, index, choice)
     self:Refresh(true)
     return ok and true or false
 end
-
-local PLATE_TYPES = { enemy = L["Enemies"], enemyDungeon = L["Enemies"], friendlyPlayer = L["Players"],
-    friendlyNPC = L["Friendly NPCs"] }
 
 local function RowLabel(slot, index)
     if index == 1 then return slot.label end
@@ -474,9 +471,10 @@ function Options:RefreshQuickLayout()
         if key ~= state.anchor and self:IsEditorComponentRelevant(key, nil, true) then candidates[#candidates + 1] = key end
     end
     quick.view.candidates = candidates
-    local context = self.editorContext == "dungeon" and L["Dungeon"]
-        or self:CurrentEditorVariant() == "names" and L["World, names only"] or L["World"]
-    local plate = PLATE_TYPES[self.editorProfile] or L["Enemies"]
+    local design = PS.Designs.LABELS[self.editorDesign] or L["World"]
+    local context = self.editorDesign ~= "dungeon" and self:CurrentEditorVariant() == "names"
+        and string.format(L["%s, names only"], design) or design
+    local plate = self:EditorPlateLabel(self.editorProfile)
     quick.intro.text:SetText(string.format(state.anchor == "name" and L["Places around the name, for %s (%s)."]
         or L["Places around the health bar, for %s (%s)."], plate, context))
     quick.unavailable.text:SetText(state.anchor == "name" and L["Add the name back (+ Add) to use Quick layout."]

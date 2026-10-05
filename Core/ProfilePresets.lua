@@ -13,6 +13,8 @@ PS.ProfilePresets = ProfilePresets
 -- Rule presets: each appends its rules to a part, in order. Rules are read top to bottom and the
 -- last one that holds wins, so the more specific rules come later. kind "colour" offers a preset
 -- only on parts rules can colour (bars and text). Fact names and colours are set here and nowhere else.
+local THREAT_HINT = L["Settings › Behaviour & display › Threat colours colours the health bar and name by threat "
+    .. "without rules. These rules are for your own cases, and win over it."]
 ProfilePresets.RULES = {
     { id = "healthBlend", name = L["Health colours (blend)"], kind = "colour", rules = {
         { when = "", set = "blend", stops = { { at = 0, colour = { r = 0.9, g = 0.15, b = 0.1 } },
@@ -27,13 +29,15 @@ ProfilePresets.RULES = {
     { id = "tagged", name = L["Grey when tagged"], kind = "colour", rules = {
         { when = "tagged", set = "colour", colour = { r = 0.5, g = 0.5, b = 0.5 } },
     } },
-    { id = "threatTank", name = L["Threat colours (tank)"], kind = "colour", rules = {
+    -- The threat presets stay for custom cases; their hint (the Presets menu's tooltip) points to the
+    -- Threat colours setting, which does the same without rules.
+    { id = "threatTank", name = L["Threat colours (tank)"], kind = "colour", hint = THREAT_HINT, rules = {
         { when = "role.tank and threat.holding", set = "colour", colour = { r = 0.5, g = 0.5, b = 1 } },
         { when = "role.tank and threat.losing", set = "colour", colour = { r = 1, g = 1, b = 0 } },
         { when = "role.tank and threat.offtank", set = "colour", colour = { r = 0.73, g = 0.92, b = 1 } },
         { when = "role.tank and threat.other and not threat.offtank", set = "colour", colour = { r = 1, g = 0, b = 0 } },
     } },
-    { id = "threatDps", name = L["Threat colours (DPS/healer)"], kind = "colour", rules = {
+    { id = "threatDps", name = L["Threat colours (DPS/healer)"], kind = "colour", hint = THREAT_HINT, rules = {
         { when = "not role.tank and threat.pulling", set = "colour", colour = { r = 1, g = 0.8, b = 0 } },
         { when = "not role.tank and threat.holding", set = "colour", colour = { r = 1, g = 0.11, b = 0 } },
     } },
@@ -74,7 +78,29 @@ ProfilePresets.STYLES = {
 -- Colours the presets' own styles and rules use.
 local BLACK, DARK = { r = 0, g = 0, b = 0, a = 1 }, { r = 0.06, g = 0.06, b = 0.07, a = 0.92 }
 local WHITE = { r = 1, g = 1, b = 1 }
--- Dungeon's cast bar: orange while it can be interrupted, grey while it cannot.
+-- Each look's combo points (the Enemies' combo style, replacing the default's gold coins). A row
+-- narrower than the bar stays where the defaults put it, in the Bars stack under the cast bar (it moves
+-- up under the health bar while nothing is cast); bar segments as wide as the bar sit straight under
+-- the health bar, over the cast bar (SegmentsUnderBar). In the stack the row has room at any shape and
+-- size, where above the bar or on its edge a larger shape met the name or the cast bar. Blizzard's
+-- gems fall back to round coins where the client lacks their art.
+local COMBO = {
+    classic = { pipShape = "blizzard", pipWidth = 12, pipSpacing = 2 },
+    -- Thin segments fitted to the bar's width (24.4 px each at 130; Width 24 if Fit is turned off), so a
+    -- wider or narrower bar keeps them spanning it.
+    sleek = { pipShape = "segments", pipWidth = 24, pipHeight = 3, pipSpacing = 2, pipFit = true,
+        pipFill = { r = 1, g = 0.82, b = 0.25, a = 1 } },
+    bold = { pipShape = "round", pipWidth = 13, pipSpacing = 4, pipGlow = true, pipFill = { r = 1, g = 0.72, b = 0.1, a = 1 } },
+    tank = { pipShape = "square", pipWidth = 8, pipSpacing = 3, pipFill = { r = 1, g = 0.85, b = 0.3, a = 1 } },
+    healer = { pipShape = "diamond", pipWidth = 8, pipSpacing = 2 },
+    minimal = { pipShape = "square", pipWidth = 5, pipSpacing = 2 },
+    -- Segments fitted to the bar's width (16.4 px each at 90).
+    dungeon = { pipShape = "segments", pipWidth = 16, pipHeight = 3, pipSpacing = 2, pipFit = true },
+    blizzard = { pipShape = "blizzard", pipWidth = 13, pipSpacing = 3 },
+}
+ProfilePresets.COMBO = COMBO
+
+-- Compact's cast bar: orange while it can be interrupted, grey while it cannot.
 local CAST_RULES = {
     { when = "casting and interruptible", set = "colour", colour = { r = 1, g = 0.55, b = 0.1 } },
     { when = "casting and not interruptible", set = "colour", colour = { r = 0.55, g = 0.55, b = 0.55 } },
@@ -125,15 +151,8 @@ local function Pin(layout, key, parent, edge, gap)
     position.x, position.y = offset[1] * gap, offset[2] * gap
 end
 
--- Combo points under the health bar, next in the Bars stack (what is under the bar moves down on
--- your target's plate), for a preset whose name or marks leave no room above the bar.
-local function ComboUnderBar(layout)
-    local combo, health = layout.combo, layout.health
-    local group = health and health.parent and layout[health.parent]
-    if not (combo and group and group.stack == "down") then return end
-    combo.parent, combo.attach, combo.free, combo.x, combo.y = health.parent, nil, nil, 0, 0
-    combo.order = (health.order or 1) + 1
-end
+-- Combo points as bar segments, as wide as the bar: straight under the health bar, over the cast bar.
+local function SegmentsUnderBar(layout) S.ComboInStack(layout, "health") end
 
 -- Places key on parent at (x, y) from its centre (Free placement), e.g. text inside a bar.
 local function Place(layout, key, parent, x, y)
@@ -241,7 +260,6 @@ function BUILDERS.classic(settings)
         Pin(layout, "pvpIcon", "name", "left", 3)
         Pin(layout, "tagged", "name", "right", 4)
         Show(layout, false, "buffs", "threat")
-        ComboUnderBar(layout)
     end
     EachProfile(settings, function(profile)
         profile.width, profile.healthHeight, profile.castHeight, profile.nameFontSize = 120, 10, 10, 14
@@ -276,7 +294,7 @@ function BUILDERS.sleek(settings)
         Pin(layout, "quest", "classification", "left", 2)
         Pin(layout, "tagged", "name", "right", 4)
         Pin(layout, "raidIcon", "health", "right", 4)
-        ComboUnderBar(layout)
+        SegmentsUnderBar(layout)
         local key = AddValue(profile, 1, "healthPercent", profile.width / 2 - 14, 10)
         for _, text in ipairs({ "name", "level", "guild", "threat", "tagged", "classification", key }) do
             Style(profile, text, { font = "arialn", outline = "none", shadow = true })
@@ -296,7 +314,7 @@ function BUILDERS.bold(settings)
         layout.name.y = 22
         Pin(layout, "threat", "health", "right", 5)
         Pin(layout, "classification", "health", "left", 4)
-        layout.classification.scale = 1.35
+        layout.classification.scale = 1.3
         Pin(layout, "raidIcon", "name", "top", 2)
         layout.raidIcon.scale = 1.5
         Pin(layout, "tagged", "name", "right", 4)
@@ -314,7 +332,11 @@ function BUILDERS.bold(settings)
             boxColour = { r = 0, g = 0, b = 0, a = 0.75 }, boxBorder = { r = 0.9, g = 0.7, b = 0.2, a = 1 } })
         for _, key in ipairs({ "health", "cast" }) do Style(profile, key, { texture = "blizzard", border = 2, borderColour = BLACK }) end
     end)
-    AddRules(Profiles(settings).enemy, "health", "threatTank", "threatDps")
+    -- Threat colours (the setting, not rules, so its swatches are what the bar shows): the tank's are the
+    -- defaults; a DPS or healer's are this look's own, and Safe keeps the bar's colour.
+    settings.colourByThreat, settings.threatColourSafeKeep = true, true
+    settings.threatColours.pulling = { r = 1, g = 0.8, b = 0 }
+    settings.threatColours.aggro = { r = 1, g = 0.11, b = 0 }
     PruneAll(settings)
 end
 
@@ -328,8 +350,8 @@ function BUILDERS.tank(settings)
     Pin(layout, "tagged", "name", "right", 4)
     Show(layout, false, "threat")
     Show(layout, true, "targetName")
-    ComboUnderBar(layout)
-    AddRules(enemy, "health", "threatTank")
+    -- Threat colours: the setting's tank colours are this look's (no rules, so its swatches apply).
+    settings.colourByThreat = true
     local key, slot = AddValue(enemy, 1, "leadPercent", 0, 14)
     slot.colour = { r = 1, g = 0.85, b = 0.3 }
     Pin(layout, key, "health", "right", 5)
@@ -361,6 +383,9 @@ function BUILDERS.healer(settings)
     end
     local enemy = Profiles(settings).enemy
     enemy.width, enemy.healthHeight, enemy.nameFontSize = 100, 6, 10
+    -- 6 px under the slim bar: the elite mark beside it (18 px tall) clears combo points of any size.
+    local bars = enemy.layout[enemy.layout.health.parent]
+    if bars and bars.stack then bars.gap = 6 end
     Show(enemy.layout, false, "level", "threat", "buffs", "debuffs")
     FlatBar(enemy, "health", 0)
     FlatBar(enemy, "cast", 0)
@@ -381,7 +406,6 @@ function BUILDERS.minimal(settings)
         -- 3 px: the raid mark beside the name (16 px, taller than it) clears the bar.
         Pin(layout, "name", "health", "top", 3)
         Pin(layout, "raidIcon", "name", "left", 3)
-        ComboUnderBar(layout)
     end
     for _, profileKey in ipairs({ "friendlyPlayer", "friendlyNPC" }) do
         Pin(Profiles(settings)[profileKey].namesLayout, "raidIcon", "name", "right", 3)
@@ -397,7 +421,7 @@ function BUILDERS.minimal(settings)
     PruneAll(settings)
 end
 
--- Dungeon: small flat bars with the name inside, a tall cast bar with its spell name and time,
+-- Compact (id dungeon, its name until 1.2): small flat bars with the name inside, a tall cast bar with its spell name and time,
 -- orange while you can interrupt it and grey while you cannot; marks sit above the bar; no level.
 function BUILDERS.dungeon(settings)
     for _, layout in ipairs(FullLayouts(settings)) do
@@ -409,7 +433,7 @@ function BUILDERS.dungeon(settings)
         Place(layout, "relationshipIcon", "health", 36, 15)
         Place(layout, "quest", "health", -36, 15)
         Place(layout, "pvpIcon", "health", -36, 15)
-        ComboUnderBar(layout)
+        SegmentsUnderBar(layout)
     end
     EachProfile(settings, function(profile)
         profile.width, profile.healthHeight, profile.castHeight, profile.nameFontSize = 90, 8, 14, 9
@@ -422,6 +446,65 @@ function BUILDERS.dungeon(settings)
     end)
     AddOwnRules(Profiles(settings).enemy, "cast", CAST_RULES)
     PruneAll(settings)
+end
+
+-- Blizzard: the game's own modern plates (Blizzard_NamePlates' Modern style), drawn by PlateSmith. Its
+-- health bar texture (the "modern" atlas) with a white outlined name inside its left end, the level in
+-- Blizzard's own rounded level box right of the bar, a thin cast bar under it; friendly plates are full
+-- plates too (Blizzard's names sit in their bars), players in its friendly blue with the guild under, NPCs
+-- in its friendly green.
+-- The Blizzard nameplate font throughout.
+local BLIZZARD = { width = 166, height = 20, castHeight = 10, nameSize = 12, gap = 5,
+    friendlyBlue = { r = 0.4, g = 0.38, b = 0.92 }, friendlyGreen = { r = 0.25, g = 0.85, b = 0.25 },
+    levelColour = { r = 1, g = 0.82, b = 0 },
+    uninterruptible = { r = 0.62, g = 0.62, b = 0.62 } }
+function BUILDERS.blizzard(settings)
+    settings.font, settings.friendly = "default", "full"
+    local B = BLIZZARD
+    EachProfile(settings, function(profile, profileKey)
+        profile.width, profile.healthHeight, profile.castHeight, profile.nameFontSize = B.width, B.height, B.castHeight, B.nameSize
+        profile.castIcon, profile.castTime, profile.castName = "left", false, true
+        profile.healthTexture = "modern"
+        local layout = profile.layout
+        -- The name's left end 4 px inside the bar (its own left edge meets the bar's right edge, less
+        -- the bar's width), as Blizzard draws it; the level box after the bar.
+        Pin(layout, "name", "health", "right", 4 - B.width)
+        Pin(layout, "level", "health", "right", B.gap)
+        Pin(layout, "classification", "level", "right", 2)
+        Pin(layout, "relationshipIcon", "level", "right", 3)
+        Pin(layout, "quest", "health", "left", 3)
+        Pin(layout, "pvpIcon", "health", "left", 3)
+        Pin(layout, "raidIcon", profileKey == "friendlyPlayer" and "pvpIcon" or "quest", "left", 3)
+        layout.debuffs.y = math.floor(B.height / 2 + 17)
+        -- No TAGGED word: a tagged mob's bar turns grey instead, as Blizzard's does.
+        Show(layout, false, "buffs", "threat", "tagged")
+        if profile.namesLayout then
+            -- Names only (Settings › Friendly plates): the level box after the name, the guild under it.
+            -- What sat after the name (relationship, raid and elite marks) moves after the level box.
+            local names = profile.namesLayout
+            for _, key in ipairs({ "relationshipIcon", "raidIcon", "classification", "tagged" }) do
+                if names[key].parent == "name" then names[key].parent = "level" end
+            end
+            Pin(names, "level", "name", "right", B.gap)
+            Pin(names, "quest", "name", "left", 3)
+            Pin(names, "pvpIcon", "name", "left", 3)
+        end
+        Style(profile, "name", { outline = "outline", shadow = false })
+        Style(profile, "level", { box = true, boxShape = "rounded", padding = 3, outline = "outline" })
+        for _, bar in ipairs({ "health", "cast" }) do
+            Style(profile, bar, { texture = "modern", border = 1, borderColour = { r = 0, g = 0, b = 0, a = 0.85 },
+                background = { r = 0.04, g = 0.04, b = 0.05, a = 0.85 } })
+        end
+        AddOwnRules(profile, "name", { { when = "", set = "colour", colour = WHITE } })
+        AddOwnRules(profile, "level", { { when = "", set = "colour", colour = B.levelColour } })
+        AddOwnRules(profile, "cast", { { when = "casting and not interruptible", set = "colour", colour = B.uninterruptible } })
+    end)
+    AddRules(Profiles(settings).enemy, "health", "tagged")
+    local players = Profiles(settings).friendlyPlayer
+    players.healthColourMode, players.healthColour = "custom", Table.DeepCopy(B.friendlyBlue)
+    local npcs = Profiles(settings).friendlyNPC
+    npcs.healthColourMode, npcs.healthColour = "custom", Table.DeepCopy(B.friendlyGreen)
+    PruneAll(settings, { "buffs" })
 end
 
 -- In menu order. name and description are shown to the player.
@@ -439,8 +522,10 @@ ProfilePresets.LIST = {
         description = L["Thick friendly bars with health % that turn yellow then red; slim, dim enemy plates."] },
     { id = "minimal", name = L["Minimal"],
         description = L["A tiny flat bar under a small name, raid marks only; friendly plates show names."] },
-    { id = "dungeon", name = L["Dungeon"],
+    { id = "dungeon", name = L["Compact"],
         description = L["Small flat bars with the name inside and a tall cast bar, orange when you can interrupt."] },
+    { id = "blizzard", name = L["Blizzard"],
+        description = L["Blizzard's own look, drawn by PlateSmith so you can change anything."] },
 }
 for _, preset in ipairs(ProfilePresets.LIST) do preset.build = BUILDERS[preset.id] end
 
@@ -457,6 +542,12 @@ function ProfilePresets.Build(id)
     if not preset then return nil, "preset does not exist" end
     local settings = Table.DeepCopy(S.NormalizeSettings({}))
     preset.build(settings)
+    if COMBO[id] then
+        local style = Table.DeepCopy(COMBO[id])
+        -- As a new profile's: an empty row shows only in combat.
+        style.pipShowRow = "combat"
+        Profiles(settings).enemy.styles.combo = style
+    end
     return settings
 end
 

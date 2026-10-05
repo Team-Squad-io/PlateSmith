@@ -47,6 +47,12 @@ local INSPECTOR = { width = FRAME.inspector, rail = 8, lane = 32 }
 local CPU_READOUT = { right = 381, width = 200, height = 22, gap = 16, interval = 3, ticker = "studio.cpu-readout" }
 -- Settings' categories panel: the search box across its top, then a row per category.
 local CATEGORIES = { top = 12, searchX = 12, searchH = 34, searchGap = 12, rowStep = 46 }
+-- The preview panel's rows (canvas units from its top-left): the design row under the tabs, the foot's
+-- controls footY above its bottom, Test values after Snap and its panel panelGap above the foot. The picture
+-- (world or plain dark) fills the panel under the tabs, from pictureTop, pictureInset inside its other edges.
+local PREVIEW = { side = 16, rowTop = 54, rowHeight = 30, footY = 49, snapX = 243, testGap = 16, panelGap = 6,
+    pictureTop = 48, pictureInset = 8 }
+Options.editorPreviewLayout = PREVIEW
 
 -- Button families: the variant picks the kit's colour (red actions, gold Save, dark utility)
 -- and the height its 26, 28 or 32 px set; labels are drawn by the addon.
@@ -164,24 +170,17 @@ end
 local SCROLL_STEP = 30
 local SCROLL = { width = 21, arrow = { 20, 25 }, thumb = 13, cap = 5 }
 
+-- A plain frame, not a client Slider: which way a vertical Slider's value runs differs between client
+-- builds, and dragging its thumb ran backwards on one. The bar keeps the offset and reads the drag from
+-- the cursor itself, so down is always down.
 local function CreateStudioScrollBar(scroll, parent)
-    local bar = CreateFrame("Slider", nil, parent)
-    bar:SetOrientation("VERTICAL")
+    local bar = CreateFrame("Frame", nil, parent)
     bar:SetWidth(SCROLL.width)
-    bar:SetMinMaxValues(0, 0)
-    bar:SetValueStep(1)
-    bar:SetValue(0)
+    bar:EnableMouse(true)
+    bar.position, bar.thumbTop = 0, 0
     bar.trackArt = {}
     for index = 1, 3 do bar.trackArt[index] = bar:CreateTexture(nil, "BACKGROUND") end
     bar.track = bar.trackArt[2]
-    bar:SetThumbTexture("Interface\\Buttons\\WHITE8X8")
-    bar.thumb = bar:GetThumbTexture()
-    bar.thumb:SetAlpha(0)
-    -- This client's vertical sliders count up from the bottom, so the bar's value is the
-    -- distance from the end of the list: value = range - scroll offset. The top is the maximum.
-    local function ScrollTo(offset)
-        bar:SetValue((bar.range or 0) - math.max(0, math.min(bar.range or 0, offset)))
-    end
     -- With snapTops (the list's row tops), scrolling stops only on a whole row, never half one.
     local function Snap(offset)
         local tops, range = bar.snapTops, bar.range or 0
@@ -191,6 +190,19 @@ local function CreateStudioScrollBar(scroll, parent)
             if top <= range and math.abs(top - offset) < distance then best, distance = top, math.abs(top - offset) end
         end
         return best
+    end
+    -- Scrolls to offset, clamped and snapped, with the thumb there; onScrolled hears of each new
+    -- offset or range.
+    local function ScrollTo(offset)
+        local range = bar.range or 0
+        local position = Snap(math.max(0, math.min(range, offset or 0)))
+        bar.position = position
+        if (scroll:GetVerticalScroll() or 0) ~= position then scroll:SetVerticalScroll(position) end
+        bar:PlaceThumbArt(position)
+        if bar.onScrolled and (bar.heardPosition ~= position or bar.heardRange ~= range) then
+            bar.heardPosition, bar.heardRange = position, range
+            bar.onScrolled(position)
+        end
     end
     local function Step(direction)
         local current = scroll:GetVerticalScroll() or 0
@@ -218,9 +230,11 @@ local function CreateStudioScrollBar(scroll, parent)
     end
     bar.thumbArt = {}
     for index = 1, 3 do bar.thumbArt[index] = bar:CreateTexture(nil, "OVERLAY") end
+    -- thumbTop: the thumb's distance below the bar's top, which a press hit-tests.
     function bar:PlaceThumbArt(position)
         local range, thumbHeight = self.range or 0, self.thumbHeight or 0
         local offset = range > 0 and position / range * math.max(0, self:GetHeight() - thumbHeight) or 0
+        self.thumbTop = offset
         local x = (SCROLL.width - SCROLL.thumb) / 2
         local top, mid, bottom = self.thumbArt[1], self.thumbArt[2], self.thumbArt[3]
         Theme.Place(top, "scroll-thumb-normal-top", self, x, offset)
@@ -228,14 +242,49 @@ local function CreateStudioScrollBar(scroll, parent)
             math.max(1, thumbHeight - 2 * SCROLL.cap), "y")
         Theme.Place(bottom, "scroll-thumb-normal-bottom", self, x, offset + thumbHeight - SCROLL.cap)
     end
-    bar:SetScript("OnValueChanged", function(instance, value)
-        local position = Snap(math.max(0, (instance.range or 0) - value))
-        scroll:SetVerticalScroll(position)
-        instance:PlaceThumbArt(position)
-        if instance.onScrolled then instance.onScrolled(position) end
+    local function Wheel(_, delta) Step(-delta) end
+    for _, frame in ipairs({ scroll, bar }) do
+        if frame.EnableMouseWheel then frame:EnableMouseWheel(true) end
+        frame:SetScript("OnMouseWheel", Wheel)
+    end
+
+    -- The cursor's height in the bar's coordinates, or nil without the API.
+    local function CursorY()
+        if type(GetCursorPosition) ~= "function" then return nil end
+        local _, y = GetCursorPosition()
+        if type(y) ~= "number" then return nil end
+        return y / (bar:GetEffectiveScale() or 1)
+    end
+    -- The drag: a transient OnUpdate set on the press over the thumb and cleared on release, on hide,
+    -- or when the button is found up (a release the bar missed). Cursor down = content down.
+    local function StopDrag()
+        bar.dragging = nil
+        bar:SetScript("OnUpdate", nil)
+    end
+    local function FollowDrag()
+        if IsMouseButtonDown and not IsMouseButtonDown("LeftButton") then return StopDrag() end
+        local y = CursorY()
+        local travel = bar:GetHeight() - (bar.thumbHeight or 0)
+        if not y or travel <= 0 then return end
+        ScrollTo(bar.dragOffset + (bar.dragY - y) * (bar.range or 0) / travel)
+    end
+    -- A press on the track above or below the thumb pages by one view.
+    bar:SetScript("OnMouseDown", function(instance, button)
+        if button and button ~= "LeftButton" then return end
+        local y, top = CursorY(), instance.GetTop and instance:GetTop()
+        if not y or type(top) ~= "number" or (instance.range or 0) <= 0 then return end
+        local below, current = top - y, scroll:GetVerticalScroll() or 0
+        if below < instance.thumbTop then
+            ScrollTo(current - scroll:GetHeight())
+        elseif below > instance.thumbTop + (instance.thumbHeight or 0) then
+            ScrollTo(current + scroll:GetHeight())
+        else
+            instance.dragging, instance.dragY, instance.dragOffset = true, y, current
+            instance:SetScript("OnUpdate", FollowDrag)
+        end
     end)
-    if scroll.EnableMouseWheel then scroll:EnableMouseWheel(true) end
-    scroll:SetScript("OnMouseWheel", function(_, delta) Step(-delta) end)
+    bar:SetScript("OnMouseUp", StopDrag)
+    bar:SetScript("OnHide", StopDrag)
 
     function bar:Sync()
         -- From the heights, so a range the client has not yet recomputed is never used.
@@ -244,39 +293,67 @@ local function CreateStudioScrollBar(scroll, parent)
         -- A few pixels of overflow is rounding, not content: no bar for it.
         if range < 4 then range = 0 end
         local height = self:GetHeight()
-        local thumbHeight = math.max(24, height * view / math.max(1, view + range))
-        self.range, self.thumbHeight = range, thumbHeight
-        self.thumb:SetSize(SCROLL.thumb, thumbHeight)
-        self:SetMinMaxValues(0, range)
-        local position = math.min(range, scroll:GetVerticalScroll() or 0)
-        ScrollTo(position)
-        -- The frame is scrolled here too: when the bar's value comes out unchanged (the old page
-        -- scrolled to its end has value 0, as has a page that does not scroll) the client sends no
-        -- OnValueChanged, and the offset would stay past the new page's top, hiding its headings.
-        local snapped = Snap(position)
-        if (scroll:GetVerticalScroll() or 0) ~= snapped then scroll:SetVerticalScroll(snapped) end
+        self.range, self.thumbHeight = range, math.max(24, height * view / math.max(1, view + range))
         Theme.Place(self.trackArt[1], "scroll-track-normal-top", self, 0, 0)
         Theme.Repeat(self.trackArt[2], "scroll-track-normal-mid", self, 0, SCROLL.cap, math.max(1, height - 2 * SCROLL.cap), "y")
         Theme.Place(self.trackArt[3], "scroll-track-normal-bottom", self, 0, height - SCROLL.cap)
-        self:PlaceThumbArt(position)
-        local shown = range > 0
+        -- Always scrolled here, so an offset past a shorter page's end never hides its top.
+        ScrollTo(scroll:GetVerticalScroll() or 0)
+        -- withheld: hidden whatever the range (the Enemy players gate empties the list and the inspector).
+        local shown = range > 0 and not self.withheld
         self:SetShown(shown)
         self.up:SetShown(shown)
         self.down:SetShown(shown)
     end
 
-    -- Scrolls to offset (clamped, and snapped to a row when the list snaps) with the thumb there,
-    -- whether or not the client sends OnValueChanged for the new value.
+    -- Scrolls to offset (clamped, and snapped to a row when the list snaps) with the thumb there.
     function bar:ScrollToOffset(offset)
         self:Sync()
-        local position = Snap(math.max(0, math.min(self.range or 0, offset or 0)))
-        ScrollTo(position)
-        scroll:SetVerticalScroll(position)
-        self:PlaceThumbArt(position)
+        ScrollTo(offset)
     end
 
     scroll:SetScript("OnScrollRangeChanged", function() bar:Sync() end)
     return bar
+end
+
+-- A small stage for a plate sketch (the first-run look cards, the import preview's cards): Studio's world
+-- picture (the preview's shared texture) cropped to the box and darkened, in a thin bronze frame with a
+-- shadow inside its top and left; flat dark where the art is missing. stage:Layout(width, height) crops
+-- the picture again for the box's size (only when it changes).
+local STAGE = { dim = 0.6, rim = { 0.45, 0.35, 0.21, 1 }, shadow = { 0, 0, 0, 0.8 } }
+local function CreateStageBackdrop(box)
+    local function Solid(layer, sublevel, colour)
+        local texture = box:CreateTexture(nil, layer, nil, sublevel)
+        texture:SetColorTexture(colour[1], colour[2], colour[3], colour[4])
+        return texture
+    end
+    local stage = { picture = box:CreateTexture(nil, "BACKGROUND", nil, 0), lines = {} }
+    stage.dim = Solid("BACKGROUND", 1, { 0, 0, 0, STAGE.dim })
+    stage.dim:SetAllPoints(box)
+    local rim, shadow = STAGE.rim, STAGE.shadow
+    -- { colour, from point, to point, x, y, horizontal }: the rim round the box, the shadow inside it.
+    for _, line in ipairs({
+        { rim, "TOPLEFT", "TOPRIGHT", 0, 0, true }, { rim, "BOTTOMLEFT", "BOTTOMRIGHT", 0, 0, true },
+        { rim, "TOPLEFT", "BOTTOMLEFT", 0, 0, false }, { rim, "TOPRIGHT", "BOTTOMRIGHT", 0, 0, false },
+        { shadow, "TOPLEFT", "TOPRIGHT", 1, -1, true }, { shadow, "TOPLEFT", "BOTTOMLEFT", 1, -1, false },
+    }) do
+        local texture = Solid("BORDER", 0, line[1])
+        texture:SetPoint(line[2], box, line[2], line[4], line[5])
+        texture:SetPoint(line[3], box, line[3], line[6] and -line[4] or line[4], line[6] and line[5] or -line[5])
+        if line[6] then texture:SetHeight(1) else texture:SetWidth(1) end
+        stage.lines[#stage.lines + 1] = texture
+    end
+    function stage:Layout(width, height)
+        if self.laidWidth == width and self.laidHeight == height then return self end
+        self.laidWidth, self.laidHeight = width, height
+        if not Theme.Cover(self.picture, "preview-world-backdrop", box, 0, 0, width, height) then
+            self.picture:SetAllPoints(box)
+            self.picture:SetColorTexture(0.025, 0.03, 0.04, 1)
+        end
+        return self
+    end
+    box.stage = stage
+    return stage
 end
 
 -- Panel art in a panel frame's own coordinates: the kit's section frame, and inside it the dark
@@ -295,16 +372,23 @@ local function CreatePanelArt(frame, kind)
     if kind == "dark" then art.shade = Theme.NineSlice(frame, "edge-shade", "BORDER", 0) end
     if kind == "parchment" then art.shade = Theme.NineSlice(overlay, "parchment-edge-shade", "BORDER", 0) end
     art.rail = Theme.NineSlice(overlay, "section", "ARTWORK", 2)
+    -- Laid out again only when its size or look changes.
     function art:Layout()
         local w, h = self.frame:GetWidth(), self.frame:GetHeight()
+        if self.laidWidth == w and self.laidHeight == h and self.laidKind == self.kind and self.laidPlain == self.plain
+            and self.laidTop == self.previewTop then
+            return
+        end
+        self.laidWidth, self.laidHeight, self.laidKind, self.laidPlain, self.laidTop = w, h, self.kind, self.plain, self.previewTop
         if self.kind == "preview" then
-            local top = self.previewTop or 8
+            local inset = PREVIEW.pictureInset
+            local top = self.previewTop or inset
             if self.plain then
-                Theme.Fill(self.fill, "preview-plain-dark", self.frame, 8, top, w - 16, h - top - 8, 1)
+                Theme.Fill(self.fill, "preview-plain-dark", self.frame, inset, top, w - 2 * inset, h - top - inset, 1)
                 self.dimmer:Hide()
             else
-                Theme.Cover(self.fill, "preview-world-backdrop", self.frame, 8, top, w - 16, h - top - 8)
-                Theme.Fill(self.dimmer, "preview-dimmer", self.frame, 8, top, w - 16, h - top - 8, 1)
+                Theme.Cover(self.fill, "preview-world-backdrop", self.frame, inset, top, w - 2 * inset, h - top - inset)
+                Theme.Fill(self.dimmer, "preview-dimmer", self.frame, inset, top, w - 2 * inset, h - top - inset, 1)
                 self.dimmer:SetShown(self.dimmer.kitLoaded)
             end
         elseif self.kind == "parchment" then
@@ -355,6 +439,9 @@ function Options:LayoutEditorShell()
     local shell, editor = self.editorShell, self.editor
     if not shell or not editor then return end
     local W, H = editor:GetWidth(), editor:GetHeight()
+    local laid = self.editorShellLaid
+    if laid and laid[1] == W and laid[2] == H then return end
+    self.editorShellLaid = { W, H }
     local px = PlaqueLeft(W)
     local place = {
         cornerTL = { "outer-corner-tl", 12, 55 }, cornerBL = { "outer-corner-bl", 12, H - 132 },
@@ -422,23 +509,64 @@ function Options:LayoutEditorArt()
     for _, field in ipairs(self.editorKitFields or {}) do field:Layout() end
 end
 
+-- Whether the plates use the colour-blind threat palette (Settings › Threat › Palette, or its
+-- Follow colour-blind mode with the game's option on).
+local function PlatesColourBlind()
+    local ThreatText = PS.ThreatText
+    if not (ThreatText and ThreatText.Palette) then return false end
+    return ThreatText.Palette() == ThreatText.Palette(true)
+end
+
 -- This player's accessibility options: { colourBlind, highContrast } (personal, never saved in
--- a profile). Read on every row and handle, so it is kept until SetStudioAccess changes it;
--- callers must not change the table.
+-- a profile). Colour-blind friendly is state studioColourBlind: nil follows the plates' palette,
+-- true is on, "off" is off. Read on every row and handle, so it is kept until SetStudioAccess
+-- or the plates' palette changes it; callers must not change the table.
 function Options:StudioAccess()
     local state = PS.GetState and PS.GetState()
+    local choice = state and state.studioColourBlind
+    local plates = choice == nil and PlatesColourBlind() or nil
     local access = self.studioAccess
-    if access and access.state == state then return access end
-    access = { state = state, colourBlind = state and state.studioColourBlind == true or false,
+    if access and access.state == state and access.choice == choice and access.plates == plates then return access end
+    access = { state = state, choice = choice, plates = plates, colourBlind = choice == true or plates == true,
         highContrast = state and state.studioHighContrast == true or false }
     self.studioAccess = access
     return access
 end
 
+-- The Accessibility row's choices: follow (naming what the plates use now), on, off.
+function Options.StudioColourBlindChoices()
+    return {
+        { value = "follow", label = string.format(L["Follow the plates' palette (%s)"],
+            PlatesColourBlind() and L["On"] or L["Off"]) },
+        { value = "on", label = L["On"] },
+        { value = "off", label = L["Off"] },
+    }
+end
+
+function Options:StudioColourBlindChoice()
+    local state = PS.GetState and PS.GetState()
+    local choice = state and state.studioColourBlind
+    return choice == true and "on" or choice == "off" and "off" or "follow"
+end
+
+-- colourBlind takes true or "on", false or "off", nil or "follow"; highContrast a boolean.
 function Options:SetStudioAccess(key, enabled)
     local state = PS.GetState and PS.GetState()
     local field = key == "colourBlind" and "studioColourBlind" or key == "highContrast" and "studioHighContrast"
-    if not state or not field or type(enabled) ~= "boolean" then return false end
+    if not state or not field then return false end
+    if key == "colourBlind" then
+        if enabled == true or enabled == "on" then
+            enabled = true
+        elseif enabled == false or enabled == "off" then
+            enabled = "off"
+        elseif enabled == nil or enabled == "follow" then
+            enabled = nil
+        else
+            return false
+        end
+    elseif type(enabled) ~= "boolean" then
+        return false
+    end
     state[field] = enabled
     self.studioAccess = nil
     -- High contrast starts the preview on the plain dark ground (the world picture is busy).
@@ -617,7 +745,8 @@ function Options:ApplyEditorTheme()
     local editor = self.editor
     if not editor then return end
     local stage = self.editorStageArt
-    if stage then stage.plain = self.editorPlainStage and true or false end
+    -- Plain while the user picks it, and behind the Enemy players gate (nothing to look at there).
+    if stage then stage.plain = (self.editorPlainStage or self.editorPlayersGated) and true or false end
     self:LayoutEditorArt()
     for _, button in ipairs(studioButtons) do SetStudioButtonState(button, button.studioSelected) end
     local access = self:StudioAccess()
@@ -636,17 +765,11 @@ function Options:ApplyEditorTheme()
     PaintKitObjects(self)
     if kit and self.editorComponentNameEdit then kit.Ink(self.editorComponentNameEdit, "label") end
     if kit and self.editorComponentTitle then kit.Ink(self.editorComponentTitle, "label") end
-    -- Small hints grow and brighten in high contrast.
-    for _, text in ipairs({ self.editorSnapHint }) do
-        text:SetFont(FONT, access.highContrast and 14 or 12)
-        if access.highContrast then text:SetTextColor(0.95, 0.93, 0.88) else text:SetTextColor(0.62, 0.60, 0.56) end
-    end
-    if self.editorBreadcrumb then
-        for index, text in ipairs(self.editorBreadcrumb.texts) do
-            local current = index == 3
-            if access.highContrast then text:SetTextColor(1, 1, current and 1 or 0.9)
-            else text:SetTextColor(current and 0.95 or 0.72, current and 0.92 or 0.70, current and 0.86 or 0.66) end
-        end
+    -- The model's note grows and brightens in high contrast.
+    local note = self.editorModelNote
+    if note then
+        note:SetFont(FONT, access.highContrast and 14 or 12)
+        if access.highContrast then note:SetTextColor(0.95, 0.93, 0.88) else note:SetTextColor(0.62, 0.60, 0.56) end
     end
     -- Snap guides: thicker lines for either option.
     local thick = access.highContrast or access.colourBlind
@@ -657,7 +780,13 @@ function Options:ApplyEditorTheme()
     end
     self:PlaceEditorTitle()
     self:ApplyEditorListInk()
-    if self.editorStageBackgroundButton then self.editorStageBackgroundButton:SetChecked(self.editorPlainStage and true or false) end
+end
+
+-- View › Plain dark background: the kit's dark fill behind the preview instead of the world picture.
+function Options:SetEditorPlainStage(on)
+    self.editorPlainStage = on and true or false
+    self:ApplyEditorTheme()
+    return self.editorPlainStage
 end
 
 -- Settings: the categories down the left, one category's page at a time on the right. Pages
@@ -768,6 +897,7 @@ function Options:SetEditorInspectorPage(page)
     self.editorInspectorPage = page
     local settingsOpen = page ~= "components"
     self.editorWorkspacePage = settingsOpen and "settings" or "preview"
+    if settingsOpen and self.EditorSettingsCategories then self:EditorSettingsCategories() end
     if settingsOpen then
         if page ~= "plate" or not self.editorSettingsCategory then self.editorSettingsCategory = page end
         if self.editorSettingsViewport and self.editorSettingsViewport.SetVerticalScroll then
@@ -824,16 +954,6 @@ function Options:ReflowVisualEditor()
     -- Header controls, centred on the header band.
     local px = PlaqueLeft(width)
     local y = FRAME.headerControls
-    if self.editorContextDropdown then
-        self.editorContextDropdown:ClearAllPoints()
-        -- The pickers' fields are 34 px tall, centred on the labels' line (y + 17).
-        self.editorContextDropdown:SetPoint("TOPLEFT", editor, "TOPLEFT", 158, -y)
-        self.editorContextDropdown:SetSize(200, 34)
-    end
-    if self.editorContextLabel then
-        self.editorContextLabel:ClearAllPoints()
-        self.editorContextLabel:SetPoint("RIGHT", editor, "TOPLEFT", 150, -(y + 17))
-    end
     if self.editorStudioToggle then
         self.editorStudioToggle:ClearAllPoints()
         self.editorStudioToggle:SetPoint("TOPLEFT", editor, "TOPLEFT", px + 244, -y)
@@ -841,6 +961,7 @@ function Options:ReflowVisualEditor()
         self.editorSettingsButton:SetPoint("TOPLEFT", editor, "TOPLEFT", px + 343, -y)
     end
     if self.editorNamedProfileDropdown then
+        -- The picker's field is 34 px tall, centred on its label's line (y + 17).
         self.editorNamedProfileDropdown:ClearAllPoints()
         self.editorNamedProfileDropdown:SetPoint("TOPLEFT", editor, "TOPLEFT", width - 236, -y)
         self.editorNamedProfileDropdown:SetSize(126, 34)
@@ -876,7 +997,7 @@ function Options:ReflowVisualEditor()
     self:LayoutEditorPreviewPanel()
     self:LayoutEditorInspectorPanel()
     self:LayoutEditorSettingsPage()
-    self:RefreshEditorComponentList(PS.GetSettings())
+    if not self.editorBuilding then self:RefreshEditorComponentList(PS.GetSettings()) end
     self:LayoutEditorArt()
     self:UpdateEditorGrid()
     if self.editorPreviewFit and not self.editorDrag then self:FitEditorPreview(self.editorPreviewFitZoom) end
@@ -911,8 +1032,9 @@ function Options:LayoutEditorTree()
     end
 end
 
--- The preview panel: plate-type tabs across its top, the breadcrumb and Plain dark beneath them,
--- the stage, and the zoom, snap and nudge controls along its foot.
+-- The preview panel: plate-type tabs across its top, the design row beneath them (the design, its chip,
+-- Where plates show's eye and View, the model's note under View), the stage, and the zoom, Snap, Test
+-- values and nudge controls along its foot; Test values' panel opens upwards from its button.
 function Options:LayoutEditorPreviewPanel()
     local canvas = self.editorCanvas
     if not canvas then return end
@@ -924,23 +1046,18 @@ function Options:LayoutEditorPreviewPanel()
         tab:SetPoint("TOPLEFT", canvas, "TOPLEFT", 8 + (index - 1) * (tabWidth + 2), -7)
         tab:SetWidth(index == #tabs and (w - 16 - (index - 1) * (tabWidth + 2)) or tabWidth)
     end
-    if self.editorStageArt then self.editorStageArt.previewTop = 48 end
-    if self.editorBreadcrumb then
-        self.editorBreadcrumb:ClearAllPoints()
-        self.editorBreadcrumb:SetPoint("TOPLEFT", canvas, "TOPLEFT", 16, -58)
+    if self.editorStageArt then self.editorStageArt.previewTop = PREVIEW.pictureTop end
+    local row = self.editorDesignRow
+    if row then
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", canvas, "TOPLEFT", PREVIEW.side, -PREVIEW.rowTop)
+        row:SetSize(math.max(1, w - 2 * PREVIEW.side), PREVIEW.rowHeight)
     end
-    if self.editorStageBackgroundButton then
-        self.editorStageBackgroundButton:ClearAllPoints()
-        self.editorStageBackgroundButton:SetPoint("TOPRIGHT", canvas, "TOPRIGHT", -190, -57)
-    end
-    -- Test values: the button under Plain dark background, its panel at the preview's right.
-    if self.editorTestButton then
-        self.editorTestButton:ClearAllPoints()
-        self.editorTestButton:SetPoint("TOPRIGHT", canvas, "TOPRIGHT", -16, -86)
-    end
-    if self.editorTestPanel then
-        self.editorTestPanel:ClearAllPoints()
-        self.editorTestPanel:SetPoint("TOPRIGHT", canvas, "TOPRIGHT", -12, -116)
+    local note = self.editorModelNote
+    if note then
+        note:ClearAllPoints()
+        note:SetPoint("TOPRIGHT", canvas, "TOPRIGHT", -PREVIEW.side, -(PREVIEW.rowTop + PREVIEW.rowHeight + 4))
+        note:SetWidth(math.max(1, w - 2 * PREVIEW.side))
     end
     -- The friendly layout switch: the preview's lower left, above its controls.
     for index, key in ipairs({ "names", "full" }) do
@@ -950,7 +1067,7 @@ function Options:LayoutEditorPreviewPanel()
             button:SetPoint("TOPLEFT", canvas, "TOPLEFT", 16 + (index - 1) * 108, -(h - 88))
         end
     end
-    local footY = h - 49
+    local footY = h - PREVIEW.footY
     local function Foot(frame, x, fromRight)
         if not frame then return end
         frame:ClearAllPoints()
@@ -963,9 +1080,25 @@ function Options:LayoutEditorPreviewPanel()
     end
     Foot(self.editorZoomInButton, 115)
     Foot(self.editorFitButton, 164)
-    if self.editorSnapCheckbox then
-        self.editorSnapCheckbox:ClearAllPoints()
-        self.editorSnapCheckbox:SetPoint("TOPLEFT", canvas, "TOPLEFT", 243, -(footY + 3))
+    local snap = self.editorSnapCheckbox
+    if snap then
+        snap:ClearAllPoints()
+        snap:SetPoint("TOPLEFT", canvas, "TOPLEFT", PREVIEW.snapX, -(footY + 3))
+    end
+    -- Test values after Snap's label, centred on the foot's line; its panel opens upwards from it, inside
+    -- the preview (moved left where the preview is too narrow for it).
+    local test = self.editorTestButton
+    if test then
+        local x = PREVIEW.snapX + (snap and snap:GetWidth() + 6 + snap.label:GetStringWidth() or 0) + PREVIEW.testGap
+        x = math.floor(x + 0.5)
+        test:ClearAllPoints()
+        test:SetPoint("TOPLEFT", canvas, "TOPLEFT", x, -(footY + 3))
+        local panel = self.editorTestPanel
+        if panel then
+            self.editorTestPanelLeft = math.max(PREVIEW.side - 4, math.min(x, w - 12 - panel:GetWidth()))
+            panel:ClearAllPoints()
+            panel:SetPoint("BOTTOMLEFT", canvas, "TOPLEFT", self.editorTestPanelLeft, -(footY - PREVIEW.panelGap))
+        end
     end
     if self.editorMoveControls then
         self.editorMoveControls:ClearAllPoints()
@@ -975,6 +1108,7 @@ function Options:LayoutEditorPreviewPanel()
         self.editorPreviewStage:ClearAllPoints()
         self.editorPreviewStage:SetPoint("CENTER", canvas, "CENTER", self.editorPreviewPanX or 0, self.editorPreviewPanY or 0)
     end
+    if self.PlaceEditorModel then self:PlaceEditorModel(true) end
 end
 
 -- The inspector panel: one scrolling column on the parchment, its bar inside the right rail.
@@ -994,7 +1128,7 @@ function Options:LayoutEditorInspectorPanel()
     local contentWidth = w - rail - lane - pad.left - pad.right
     if self.editorComponentContent then self.editorComponentContent:SetWidth(contentWidth) end
     if self.editorComponentHolder then self.editorComponentHolder:SetWidth(contentWidth + pad.left + pad.right) end
-    self:LayoutEditorInspector()
+    if not self.editorBuilding then self:LayoutEditorInspector() end
     if self.editorComponentScrollBar then
         self.editorComponentScrollBar:ClearAllPoints()
         self.editorComponentScrollBar:SetPoint("TOPLEFT", inspector, "TOPLEFT", w - lane, -37)
@@ -1278,6 +1412,7 @@ Options.studioChrome = {
     CreateStudioButton = CreateStudioButton,
     CreateStudioScrollBar = CreateStudioScrollBar,
     CreatePanelArt = CreatePanelArt,
+    CreateStageBackdrop = CreateStageBackdrop,
     TrackPanelArt = TrackPanelArt,
     CreateVisibilityEye = CreateVisibilityEye,
     CreateEditorShell = CreateEditorShell,

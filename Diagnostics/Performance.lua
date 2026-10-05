@@ -47,8 +47,8 @@ end
 local SLICES, SLICE_SECONDS, MAX_NAMES, TOP_EVENTS = 3, 10, 64, 5
 local slice = 1
 local tickCosts, eventCosts = { records = {}, count = 0 }, { records = {}, count = 0 }
-local phaseCosts = { records = {}, count = 0 }
-local STORES = { tickCosts, eventCosts, phaseCosts }
+local phaseCosts, auraCosts = { records = {}, count = 0 }, { records = {}, count = 0 }
+local STORES = { tickCosts, eventCosts, phaseCosts, auraCosts }
 
 -- NAME_PLATE_UNIT_ADDED is timed under one of these: a plate frame built for the first time, a
 -- frame reused, or an add queued for a later frame (its work then counts in plates.frame).
@@ -56,10 +56,93 @@ Performance.PLATE_ADDED = { new = "NAME_PLATE_UNIT_ADDED (new)", reused = "NAME_
     queued = "NAME_PLATE_UNIT_ADDED (queued)" }
 local PLATE_ADDED_ORDER = { "new", "reused", "queued" }
 -- The phases of a plate add, each timed without what the phases inside it took (Lifecycle.lua).
-Performance.ADD_PHASES = { "build", "layout", "styles", "text", "quest", "bars", "auras", "threat", "placement",
-    "values", "rules", "flush", "other" }
+-- aurasLater: the add's aura pass, read after the add in the frame's aura round (auras is then only its queueing).
+Performance.ADD_PHASES = { "build", "layout", "styles", "text", "quest", "bars", "auras", "aurasLater", "threat",
+    "placement", "values", "rules", "flush", "other" }
+-- The parts of one aura pass (Auras.lua's UpdateAuras, any route to it), each a pass's sum: the reads,
+-- textures set, icons made, swipes and countdowns, hiding/laying out/showing rows, the client's aura
+-- container; reflow is the stack layout a row shown or hidden asked for, in the aura round; earlier is
+-- the plate's work other events marked before the pass (flushed with it, not caused by it).
+Performance.AURA_PHASES = { "read", "textures", "build", "times", "place", "native", "reflow", "earlier" }
 -- The live view's own ticker entry, reported on its own line so it is not read as plate cost.
 Performance.LIVE_TICKER = "diagnostics.live"
+
+-- PlateSmith's own timed work per frame: each ticker pass with the timed events since the one before
+-- (performance.frames). The client profiler (performance.profiler) measures more: every PlateSmith
+-- script and hook, timed or not, Studio and this report included, over its own window and session.
+-- frames.recent: per slice { frames, ms, peak, over 5 ms, over 50 ms, untimed hook calls }.
+-- untimed.hooks: calls of hooks on Blizzard's plate frames, which run outside any timed handler.
+local SLOW_FRAME_MS, VERY_SLOW_FRAME_MS = 5, 50
+local frames = { count = 0, totalMs = 0, peakMs = 0, over5 = 0, over50 = 0, eventMs = 0, hooksSeen = 0, recent = {} }
+for index = 1, SLICES do frames.recent[index] = { 0, 0, 0, 0, 0, 0 } end
+Performance.untimed = { hooks = 0 }
+local untimed = Performance.untimed
+-- Plate adds left for a later frame (Lifecycle's adds): how many queued, how many of those hid
+-- Blizzard's plate while they waited, the most frames one waited (since login or a peak reset), how
+-- many ran past the budget because they had waited too long (overdue), and the waits in frames by
+-- bucket (ADD_WAIT_BUCKETS: at most 1, 3, 10, more), and the longest wait in ms (profiler time from
+-- queueing to drawn). recent: the same per slice of the recent window, { queued, held, max wait,
+-- overdue, then one count per bucket, then the longest wait in ms }.
+local ADD_WAIT_BUCKETS = { 1, 3, 10 }
+local ADD_WAIT_NAMES = { "upTo1", "upTo3", "upTo10", "over10" }
+local ADD_WAIT_MS = 9
+Performance.addQueue = { queued = 0, held = 0, maxWaitFrames = 0, maxWaitMs = 0, overdue = 0, waits = { 0, 0, 0, 0 },
+    recent = {} }
+for index = 1, SLICES do Performance.addQueue.recent[index] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 } end
+local ADD_RECENT_FIELD = { queued = 1, held = 2, overdue = 4 }
+
+-- kind: "queued", "held", "overdue", or "waited" with waited (frames, a whole number) and ms (nil
+-- without a profiler clock).
+function Performance.RecordAddQueue(kind, waited, ms)
+    local queue = Performance.addQueue
+    local part = queue.recent[slice]
+    if kind == "waited" then
+        if type(waited) ~= "number" then return end
+        if waited > queue.maxWaitFrames then queue.maxWaitFrames = waited end
+        if waited > part[3] then part[3] = waited end
+        if type(ms) == "number" then
+            if ms > queue.maxWaitMs then queue.maxWaitMs = ms end
+            if ms > part[ADD_WAIT_MS] then part[ADD_WAIT_MS] = ms end
+        end
+        local bucket = #ADD_WAIT_NAMES
+        for index, limit in ipairs(ADD_WAIT_BUCKETS) do
+            if waited <= limit then
+                bucket = index
+                break
+            end
+        end
+        queue.waits[bucket], part[4 + bucket] = queue.waits[bucket] + 1, part[4 + bucket] + 1
+        return
+    end
+    local field = ADD_RECENT_FIELD[kind]
+    if not field then return end
+    queue[kind], part[field] = queue[kind] + 1, part[field] + 1
+end
+
+local function Waits(counts)
+    local report = {}
+    for index, name in ipairs(ADD_WAIT_NAMES) do report[name] = counts[index] end
+    return report
+end
+
+-- The addQueue section: session figures, then the recent window's.
+local function AddQueueFigures()
+    local queue = Performance.addQueue
+    local report = { queued = queue.queued, held = queue.held, maxWaitFrames = queue.maxWaitFrames,
+        maxWaitMs = Round(queue.maxWaitMs), overdue = queue.overdue, waits = Waits(queue.waits) }
+    local totals, maxWait, maxWaitMs = { 0, 0, 0, 0 }, 0, 0
+    local queued, held, overdue = 0, 0, 0
+    for index = 1, SLICES do
+        local part = queue.recent[index]
+        queued, held, overdue = queued + part[1], held + part[2], overdue + part[4]
+        if part[3] > maxWait then maxWait = part[3] end
+        if part[ADD_WAIT_MS] > maxWaitMs then maxWaitMs = part[ADD_WAIT_MS] end
+        for bucket = 1, #totals do totals[bucket] = totals[bucket] + part[4 + bucket] end
+    end
+    report.recentQueued, report.recentHeld, report.recentOverdue = queued, held, overdue
+    report.recentMaxWaitFrames, report.recentMaxWaitMs, report.recentWaits = maxWait, Round(maxWaitMs), Waits(totals)
+    return report
+end
 
 -- record.version moves with every change to a record (a run, the window moving on, a peak reset),
 -- so the live view refigures only records that changed since its last refresh.
@@ -79,8 +162,50 @@ local function Record(store, name, ms)
 end
 
 function Performance.RecordTick(id, ms) Record(tickCosts, id, ms) end
-function Performance.RecordEvent(event, ms) Record(eventCosts, event, ms) end
+function Performance.RecordEvent(event, ms)
+    Record(eventCosts, event, ms)
+    if type(ms) == "number" then frames.eventMs = frames.eventMs + ms end
+end
 function Performance.RecordPhase(phase, ms) Record(phaseCosts, phase, ms) end
+function Performance.RecordAuraPhase(phase, ms) Record(auraCosts, phase, ms) end
+
+-- The ticker's pass ended (passMs: its timed entries): the frame's timed work is that pass and the
+-- events timed since the last pass.
+function Performance.RecordFrame(passMs)
+    local ms = passMs + frames.eventMs
+    frames.eventMs = 0
+    local hooks = untimed.hooks - frames.hooksSeen
+    frames.hooksSeen = untimed.hooks
+    frames.count, frames.totalMs = frames.count + 1, frames.totalMs + ms
+    if ms > frames.peakMs then frames.peakMs = ms end
+    local part = frames.recent[slice]
+    part[1], part[2], part[6] = part[1] + 1, part[2] + ms, part[6] + hooks
+    if ms > part[3] then part[3] = ms end
+    if ms > SLOW_FRAME_MS then
+        frames.over5, part[4] = frames.over5 + 1, part[4] + 1
+        if ms > VERY_SLOW_FRAME_MS then frames.over50, part[5] = frames.over50 + 1, part[5] + 1 end
+    end
+end
+
+-- The frames section: recent window (the same 20-30 s as the rest) and session.
+local function FrameFigures(into)
+    local report = into or {}
+    local count, total, peak, over5, over50, hooks = 0, 0, 0, 0, 0, 0
+    for index = 1, SLICES do
+        local part = frames.recent[index]
+        count, total, over5, over50, hooks = count + part[1], total + part[2], over5 + part[4], over50 + part[5],
+            hooks + part[6]
+        if part[3] > peak then peak = part[3] end
+    end
+    report.recentFrames, report.recentOver5Ms, report.recentOver50Ms = count, over5, over50
+    report.recentAverageMs = count > 0 and Round(total / count) or nil
+    report.recentPeakMs = count > 0 and Round(peak) or nil
+    report.recentUntimedHooksPerFrame = count > 0 and Round(hooks / count) or nil
+    report.sessionFrames, report.sessionOver5Ms, report.sessionOver50Ms = frames.count, frames.over5, frames.over50
+    report.sessionAverageMs = frames.count > 0 and Round(frames.totalMs / frames.count) or nil
+    report.sessionPeakMs = frames.count > 0 and Round(frames.peakMs) or nil
+    return report
+end
 
 -- The recent window's calls, total and peak for a record.
 local function Recent(record)
@@ -103,6 +228,10 @@ PS.Ticker.Register("diagnostics.window", SLICE_SECONDS, function()
             record.version = record.version + 1
         end
     end
+    local part = frames.recent[slice]
+    for index = 1, #part do part[index] = 0 end
+    part = Performance.addQueue.recent[slice]
+    for index = 1, #part do part[index] = 0 end
 end)
 
 -- Starts every peak PlateSmith keeps (events, phases, ticker entries) again from now; calls and
@@ -113,6 +242,13 @@ function Performance.ResetPeaks()
             record.peakMs, record.version = 0, record.version + 1
             for index = 1, SLICES do record.recent[index][3] = 0 end
         end
+    end
+    frames.peakMs = 0
+    for index = 1, SLICES do frames.recent[index][3] = 0 end
+    Performance.addQueue.maxWaitFrames, Performance.addQueue.maxWaitMs = 0, 0
+    for index = 1, SLICES do
+        local part = Performance.addQueue.recent[index]
+        part[3], part[ADD_WAIT_MS] = 0, 0
     end
     PS.Ticker.ResetPeaks()
 end
@@ -190,11 +326,11 @@ local function PlateAdds()
     return report
 end
 
--- Each phase of a plate add that was timed, in ADD_PHASES order.
-local function AddPhases()
+-- Each phase that was timed, in the list's order (ADD_PHASES from phaseCosts, AURA_PHASES from auraCosts).
+local function Phases(names, store)
     local report = PS.Json and PS.Json.Array() or {}
-    for _, phase in ipairs(Performance.ADD_PHASES) do
-        local record = phaseCosts.records[phase]
+    for _, phase in ipairs(names) do
+        local record = store.records[phase]
         if record then report[#report + 1] = Figures(record, { phase = phase }) end
     end
     return report
@@ -252,9 +388,11 @@ end
 
 function Performance.Report()
     local debugSettings = Performance.DebugSettings()
-    return { profiler = Profiler(addonName), ticker = TickerReport(), events = TopEvents(false),
+    return { profiler = Profiler(addonName), frames = FrameFigures(), ticker = TickerReport(), events = TopEvents(false),
         recentEvents = TopEvents(true), recentWindowSeconds = SLICES * SLICE_SECONDS,
-        plateAdds = PlateAdds(), addPhases = AddPhases(), debugSettings = next(debugSettings) and debugSettings or nil }
+        plateAdds = PlateAdds(), addPhases = Phases(Performance.ADD_PHASES, phaseCosts),
+        auraPhases = Phases(Performance.AURA_PHASES, auraCosts), debugSettings = next(debugSettings) and debugSettings or nil,
+        addQueue = AddQueueFigures(), spares = Performance.SpareFigures and Performance.SpareFigures() or nil }
 end
 
 -- The live Performance tab's figures: the profiler, every ticker entry, the plate adds and their
@@ -262,7 +400,7 @@ end
 -- Refreshed once a second while the tab shows, into the same tables every time (valid until the
 -- next call): once every name has been seen, a refresh makes no tables. Nothing here runs otherwise.
 local live = { byEvent = {}, ranked = {}, plateAdds = {}, phaseRows = {} }
-live.result = { profiler = {}, ticker = {}, events = {}, plateAdds = live.plateAdds, addPhases = {},
+live.result = { profiler = {}, frames = {}, ticker = {}, events = {}, plateAdds = live.plateAdds, addPhases = {},
     recentWindowSeconds = SLICES * SLICE_SECONDS, debugSettingsOn = {} }
 
 -- Most recent-window time first, then session time, then name.
@@ -306,6 +444,7 @@ function Performance.Live(eventLimit)
     for index = shown + 1, #events do events[index] = nil end
 
     Profiler(addonName, result.profiler)
+    FrameFigures(result.frames)
     TickerReport(result.ticker)
     for _, kind in ipairs(PLATE_ADDED_ORDER) do
         local record = eventCosts.records[Performance.PLATE_ADDED[kind]]

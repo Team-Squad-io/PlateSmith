@@ -332,19 +332,32 @@ PS._CreateTemplateReaders = function(context)
         -- Whether "is there a target at all" can change what the plate shows; the targeted kind
         -- alone changes only on the old and the new target's plates (Lifecycle's RefreshTargetState).
         local values, rules = reads.values, reads.rules
+        -- Threat colours go on in the rules pass (Lifecycle's ApplyRules), so it follows threat.
+        local threatColours = PS.ThreatColours
+        if threatColours and threatColours.Enabled(type(PS.GetSettings) == "function" and PS.GetSettings() or nil) then
+            rules.threat = true
+        end
         reads.hasTarget = (values.hastarget or rules.hastarget or values.volatile or rules.volatile) == true
         return reads
     end
 
     -- Built once per profile, layout and settings revision (a slot or rule is edited in place, and
-    -- every edit bumps the revision), so plates share it.
-    local readsCache = setmetatable({}, { __mode = "k" })
+    -- every edit bumps the revision), so plates share it. Kept per layout, then per profile: profiles
+    -- that share a layout (enemies and enemy players without layout changes of their own) each keep
+    -- theirs.
+    local weakKeys = { __mode = "k" }
+    local readsCache = setmetatable({}, weakKeys)
     function Readers.PlateReads(profile, layout, revision)
         if type(profile) ~= "table" or type(layout) ~= "table" then return nil end
-        local entry = readsCache[layout]
-        if not (entry and entry.profile == profile and entry.revision == revision) then
-            entry = { profile = profile, revision = revision, reads = BuildReads(profile, layout) }
-            readsCache[layout] = entry
+        local byProfile = readsCache[layout]
+        if not byProfile then
+            byProfile = setmetatable({}, weakKeys)
+            readsCache[layout] = byProfile
+        end
+        local entry = byProfile[profile]
+        if not (entry and entry.revision == revision) then
+            entry = { revision = revision, reads = BuildReads(profile, layout) }
+            byProfile[profile] = entry
         end
         return entry.reads
     end

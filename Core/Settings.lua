@@ -2,11 +2,45 @@
 local _, PS = ...
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
 local Table = assert(PS.Table, "PlateSmith Table missing")
+local Designs = assert(PS.Designs, "PlateSmith Designs missing")
 local L = PS.L
 
 PS._CreatePlateSettings = function(context)
     local GetSettings = context.GetSettings
-    local RefreshAll = context.RefreshAll
+    local RefreshNow = context.RefreshAll
+    -- While a slider is dragged (SetSettingsDrag, from the kit's sliders), each step is stored at once
+    -- and Studio's preview follows it, but the live plates are laid out and styled again at most every
+    -- DRAG_REFRESH seconds (a step relaid every plate, about 15-30 ms with a dozen of them); the
+    -- slider's own write on release refreshes them in full. Anything a release leaves goes next tick.
+    local DRAG_REFRESH, DRAG_TICKER = 0.15, "settings.drag"
+    local drag = { active = false, pending = false }
+    local function RefreshAll()
+        if drag.active then
+            drag.pending = true
+            PS.Profiles.MarkChanged()
+            PS.Ticker.SetEnabled(DRAG_TICKER, true)
+            return
+        end
+        if drag.pending then
+            drag.pending = false
+            PS.Ticker.SetEnabled(DRAG_TICKER, false)
+        end
+        RefreshNow()
+    end
+    PS.Ticker.Register(DRAG_TICKER, DRAG_REFRESH, function()
+        if drag.pending then
+            drag.pending = false
+            RefreshNow()
+        elseif not drag.active then
+            PS.Ticker.SetEnabled(DRAG_TICKER, false)
+        end
+    end)
+    PS.Ticker.SetEnabled(DRAG_TICKER, false)
+    local function SetSettingsDrag(active)
+        drag.active = active == true
+        if not drag.active and not drag.pending then PS.Ticker.SetEnabled(DRAG_TICKER, false) end
+        return true
+    end
     local Relayout = context.Relayout or RefreshAll
     local NamePolicy = assert(PS.NamePolicy, "PlateSmith NamePolicy missing")
     local defaults = S.defaults
@@ -20,60 +54,127 @@ PS._CreatePlateSettings = function(context)
     local characterDefaults = S.characterDefaults
     local NormalizeCharacterSettings = S.NormalizeCharacterSettings
 
-    -- nil is the enemy profile; an unknown name must not fall back to editing the enemy profile.
-    local function ResolveProfileKey(profileKey)
-        if profileKey == nil then return "enemy" end
-        if profileKey == "enemyDungeon" or profileDefaults[profileKey] then return profileKey end
-        return nil
+    -- An edit target: "<plate type>" (its World design) or "<plate type>@<context>" (that context's
+    -- design); "enemyDungeon" is "enemy@dungeon" (modules); nil is "enemy". "enemyPlayer" is the Enemy
+    -- players layer, edited as the Enemies' "players" design (Designs.PLAYERS) against Enemies' World.
+    -- Returns the plate type and the context (nil: World), or nil when target is not one: an
+    -- unknown name must not fall back to editing the enemy profile. Friendly plates' "dungeon" is
+    -- their Dungeons & raids design, Blizzard's: World's dungeonNamesLayout.
+    local function ResolveProfileKey(target)
+        if target == nil then return "enemy" end
+        if target == "enemyDungeon" then return "enemy", "dungeon" end
+        if target == "enemyPlayer" or target == "enemyPlayer@world" then return "enemy", Designs.PLAYERS end
+        if type(target) ~= "string" then return nil end
+        local plateType, design = target:match("^(%w+)@(%w+)$")
+        plateType = plateType or target
+        if not profileDefaults[plateType] then return nil end
+        if design == "world" then design = nil end
+        if design and not (S.DESIGN.STORED[plateType][design] or Designs.IsBlizzard(plateType, design)) then return nil end
+        return plateType, design
     end
 
-    -- What a profile falls back to: the dungeon override follows the enemy profile.
-    local function ProfileFallback(db, profileKey)
-        return profileKey == "enemyDungeon" and db.plateProfiles.enemy or profileDefaults[profileKey]
+    -- What a profile option or layout falls back to: World for a context's design, else the plate
+    -- type's defaults.
+    local function ProfileFallback(db, plateType, design)
+        return design and db.plateProfiles[plateType] or profileDefaults[plateType]
     end
 
-    local function GetProfileSettings(profileKey)
+    -- The Enemies' Dungeons & raids design (once "enemyDungeon", the dungeon override), or nil.
+    local function DungeonDesign(db)
+        return Designs.HasDesign(db, "enemy", "dungeon") and Designs.For(db, "enemy", "dungeon") or nil
+    end
+
+    -- The profile target draws with: World's, a full design's own table, or a sparse design's
+    -- effective profile (read-only: shared with World and the resolver's cache). A context with no
+    -- design draws with World's.
+    local function GetProfileSettings(target)
         local db = GetSettings()
         if not db or not db.plateProfiles then return nil end
-        if profileKey == "enemyDungeon" then
-            return db.plateProfiles.enemyDungeon or db.plateProfiles.enemy
-        end
-        profileKey = profileDefaults[profileKey] and profileKey or "enemy"
-        return db.plateProfiles[profileKey]
+        local plateType, design = ResolveProfileKey(target)
+        if not plateType then plateType, design = "enemy", nil end
+        return Designs.For(db, plateType, design)
     end
 
-    local function EnsureProfileSettings(profileKey)
-        local db = GetSettings()
-        if profileKey == "enemyDungeon" then
-            if not db.plateProfiles.enemyDungeon then
-                db.plateProfiles.enemyDungeon = CopyEnemyProfile(db.plateProfiles.enemy)
+    -- The one route for a profile edit, for plateType's design (nil: World; a friendly plate's
+    -- Blizzard design is World). mutate(profile, db, plateType, design) edits World or a full design
+    -- in place; a sparse design's edit goes to a working copy of its effective profile, and only what
+    -- changed is stored, as overrides (Designs.StoreDiff), each dropped when it matches World. A
+    -- context with no design refuses, and so does mutate returning false; a refused edit changes
+    -- nothing. mutate writes only values it has made valid, so the profile stays normalized without a
+    -- whole NormalizeProfile per keystroke.
+    -- The Enemy players layer takes edits only while it exists (PS.AddDesign("enemyPlayer") makes it), so
+    -- nothing makes one by accident; it stays when an edit leaves it empty. glow: the edit changes only the
+    -- soft glow's look (a design's own glow option), so only the glow showing it restyles, as SetOption's;
+    -- except in a sparse design, whose plates hold its resolved profile (replaced by the edit) until they are
+    -- laid out again, which the refresh does (held back while a slider is dragged).
+    local function RestyleGlow(db)
+        PS.Profiles.MarkChanged()
+        PS.TargetGlow.RestyleShown(db)
+    end
+    local function Mutate(db, plateType, design, mutate, glow)
+        local world = db.plateProfiles[plateType]
+        if not design then
+            if mutate(world, db, plateType) == false then return false end
+        else
+            local players = design == Designs.PLAYERS
+            local record = Designs.Record(db, plateType, design)
+            if record and record.full == true then
+                if mutate(record.design, db, plateType, design) == false then return false end
+            elseif record then
+                glow = false
+                local before = Designs.For(db, plateType, design)
+                local work = Designs.WorkingCopy(before)
+                if mutate(work, db, plateType, design) == false then return false end
+                Designs.StoreDiff(world, record, before, work)
+                if players then Designs.SetPlayers(world, record) end
+            else
+                return false
             end
-            return db.plateProfiles.enemyDungeon
         end
-        return GetProfileSettings(profileKey)
-    end
-
-    -- The one route for a profile edit: resolves the key, makes the dungeon override on its first
-    -- edit, runs mutate(profile, db, profileKey) and refreshes the plates. mutate returns false to
-    -- refuse. It writes only values it has made valid, so the profile stays normalized without a
-    -- whole NormalizeProfile per keystroke. Checks that need no profile run before this, so a
-    -- refused edit never creates the dungeon override.
-    local function MutateProfile(profileKey, mutate)
-        local db = GetSettings()
-        profileKey = ResolveProfileKey(profileKey)
-        if not db or not profileKey then return false end
-        local profile = EnsureProfileSettings(profileKey)
-        if not profile or mutate(profile, db, profileKey) == false then return false end
-        RefreshAll()
+        -- Studio may read the designs again before the refresh runs.
+        Designs.Invalidate()
+        if glow and PS.TargetGlow and PS.TargetGlow.RestyleShown then RestyleGlow(db) else RefreshAll() end
         return true
     end
 
-    local function SetProfileOption(profileKey, key, value)
+    local function MutateProfile(target, mutate, glow)
+        local db = GetSettings()
+        local plateType, design = ResolveProfileKey(target)
+        if not db or not plateType then return false end
+        if design and Designs.IsBlizzard(plateType, design) then design = nil end
+        return Mutate(db, plateType, design, mutate, glow)
+    end
+
+    local function SetProfileOption(target, key, value)
+        if key == "castOnNames" then
+            -- A context design's own (false: its names-only plates draw no cast bar); World has none.
+            if type(value) ~= "boolean" then return false end
+            return MutateProfile(target, function(profile, _, _, design)
+                if not design then return false end
+                if value then profile.castOnNames = nil else profile.castOnNames = false end
+            end)
+        end
         if not S.IsProfileOption(key) then return false end
-        return MutateProfile(profileKey, function(profile, db, resolved)
-            profile[key] = S.ProfileOptionValue(profile, key, value, ProfileFallback(db, resolved))
-            if resolved == "enemy" and S.ENEMY_ALIASES[key] then db[key] = profile[key] end
-        end)
+        return MutateProfile(target, function(profile, db, plateType, design)
+            profile[key] = S.ProfileOptionValue(profile, key, value, ProfileFallback(db, plateType, design))
+            if plateType == "enemy" and not design and S.ENEMY_ALIASES[key] then db[key] = profile[key] end
+        end, S.glowSettings[key] == true)
+    end
+
+    -- The target highlight target draws (its design's own over the general settings) written into every
+    -- plate type's World design, so they all look the same; their other designs keep their own.
+    local function CopyTargetHighlight(target)
+        local db = GetSettings()
+        local source = db and GetProfileSettings(target)
+        if not source then return false end
+        local highlight = S.HIGHLIGHT.Resolve(db, source)
+        for _, plateType in ipairs({ "enemy", "friendlyPlayer", "friendlyNPC" }) do
+            local world = db.plateProfiles[plateType]
+            for _, key in ipairs(S.HIGHLIGHT.KEYS) do world[key] = S.HIGHLIGHT.Value(key, Table.DeepCopy(highlight[key])) end
+        end
+        Designs.Invalidate()
+        RefreshAll()
+        return true
     end
 
     local function SetOption(key, value)
@@ -90,99 +191,114 @@ PS._CreatePlateSettings = function(context)
         end
         if key == "hideUnstyledFriendlyNames" or key == "restrictedFriendlyNamesOnly"
             or key == "restrictedFriendlyClassColour" then NamePolicy.Apply() end
+        -- The soft glow's look reaches only the glow showing it: no plate is laid out again.
+        if S.glowSettings[key] and PS.TargetGlow and PS.TargetGlow.RestyleShown then
+            PS.Profiles.MarkChanged()
+            PS.TargetGlow.RestyleShown(db)
+            return true
+        end
         RefreshAll()
         return true
     end
 
+    -- Compat (modules, Blueprint's dungeonEnemy): a table becomes the Enemies' full Dungeons & raids
+    -- design; nil removes that design.
     local function SetDungeonEnemyProfile(profile)
         local db = GetSettings()
         if not db then return false end
+        local enemy = db.plateProfiles.enemy
         if profile == nil then
-            db.plateProfiles.enemyDungeon = nil
+            Designs.SetFull(enemy, "dungeon", nil)
         elseif type(profile) == "table" then
-            db.plateProfiles.enemyDungeon = CopyEnemyProfile(NormalizeProfile(profile, db.plateProfiles.enemy))
+            Designs.SetFull(enemy, "dungeon", CopyEnemyProfile(NormalizeProfile(profile, enemy)))
         else
             return false
         end
+        Designs.Invalidate()
         RefreshAll()
         return true
     end
 
-    local function LayoutField(profileKey, variant)
-        if variant == "dungeon" and (profileKey == "friendlyPlayer" or profileKey == "friendlyNPC") then
-            return "dungeonNamesLayout"
+    -- Which layout a variant ("full", "names" or "dungeon") of a plate type's design draws with.
+    local function LayoutField(plateType, design, variant)
+        if profileDefaults[plateType].namesLayout then
+            if variant == "dungeon" or design == "dungeon" then return "dungeonNamesLayout" end
+            if variant == "names" then return "namesLayout" end
         end
-        return variant == "names" and profileKey ~= "enemy" and profileKey ~= "enemyDungeon"
-            and "namesLayout" or "layout"
+        return "layout"
     end
 
-    local function GetDefaultLayout(profileKey, variant)
-        local db = GetSettings()
-        if profileKey == "enemyDungeon" then
-            return NormalizeLayout(db and db.plateProfiles.enemy.layout, profileDefaults.enemy.layout)
-        end
-        profileKey = profileDefaults[profileKey] and profileKey or "enemy"
-        local field = LayoutField(profileKey, variant)
-        return NormalizeLayout(nil, profileDefaults[profileKey][field])
+    -- A layout target: plate type, the design edited (nil: World) and the layout field, or nil.
+    -- Friendly plates' dungeon layout is World's (it is their Blizzard design).
+    local function LayoutTarget(target, variant)
+        local plateType, design = ResolveProfileKey(target)
+        if not plateType then return nil end
+        local field = LayoutField(plateType, design, variant)
+        if field == "dungeonNamesLayout" then design = nil end
+        return plateType, design, field
     end
 
-    -- A normalized copy of a layout (the enemy's for a dungeon override that does not exist yet).
-    local function GetLayout(profileKey, variant)
-        local db = GetSettings()
-        profileKey = profileKey == "enemyDungeon" and profileKey
-            or (profileDefaults[profileKey] and profileKey or "enemy")
-        local profile = GetProfileSettings(profileKey)
-        local field = LayoutField(profileKey, variant)
-        return NormalizeLayout(profile and profile[field], ProfileFallback(db, profileKey)[field])
+    -- What a layout is normalized against: a full design's, World's (as the dungeon override's
+    -- always was); World's and a sparse design's (merged against them), the defaults.
+    local function LayoutFallback(db, plateType, design, field)
+        if design and Designs.IsFull(db, plateType, design) then return db.plateProfiles[plateType][field] end
+        return profileDefaults[plateType][field]
     end
 
-    local function SetLayout(layout, profileKey, variant)
+    -- What Reset puts back: the defaults, or for a context's design World's layout.
+    local function GetDefaultLayout(target, variant)
         local db = GetSettings()
-        profileKey = ResolveProfileKey(profileKey)
-        if not db or not profileKey then return false end
-        local field = LayoutField(profileKey, variant)
-        local profile = EnsureProfileSettings(profileKey)
-        profile[field] = NormalizeLayout(layout, ProfileFallback(db, profileKey)[field])
-        if profileKey == "enemy" then db.layout = db.plateProfiles.enemy.layout end
-        RefreshAll()
-        return true
+        local plateType, design, field = LayoutTarget(target, variant)
+        if not plateType then plateType, design, field = "enemy", nil, "layout" end
+        if design then return NormalizeLayout(db and db.plateProfiles[plateType][field], profileDefaults[plateType][field]) end
+        return NormalizeLayout(nil, profileDefaults[plateType][field])
     end
 
-    -- The stored layout, for reading (a copy of the enemy's while the dungeon override does not
-    -- exist).
-    local function ReadLayout(profileKey, variant)
+    -- A normalized copy of the layout target draws with (World's for a context with no design).
+    local function GetLayout(target, variant)
         local db = GetSettings()
-        profileKey = ResolveProfileKey(profileKey)
-        if not db or not profileKey then return {} end
-        local profile = profileKey == "enemyDungeon" and db.plateProfiles.enemyDungeon or db.plateProfiles[profileKey]
-        local layout = profile and profile[LayoutField(profileKey, variant)]
-        return layout or GetLayout(profileKey, variant)
+        local plateType, design, field = LayoutTarget(target, variant)
+        if not plateType then plateType, design, field = "enemy", nil, "layout" end
+        local profile = db and Designs.For(db, plateType, design)
+        local fallback = db and LayoutFallback(db, plateType, design, field) or profileDefaults[plateType][field]
+        return NormalizeLayout(profile and profile[field], fallback)
     end
 
-    -- Edits a copy of a layout: edit(layout) changes it and returns a true value (its result), or
-    -- false to refuse. The copy then replaces the stored layout, normalized once, or as it is
-    -- when validated (the edit wrote only valid values). A stored layout is never changed in
-    -- place: the nameplates cache what they work out per layout table. The dungeon override is
-    -- made by the first edit that succeeds.
-    local function EditLayout(profileKey, variant, edit, validated)
+    -- Edits a copy of target's layout: edit(layout) changes it and returns a true value (its
+    -- result), or false to refuse. The copy then replaces the stored layout, normalized once, or as
+    -- it is when validated (the edit wrote only valid values). A stored layout is never changed in
+    -- place: the nameplates cache what they work out per layout table. A sparse design's copy is of
+    -- its effective layout, and only the entries the edit changed are stored, per sub-area.
+    local function EditLayout(target, variant, edit, validated)
         local db = GetSettings()
-        profileKey = ResolveProfileKey(profileKey)
-        if not db or not profileKey then return false end
-        local field = LayoutField(profileKey, variant)
-        local profile = profileKey == "enemyDungeon" and db.plateProfiles.enemyDungeon or db.plateProfiles[profileKey]
-        if not profile or type(profile[field]) ~= "table" then
-            local copy = GetLayout(profileKey, variant)
-            local result = edit(copy)
+        local plateType, design, field = LayoutTarget(target, variant)
+        if not db or not plateType then return false end
+        local fallback = LayoutFallback(db, plateType, design, field)
+        local result
+        local done = Mutate(db, plateType, design, function(profile)
+            local layout = type(profile[field]) == "table" and Table.DeepCopy(profile[field]) or NormalizeLayout(nil, fallback)
+            result = edit(layout)
             if not result then return false end
-            return SetLayout(copy, profileKey, variant) and result
-        end
-        local layout = Table.DeepCopy(profile[field])
-        local result = edit(layout)
-        if not result then return false end
-        profile[field] = validated and layout or NormalizeLayout(layout, ProfileFallback(db, profileKey)[field])
-        if profileKey == "enemy" then db.layout = profile.layout end
-        RefreshAll()
-        return result
+            profile[field] = validated and layout or NormalizeLayout(layout, fallback)
+            if plateType == "enemy" and not design then db.layout = profile.layout end
+        end)
+        return done and result
+    end
+
+    local function SetLayout(layout, target, variant)
+        return EditLayout(target, variant, function(copy)
+            Table.Replace(copy, Table.DeepCopy(type(layout) == "table" and layout or {}))
+            return true
+        end)
+    end
+
+    -- The layout target draws with, for reading only (World's for a context with no design).
+    local function ReadLayout(target, variant)
+        local db = GetSettings()
+        local plateType, design, field = LayoutTarget(target, variant)
+        if not db or not plateType then return {} end
+        local profile = Designs.For(db, plateType, design)
+        return profile and profile[field] or GetLayout(target, variant)
     end
 
     local function SetComponentPosition(key, x, y, profileKey, variant)
@@ -447,13 +563,20 @@ PS._CreatePlateSettings = function(context)
         return S.SortByTreeOrder(layout, keys, 0)
     end
 
-    -- A new group is an empty node at the top of the tree. Returns its key.
+    -- A new group is an empty node at the top of the tree. Returns its key: one no design of the
+    -- plate type uses there (World's and a context's groups never share a key).
     local function CreateComponentGroup(name, profileKey, variant)
+        local db = GetSettings()
+        local plateType, _, field = LayoutTarget(profileKey, variant)
+        local inUse = db and plateType and Designs.InUse(db, plateType, field) or {}
         local created = EditLayout(profileKey, variant, function(layout)
             local keys = GroupKeys(layout)
             if #keys >= S.MAX_GROUPS then return false end
             local index = 1
             for _, key in ipairs(keys) do index = math.max(index, tonumber(key:match("%d+")) + 1) end
+            for key in pairs(inUse) do
+                if S.IsGroupKey(key) then index = math.max(index, tonumber(key:match("%d+")) + 1) end
+            end
             for order, key in ipairs(Children(layout, nil)) do layout[key].order = order + 1 end
             local key = "group." .. index
             layout[key] = { x = 0, y = 0, visible = true, name = S.NormalizeGroupName(name) or ("Group " .. index),
@@ -575,21 +698,36 @@ PS._CreatePlateSettings = function(context)
 
     -- A Show on plates or aura box (Schema's PART_SWITCHES): its parts' eyes, in every layout the
     -- plate types that use them draw with now (Schema's EachLiveLayout), all on or all off. Other
-    -- layouts keep their own eyes; a deleted part stays deleted.
+    -- layouts keep their own eyes; a deleted part stays deleted. Every design: World and each full
+    -- design are set; a sparse design follows World's eye, so only one with its own eye for the part
+    -- is set, through its override (dropped where it now matches World). The Enemy players layer is
+    -- one record for every place: it is set once, from its World visit (an Enemies context design's
+    -- entry must not be stored in it).
     local function SetPartShownEverywhere(key, visible)
         local db = GetSettings()
         local switch = S.partSwitches[key]
         if not db or not switch or type(visible) ~= "boolean" then return false end
-        local found = false
-        S.EachLiveLayout(db, switch, function(layout, profile, field)
+        local found, own = false, {}
+        S.EachLiveLayout(db, switch, function(layout, profile, field, plateType, design, record)
+            if plateType == "enemyPlayer" and design ~= "world" then return end
+            local sparse = record and record.full ~= true
+            local entries = sparse and type(record.layouts) == "table" and record.layouts[field] or nil
             local copy
             for _, part in ipairs(switch.parts) do
                 local position = layout[part]
                 if type(position) == "table" and not position.removed then
-                    found = true
-                    if (position.visible ~= false) ~= visible then
-                        copy = copy or Table.DeepCopy(layout)
-                        copy[part].visible = visible
+                    if not sparse then
+                        found = true
+                        if (position.visible ~= false) ~= visible then
+                            copy = copy or Table.DeepCopy(layout)
+                            copy[part].visible = visible
+                        end
+                    elseif type(entries) == "table" and type(entries[part]) == "table" and entries[part].visible ~= nil then
+                        found = true
+                        local entry = Table.DeepCopy(position)
+                        entry.visible = visible
+                        local world = db.plateProfiles[plateType == "enemyPlayer" and "enemy" or plateType]
+                        own[#own + 1] = { world = world, record = record, field = field, part = part, entry = entry }
                     end
                 end
             end
@@ -597,7 +735,13 @@ PS._CreatePlateSettings = function(context)
             if copy then profile[field] = copy end
         end)
         if not found then return false end
+        -- After World's eyes, so an override that now matches World's goes.
+        for _, edit in ipairs(own) do
+            Designs.StoreEntry(edit.world, edit.record, edit.field, edit.part, edit.entry)
+            if edit.world.players == edit.record then Designs.SetPlayers(edit.world, edit.record) end
+        end
         db.layout = db.plateProfiles.enemy.layout
+        Designs.Invalidate()
         RefreshAll()
         return true
     end
@@ -652,8 +796,7 @@ PS._CreatePlateSettings = function(context)
     end
 
     local function ExistingSlot(profileKey, key)
-        local resolved = ResolveProfileKey(profileKey)
-        local profile = resolved and GetProfileSettings(resolved)
+        local profile = ResolveProfileKey(profileKey) and GetProfileSettings(profileKey)
         return profile and profile.valueSlots and profile.valueSlots[key]
     end
 
@@ -729,21 +872,34 @@ PS._CreatePlateSettings = function(context)
     local function IsFade(rule, fade)
         return type(rule) == "table" and rule.set == "alpha" and rule.when == fade.when
     end
-    -- visit(profile, key) for each part a fade applies to, in key order: shown, not deleted, and for
-    -- a custom part one in use. The loot bag is not a part of its own in Studio, so it is left out.
+    -- Whether a fade applies to key in profile: a part shown there, not deleted, and for a custom
+    -- part one in use. The loot bag is not a part of its own in Studio, so it is left out.
+    local function Fadeable(profile, key)
+        local position = type(profile.layout) == "table" and profile.layout[key]
+        if type(position) ~= "table" or S.IsGroupKey(key) or key == "questLoot" or S.TurnedOff(position) then return false end
+        if not key:match("^value%d+$") then return true end
+        local slot = type(profile.valueSlots) == "table" and profile.valueSlots[key]
+        return type(slot) == "table" and slot.source ~= "off"
+    end
+
+    -- visit(profile, key, plateType, design, record) for each part a fade applies to (Fadeable), in
+    -- key order. Every enemy design: World's and each full design's parts; a sparse design takes
+    -- World's rules, so only the parts it has its own rules for, and those it shows where World's
+    -- visit does not reach them (hidden or unused in World). The Enemy players layer's own rules are
+    -- the same in every place: it is visited once, on World, against the Enemies' World.
     local function EachFadePart(db, visit)
-        S.EachPlateLayout(db, S.ENEMY_PLATES, function(layout, profile)
+        local enemyWorld = db.plateProfiles.enemy
+        Designs.EachDesign(db, S.ENEMY_PLATES, function(profile, plateType, design, record)
+            if type(profile.layout) ~= "table" or (plateType == "enemyPlayer" and design ~= "world") then return end
+            local own = record and record.full ~= true and (type(record.rules) == "table" and record.rules or {}) or nil
             local keys = {}
-            for key, position in pairs(layout) do
-                if type(position) == "table" and not S.IsGroupKey(key) and key ~= "questLoot" and not S.TurnedOff(position) then
-                    local slot = key:match("^value%d+$") and profile.valueSlots and profile.valueSlots[key]
-                    if not key:match("^value%d+$") or (type(slot) == "table" and slot.source ~= "off") then
-                        keys[#keys + 1] = key
-                    end
+            for key in pairs(profile.layout) do
+                if Fadeable(profile, key) and (not own or own[key] ~= nil or not Fadeable(enemyWorld, key)) then
+                    keys[#keys + 1] = key
                 end
             end
             table.sort(keys)
-            for _, key in ipairs(keys) do visit(profile, key) end
+            for _, key in ipairs(keys) do visit(profile, key, plateType, design, record) end
         end)
     end
 
@@ -769,20 +925,40 @@ PS._CreatePlateSettings = function(context)
     end
 
     -- write(list) gets a copy of each part's rules and returns its new list (nil: unchanged). A
-    -- list is replaced whole, never edited in place; the plates refresh once.
+    -- list is replaced whole, never edited in place; the plates refresh once. A sparse design's
+    -- lists are stored as its overrides (one that now matches World's goes).
     local function EditFades(write)
-        local changed = false
-        EachFadePart(GetSettings(), function(profile, key)
+        local db = GetSettings()
+        local changed, sparse = false, {}
+        EachFadePart(db, function(profile, key, plateType, design, record)
             local rules = profile.rules or {}
             local list = write(Table.DeepCopy(rules[key] or {}))
-            if list then
+            if not list then return end
+            changed = true
+            if record and record.full ~= true then
+                local edit = sparse[record] or { plateType = plateType, design = design, lists = {} }
+                sparse[record], edit.lists[key] = edit, list
+            else
                 profile.rules = rules
                 rules[key] = #list > 0 and S.NormalizePartRules(rules, key, list) or nil
-                changed = true
             end
         end)
-        if changed then RefreshAll() end
-        return changed
+        if not changed then return false end
+        Designs.Invalidate()
+        for record, edit in pairs(sparse) do
+            local before = Designs.For(db, edit.plateType, edit.design)
+            local work = Designs.WorkingCopy(before)
+            work.rules = work.rules or {}
+            for key, list in pairs(edit.lists) do
+                work.rules[key] = #list > 0 and S.NormalizePartRules(work.rules, key, list) or nil
+            end
+            local world = db.plateProfiles[edit.plateType == "enemyPlayer" and "enemy" or edit.plateType]
+            Designs.StoreDiff(world, record, before, work)
+            if world.players == record then Designs.SetPlayers(world, record) end
+        end
+        Designs.Invalidate()
+        RefreshAll()
+        return true
     end
 
     -- On: each of those parts gets the fade once, last (so it wins over the part's own opacity
@@ -818,10 +994,7 @@ PS._CreatePlateSettings = function(context)
 
     -- One field of a part's style (Schema's NormalizeStyles); nil clears it. Colour by health is
     -- a blend rule (SetPartRules), not a style field.
-    local STYLE_FIELDS = { font = true, fontSize = true, outline = true, shadow = true, box = true, boxColour = true, boxBorder = true,
-        padding = true, texture = true, background = true, border = true, borderColour = true,
-        pipFill = true, pipEmpty = true, pipWidth = true, pipHeight = true, pipSpacing = true,
-        badgeSize = true, badgeSpacing = true, badgeOrientation = true, badgeInitial = true }
+    local STYLE_FIELDS = S.DESIGN.STYLE_FIELDS
     local function SetPartStyle(profileKey, key, field, value)
         if not S.PartKey(key) or not STYLE_FIELDS[field] then return false end
         if field == "fontSize" and value ~= nil and not S.InRange(S.STYLE_FONT_SIZE, value) then return false end
@@ -894,8 +1067,8 @@ PS._CreatePlateSettings = function(context)
     end
 
     local function SetProfileHealthColour(profileKey, r, g, b)
-        return MutateProfile(profileKey, function(profile, db, resolved)
-            profile.healthColour = NormalizeColour({ r = r, g = g, b = b }, ProfileFallback(db, resolved).healthColour)
+        return MutateProfile(profileKey, function(profile, db, plateType, design)
+            profile.healthColour = NormalizeColour({ r = r, g = g, b = b }, ProfileFallback(db, plateType, design).healthColour)
             profile.healthColourMode = "custom"
         end)
     end
@@ -905,6 +1078,37 @@ PS._CreatePlateSettings = function(context)
         local fallback = defaultRelationshipColours[relationship]
         if not db or not fallback then return false end
         db.relationshipColours[relationship] = NormalizeColour({ r = r, g = g, b = b }, fallback)
+        RefreshAll()
+        return true
+    end
+
+    -- A threat colour (Nameplates/ThreatColours.lua): the shared one, or with part that part's own
+    -- while its Own colours is on.
+    local function SetThreatColour(state, r, g, b, part)
+        local db = GetSettings()
+        local fallback = S.THREAT_COLOURS.defaults[state]
+        if not db or not fallback then return false end
+        local colour = NormalizeColour({ r = r, g = g, b = b }, fallback)
+        if part == nil then
+            db.threatColours[state] = colour
+        else
+            local own = S.THREAT_COLOURS.isPart[part] and db.threatPartColours[part]
+            if not own then return false end
+            own[state] = colour
+        end
+        RefreshAll()
+        return true
+    end
+
+    -- A part's Own colours: on starts from the shared colours, off goes back to them.
+    local function SetThreatPartOwnColours(part, on)
+        local db = GetSettings()
+        if not db or not S.THREAT_COLOURS.isPart[part] then return false end
+        if on then
+            if not db.threatPartColours[part] then db.threatPartColours[part] = Table.DeepCopy(db.threatColours) end
+        else
+            db.threatPartColours[part] = nil
+        end
         RefreshAll()
         return true
     end
@@ -936,7 +1140,99 @@ PS._CreatePlateSettings = function(context)
         return GetSettings()
     end
 
-    return {
+    -- Context designs as wholes (Studio's design row): plateType's design for a context. Like any
+    -- edit, each needs Save and Revert undoes it. The logic is Designs'.
+    local designs = {}
+    -- World, the stored record (nil: none yet) and the settings, or nil when plateType cannot store
+    -- a design for context (friendly plates' Dungeons & raids design is Blizzard's: always there).
+    local function DesignOf(plateType, design)
+        local db = GetSettings()
+        -- The Enemy players layer: "enemyPlayer" (its one design, whatever the context named) or the
+        -- Enemies' "players"; added (empty), reset and removed, never copied or slimmed.
+        if plateType == "enemyPlayer" or (plateType == "enemy" and design == Designs.PLAYERS) then
+            if not db then return nil end
+            return db.plateProfiles.enemy, Designs.Record(db, "enemy", Designs.PLAYERS), db, true
+        end
+        local stored = S.DESIGN.STORED[plateType]
+        if not db or not stored or not stored[design] then return nil end
+        return db.plateProfiles[plateType], Designs.Record(db, plateType, design)
+    end
+    local function DesignsChanged()
+        Designs.Invalidate()
+        RefreshAll()
+        return true
+    end
+
+    -- A new design that follows World: starter "world" (or nil) with no overrides, or "light"
+    -- (Cities & inns only; Designs.Starter). false when it exists already.
+    function designs.AddDesign(plateType, design, starter)
+        local world, record, _, players = DesignOf(plateType, design)
+        if not world or record then return false end
+        if players then
+            -- Enemy players' one layer: no place named, no starter.
+            if (design ~= nil and design ~= "world") or (starter ~= nil and starter ~= "world") then return false end
+            Designs.SetPlayers(world, {})
+            return DesignsChanged()
+        end
+        if starter ~= nil and starter ~= "world" and not (starter == "light" and design == "city") then return false end
+        Designs.SetSparse(world, design, Designs.Starter(world, starter))
+        return DesignsChanged()
+    end
+
+    -- "Use World again": the design goes.
+    function designs.RemoveDesign(plateType, design)
+        local world, record, _, players = DesignOf(plateType, design)
+        if not record or (players and design ~= nil and design ~= "world") then return false end
+        if players then Designs.SetPlayers(world, nil) else Designs.SetFull(world, design, nil) end
+        return DesignsChanged()
+    end
+
+    -- Every override goes; the design stays, following World (a full one becomes sparse).
+    function designs.ResetDesign(plateType, design)
+        local world, record, _, players = DesignOf(plateType, design)
+        if not record or not Designs.ResetAll(record) then return false end
+        if players then Designs.SetPlayers(world, record) end
+        return DesignsChanged()
+    end
+
+    -- One area back to World (Designs.Reset's area): a full design takes World's value and stays full.
+    function designs.ResetDesignArea(plateType, design, area)
+        local world, record, _, players = DesignOf(plateType, design)
+        if not record or not Designs.Reset(world, record, area, players and "enemy" or plateType) then return false end
+        if players then Designs.SetPlayers(world, record) end
+        return DesignsChanged()
+    end
+
+    -- "Slim down to differences": a full design becomes the sparse one that draws the same.
+    function designs.SlimDesign(plateType, design)
+        local world, record, _, players = DesignOf(plateType, design)
+        if not record or players or not Designs.Slim(world, record) then return false end
+        return DesignsChanged()
+    end
+
+    -- "Start from another design": to's design becomes a sparse copy of from's ("world": none, so it
+    -- follows World), made if to had none.
+    function designs.CopyDesign(plateType, from, to)
+        local world, _, _, players = DesignOf(plateType, to)
+        if not world or players or from == to then return false end
+        local copy = {}
+        if from ~= "world" then
+            local _, source = DesignOf(plateType, from)
+            copy = source and Designs.CopyFrom(world, source)
+            if not copy then return false end
+        end
+        Designs.SetSparse(world, to, copy)
+        return DesignsChanged()
+    end
+
+    -- A custom-part slot free in every design of target's plate type (Designs.FreeValueSlot), or nil.
+    function designs.FreeValueSlot(target)
+        local db = GetSettings()
+        local plateType = ResolveProfileKey(target)
+        return db and plateType and Designs.FreeValueSlot(db, plateType) or nil
+    end
+
+    local api = {
         SetOption = SetOption,
         GetLayout = GetLayout,
         SetLayout = SetLayout,
@@ -947,13 +1243,11 @@ PS._CreatePlateSettings = function(context)
         SetPartShownEverywhere = SetPartShownEverywhere,
         GetPartShownState = GetPartShownState,
         GetPlateProfileSettings = GetProfileSettings,
-        GetDungeonEnemyOverride = function()
-            local db = GetSettings()
-            return db and db.plateProfiles and db.plateProfiles.enemyDungeon or nil
-        end,
+        GetDungeonEnemyOverride = function() return DungeonDesign(GetSettings()) end,
         SetDungeonEnemyProfile = SetDungeonEnemyProfile,
         GetDefaultLayout = GetDefaultLayout,
         SetPlateProfileOption = SetProfileOption,
+        CopyTargetHighlight = CopyTargetHighlight,
         SetPlateValueSlot = SetProfileValueSlot,
         SetPlateValueSlotFields = SetValueSlotFields,
         SetPlateAuraLayout = SetProfileAuraLayout,
@@ -968,6 +1262,8 @@ PS._CreatePlateSettings = function(context)
         ApplyStylePreset = ApplyStylePreset,
         SetPlateProfileHealthColour = SetProfileHealthColour,
         SetRelationshipColour = SetRelationshipColour,
+        SetThreatColour = SetThreatColour,
+        SetThreatPartOwnColours = SetThreatPartOwnColours,
         GetCharacterSettings = GetCharacterSettings,
         SetCharacterOption = SetCharacterOption,
         ResetSettings = ResetSettings,
@@ -984,6 +1280,7 @@ PS._CreatePlateSettings = function(context)
         SetComponentLayer = SetComponentLayer,
         RenameComponent = RenameComponent,
         SetLayoutMeasure = SetLayoutMeasure,
+        SetSettingsDrag = SetSettingsDrag,
         RestoreComponent = RestoreComponent,
         ResetComponent = ResetComponent,
         MoveComponentGroupTo = MoveComponentGroupTo,
@@ -991,4 +1288,6 @@ PS._CreatePlateSettings = function(context)
         DeleteComponentGroup = DeleteComponentGroup,
         ComponentGroupKeys = GroupKeys,
     }
+    for name, fn in pairs(designs) do api[name] = fn end
+    return api
 end

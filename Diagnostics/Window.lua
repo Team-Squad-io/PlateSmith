@@ -348,6 +348,10 @@ for _, spec in ipairs(PROFILER_ROWS) do
         return text and string.format(text, value) or Count(value)
     end
 end
+local function PerFrame(value)
+    if type(value) ~= "number" then return L["–"] end
+    return string.format(L["%.2f ms/frame"], value)
+end
 local function ViewCost(value)
     if type(value) ~= "number" then return L["–"] end
     return string.format(L["%.2f ms (peak %.2f)"], value / 100, LIVE.peakMs)
@@ -357,8 +361,11 @@ local function PaintProfiler(frame, live)
     local profiler, rows = live.profiler or {}, frame.perfProfilerRows
     profilerText.unavailable = profiler.state and L["unavailable"] or nil
     for _, spec in ipairs(PROFILER_ROWS) do SetCell(rows[spec[1]].value, profiler[spec[2]], spec.format) end
-    local recent = profiler.recentAverageMs
-    SetRole(rows.recent.value, type(recent) == "number" and recent > Summary.frameBudgetMs and "error" or "value")
+    local frames = live.frames or {}
+    SetCell(rows.timed.value, frames.recentAverageMs, PerFrame)
+    SetCell(rows.timedOver5.value, frames.recentOver5Ms, Count)
+    local timed = frames.recentAverageMs
+    SetRole(rows.timed.value, type(timed) == "number" and timed > Summary.frameBudgetMs and "error" or "value")
     -- This view's cost, to the hundredth shown, with its peak: written when either moves.
     local shownPeak = math.floor(LIVE.peakMs * 100 + 0.5)
     local shownLast = LIVE.lastMs and math.floor(LIVE.lastMs * 100 + 0.5) or nil
@@ -713,9 +720,13 @@ local function BuildPerformance(frame)
     end
     local profiler = Section("profiler", L["Profiler"])
     local rows = {}
-    for _, spec in ipairs({ { "recent", L["Recent average"] }, { "session", L["Session average"] },
-        { "peak", L["Peak (client profiler, this session)"] }, { "over5", L["Frames over 5 ms"] },
-        { "over50", L["Frames over 50 ms"] }, { "view", L["This view's refresh"] } }) do
+    -- PlateSmith's own timed work first (ticker passes and timed events, over the recent window), then
+    -- the client profiler's figures: all PlateSmith code, Studio and untimed hooks included, the frame
+    -- counts since login.
+    for _, spec in ipairs({ { "timed", L["Timed work, recent"] }, { "timedOver5", L["Timed frames over 5 ms, recent"] },
+        { "recent", L["Client: recent average"] }, { "session", L["Client: session average"] },
+        { "peak", L["Peak (client profiler, this session)"] }, { "over5", L["Client: frames over 5 ms, session"] },
+        { "over50", L["Client: frames over 50 ms, session"] }, { "view", L["This view's refresh"] } }) do
         local row = kit.Row(profiler, spec[2])
         row.value = kit.Value(row)
         row.value:SetWidth(160)

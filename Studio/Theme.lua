@@ -135,7 +135,10 @@ function Theme.NineSlice(parent, family, layer, sublevel)
         texture.kitPart = part
         ring.textures[index] = texture
     end
+    -- Laid out again only when its rectangle changes (Studio relays out every panel on each reflow).
     function ring:Layout(x, y, width, height)
+        if self.laidX == x and self.laidY == y and self.laidWidth == width and self.laidHeight == height then return end
+        self.laidX, self.laidY, self.laidWidth, self.laidHeight = x, y, width, height
         local _, _, c = Size(family .. "-corner-tl")
         local _, _, _, top = Size(family .. "-edge-top")
         local _, _, left = Size(family .. "-edge-left")
@@ -176,6 +179,10 @@ function Theme.ThreeSlice(parent, prefix, height)
         if not capLeft or not capRight then return end
         local drawn = self.fit and self.parent:GetHeight() or nil
         if drawn and drawn <= 0 then drawn = nil end
+        -- Laid out again only when its width, height or look changes.
+        local look = self:Name("mid")
+        if self.laidWidth == width and self.laidDrawn == drawn and self.laidLook == look then return end
+        self.laidWidth, self.laidDrawn, self.laidLook = width, drawn, look
         local t = self.textures
         Theme.Place(t[1], self:Name("left"), self.parent, 0, 0, drawn and capLeft, drawn)
         Theme.Repeat(t[2], self:Name("mid"), self.parent, capLeft, 0, math.max(1, width - capLeft - capRight), "x", drawn)

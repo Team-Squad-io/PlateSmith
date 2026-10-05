@@ -76,20 +76,6 @@ local function Initial(unit)
     return first and first:upper() or nil
 end
 
--- The class colour for a readable class file, else nil.
-local function ReadableClassColour(classFile)
-    local classColour = rawget(_G, "C_ClassColor")
-    if type(classColour) == "table" and type(classColour.GetClassColor) == "function" then
-        local ok, colour = pcall(classColour.GetClassColor, classFile)
-        if ok and IsReadable(colour) and type(colour) == "table" and IsReadable(colour.r) and type(colour.r) == "number" then
-            return colour.r, colour.g, colour.b
-        end
-    end
-    local colours = rawget(_G, "RAID_CLASS_COLORS")
-    local colour = type(colours) == "table" and colours[classFile]
-    if type(colour) == "table" and type(colour.r) == "number" then return colour.r, colour.g, colour.b end
-    return nil
-end
 
 local function IsTank(unit)
     if type(UnitGroupRolesAssigned) == "function" then
@@ -118,7 +104,7 @@ local function RebuildMembers()
         member.r, member.g, member.b, member.classFile, member.classOpaque = nil, nil, nil, nil, false
         local classFile, has = Secret.ClassFile(unit)
         if has and IsReadable(classFile) and type(classFile) == "string" then
-            member.r, member.g, member.b = ReadableClassColour(classFile)
+            member.r, member.g, member.b = Secret.ClassColour(classFile)
         elseif has then
             member.classFile, member.classOpaque = classFile, true
         end

@@ -15,6 +15,32 @@ function Controls.PercentText(ratio) return string.format(L["%d%%"], math.floor(
 function Controls.PixelText(value) return string.format(L["%d px"], value) end
 function Controls.PointText(value) return string.format(L["%d pt"], value) end
 
+-- One physical screen pixel in region's own units (the UI's pixel factor over its effective scale,
+-- as Blizzard's PixelUtil works it out), or nil where the client cannot say. Thin lines sized in
+-- these never fall under a pixel at any UI scale, Studio scale or zoom.
+function Controls.PhysicalPixel(region)
+    local factor
+    local pixelUtil = rawget(_G, "PixelUtil")
+    if type(pixelUtil) == "table" and type(pixelUtil.GetPixelToUIUnitFactor) == "function" then
+        local ok, value = pcall(pixelUtil.GetPixelToUIUnitFactor)
+        if ok and type(value) == "number" and value > 0 then factor = value end
+    end
+    if not factor and type(GetPhysicalScreenSize) == "function" then
+        local ok, _, height = pcall(GetPhysicalScreenSize)
+        if ok and type(height) == "number" and height > 0 then factor = 768 / height end
+    end
+    local scale = factor and region and region.GetEffectiveScale and region:GetEffectiveScale()
+    if type(scale) ~= "number" or scale <= 0 then return nil end
+    return factor / scale
+end
+
+-- A thin line's texture: the client does not move it to the pixel grid (where a line under a pixel
+-- wide can round to nothing); its caller sizes and places it in whole physical pixels instead.
+function Controls.KeepOffPixelGrid(texture)
+    if texture.SetSnapToPixelGrid then texture:SetSnapToPixelGrid(false) end
+    if texture.SetTexelSnappingBias then texture:SetTexelSnappingBias(0) end
+end
+
 -- A frame (or one of its parents) may skin the kit's controls as they are made:
 -- skinControl(control, kind) with kind "checkbox", "slider" or "dropdown".
 local function Skin(parent, control, kind)
@@ -59,12 +85,12 @@ function Controls.Label(parent, text, x, y, template)
     return label
 end
 
--- title plus lines; each line is text or { text, r, g, b }.
+-- title (text, or a function returning it when shown) plus lines; each line is text or { text, r, g, b }.
 function Controls.AttachTooltip(owner, title, lines)
     local function Show(instance)
         if not GameTooltip then return end
         GameTooltip:SetOwner(instance, "ANCHOR_RIGHT")
-        GameTooltip:SetText(title)
+        GameTooltip:SetText(type(title) == "function" and title() or title)
         for _, line in ipairs(lines or {}) do
             if type(line) == "table" then
                 GameTooltip:AddLine(line[1], line[2] or 1, line[3] or 0.82, line[4] or 0.45, true)
@@ -206,10 +232,13 @@ function Controls.Slider(parent, spec)
         end
     end
     -- Without captions, the template's own text (its Low, High and title strings, which an
-    -- unnamed slider cannot reach by name) stays empty and hidden too.
-    if spec.captions == false and slider.GetRegions then
+    -- unnamed slider cannot reach by name) stays empty and hidden too. With them, every string but the
+    -- two captions does: where the template's Low and High did not arrive as slider.Low and .High (the
+    -- store simulator), they would draw "Low" and "High" under the captions made here.
+    if slider.GetRegions then
         for _, region in ipairs({ slider:GetRegions() }) do
-            if region.GetObjectType and region:GetObjectType() == "FontString" then
+            local caption = spec.captions ~= false and (region == slider.Low or region == slider.High)
+            if not caption and region.GetObjectType and region:GetObjectType() == "FontString" then
                 region:SetText("")
                 region:Hide()
             end
@@ -226,12 +255,22 @@ function Controls.Slider(parent, spec)
         local write = instance.dragging and spec.drag or spec.set
         if write(value) ~= false then valueText:SetText(format(value)) end
     end)
+    -- Controls.DragListener(true/false), when set, hears a drag start and end (before the release's
+    -- write), so whoever stores the values can hold back costly work until the drag ends.
     slider:HookScript("OnMouseDown", function(instance)
         instance.dragging, instance.lastWritten = true, nil
+        if Controls.DragListener then Controls.DragListener(true) end
     end)
-    slider:HookScript("OnMouseUp", function(instance)
-        if not instance.dragging then return end
+    local function EndDrag(instance)
+        if not instance.dragging then return false end
         instance.dragging = false
+        if Controls.DragListener then Controls.DragListener(false) end
+        return true
+    end
+    -- Hidden mid-drag (the window closed), it never hears the mouse go up.
+    slider:HookScript("OnHide", EndDrag)
+    slider:HookScript("OnMouseUp", function(instance)
+        if not EndDrag(instance) then return end
         if spec.drag then
             local value = math.floor((instance:GetValue() or 0) / spec.step + 0.5) * spec.step
             instance.lastWritten = value

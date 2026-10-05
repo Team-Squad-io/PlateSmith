@@ -168,11 +168,11 @@ local function HookDriver()
             hooked[method] = pcall(hooksecurefunc, driver, method, function() ScheduleReapply() end)
         end
     end
-    -- Each plate add re-stamps that name's height; in instances (where the names are Blizzard's own
-    -- and cannot be sized one by one) the objects are re-asserted once per frame after adds.
+    -- Each plate add re-stamps that name's height; where the name is Blizzard's own (in instances, and
+    -- outdoors on a plate PlateSmith does not draw) the objects are re-asserted after adds.
     if not hooked.OnNamePlateAdded and type(driver.OnNamePlateAdded) == "function" then
-        hooked.OnNamePlateAdded = pcall(hooksecurefunc, driver, "OnNamePlateAdded", function()
-            if mode and InInstance() then NativeFonts.AfterAdd() end
+        hooked.OnNamePlateAdded = pcall(hooksecurefunc, driver, "OnNamePlateAdded", function(_, unit)
+            if mode and NativeFonts.BlizzardName(unit) then NativeFonts.AfterAdd() end
         end)
     end
 end
@@ -221,6 +221,21 @@ local function ReapplyLast()
     ReapplyNow()
 end
 
+-- Whether the plate added for unit shows Blizzard's own name: always in a dungeon or raid; outdoors
+-- when the plates (PS.PlateDrawsUnit) do not draw it, or cannot say for an unreadable token.
+function NativeFonts.BlizzardName(unit)
+    if InInstance() then return true end
+    local draws = PS.PlateDrawsUnit
+    if type(draws) ~= "function" then return false end
+    if not Secret.IsReadable(unit) or type(unit) ~= "string" then return true end
+    return not draws(unit)
+end
+
+-- For /ps diagnose: adds whose names were corrected at once (immediate) or by the next frame's pass
+-- (nextFrame), the passes run, the backstop's rewrites, and the most frames an add waited (0 or 1).
+local stats = { immediate = 0, nextFrame = 0, framePasses = 0, backstop = 0, maxDelayFrames = 0 }
+NativeFonts.stats = stats
+
 ScheduleReapply = function()
     if not mode or reapplyScheduled then return end
     if not (C_Timer and type(C_Timer.After) == "function") then
@@ -242,7 +257,14 @@ function NativeFonts.AfterAdd()
     local now = type(GetTime) == "function" and GetTime() or nil
     if now ~= addFrameTime then addFrameTime, addFrameCount = now, 0 end
     addFrameCount = addFrameCount + 1
-    if addFrameCount <= IMMEDIATE_PER_FRAME then ReapplyNow() end
+    if addFrameCount <= IMMEDIATE_PER_FRAME then
+        ReapplyNow()
+        stats.immediate = stats.immediate + 1
+    else
+        stats.nextFrame = stats.nextFrame + 1
+        -- C_Timer.After(0) runs next frame; without it ScheduleFrame applies at once.
+        if C_Timer and type(C_Timer.After) == "function" then stats.maxDelayFrames = 1 end
+    end
     NativeFonts.ScheduleFrame()
 end
 
@@ -250,6 +272,7 @@ end
 local framePassScheduled = false
 local function FramePass()
     framePassScheduled = false
+    stats.framePasses = stats.framePasses + 1
     ReapplyNow()
 end
 function NativeFonts.ScheduleFrame()
@@ -271,6 +294,7 @@ function NativeFonts.CheckKept()
         if record and not unsettled[name] and not Kept(name, object) then
             local path, size, flags = Target(settings, record)
             Write(name, object, path, size, flags, true)
+            stats.backstop = stats.backstop + 1
             if not Kept(name, object) then unsettled[name] = true end
         end
     end
@@ -290,7 +314,8 @@ end
 
 -- For /ps diagnose: the owner's state and every listed object (none when this client lacks it).
 function NativeFonts.Report()
-    local report = { mode = mode or "none", objects = {} }
+    local report = { mode = mode or "none", objects = {}, adds = {} }
+    for key, value in pairs(stats) do report.adds[key] = value end
     local reported = {}
     for _, name in ipairs(NativeFonts.OBJECTS) do
         local object = _G[name]

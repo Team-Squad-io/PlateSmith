@@ -8,7 +8,8 @@ local editorLabels = catalog.editorLabels
 local editorDefinitions = catalog.editorDefinitions
 local editorProfiles = model.editorProfiles
 local WidgetName = model.WidgetName
-local editorProfileSet = { enemy = true, enemyDungeon = true, friendlyPlayer = true, friendlyNPC = true }
+local editorProfileSet = { enemy = true, friendlyPlayer = true, friendlyNPC = true, enemyPlayer = true }
+local Designs = assert(PS.Designs, "PlateSmith Designs missing")
 
 local IsReadableValue = PS.Secret.IsReadable
 local STYLE_DEFAULTS = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing").STYLE_DEFAULTS
@@ -65,10 +66,10 @@ local function MakeEditorComponent(parent, key, width, height)
 end
 
 -- In dungeons and raids Blizzard draws friendly plates itself, and addons cannot draw on or size
--- them. Unless the test overlay is on, Studio's Dungeon Players and Friendly NPCs show only what
+-- them. Unless the test overlay is on, Players and Friendly NPCs › Dungeons & raids show only what
 -- can change there: the name's font, which is Blizzard's shared one (Nameplates/NativeFonts.lua).
 function Options:IsEditorBlizzardNames(settings)
-    if self.editorContext ~= "dungeon" then return false end
+    if self.editorDesign ~= "dungeon" then return false end
     if self.editorProfile ~= "friendlyPlayer" and self.editorProfile ~= "friendlyNPC" then return false end
     settings = settings or (type(PS.GetSettings) == "function" and PS.GetSettings())
     return not (settings and settings.experimentalDungeonFriendlyText == true)
@@ -84,17 +85,16 @@ function Options:IsEditorComponentRelevant(key, settings, includeRemoved)
     local position = self.editorLayout and self.editorLayout[key]
     if position and position.removed and not includeRemoved then return false end
     settings = settings or (type(PS.GetSettings) == "function" and PS.GetSettings())
-    local friendlyMode = self.editorContext == "dungeon" and self.editorProfile ~= "enemyDungeon"
-        and "full" or (self.editorFriendlyView or (settings and settings.friendly))
+    local friendlyMode = self.editorDesign == "dungeon" and "full"
+        or (self.editorFriendlyView or (settings and settings.friendly))
     if key:match("^value%d+$") then
-        local profile = PS.GetPlateProfileSettings(self.editorProfile)
+        local profile = self:EditorProfileSettings()
         local slot = profile and profile.valueSlots and profile.valueSlots[key]
         if not slot or slot.source == "off" then return false end
-        if self.editorProfile ~= "enemy" and self.editorProfile ~= "enemyDungeon"
-            and friendlyMode ~= "full" then return false end
+        if not self:IsEditorEnemy() and friendlyMode ~= "full" then return false end
         return true
     end
-    if self.editorProfile == "enemy" or self.editorProfile == "enemyDungeon" then
+    if self:IsEditorEnemy() then
         return key ~= "guild" and key ~= "relationshipIcon" and key ~= "pvpIcon"
     end
     if friendlyMode == "off" or not friendlyMode then return false end
@@ -152,29 +152,32 @@ function Options:ApplyEditorPreviewStyles(profile)
             box:ClearAllPoints()
             box:SetPoint("TOPLEFT", text, "TOPLEFT", -padding, padding)
             box:SetPoint("BOTTOMRIGHT", text, "BOTTOMRIGHT", padding, -padding)
-            box:SetBackdrop({ bgFile = PREVIEW_WHITE, edgeFile = PREVIEW_WHITE, edgeSize = 1 })
-            local fill = style.boxColour or STYLE_DEFAULTS.boxColour
-            box:SetBackdropColor(fill.r, fill.g, fill.b, fill.a or 1)
-            local edge = style.boxBorder or STYLE_DEFAULTS.boxBorder
-            box:SetBackdropBorderColor(edge.r, edge.g, edge.b, edge.a or 1)
+            -- Rounded: Blizzard's level box art, as on the plates (the square box where the client lacks it).
+            if PS.StyleBox.Rounded(box, style.boxShape == "rounded") then
+                box:SetBackdrop(nil)
+            else
+                box:SetBackdrop({ bgFile = PREVIEW_WHITE, edgeFile = PREVIEW_WHITE, edgeSize = 1 })
+                local fill = style.boxColour or STYLE_DEFAULTS.boxColour
+                box:SetBackdropColor(fill.r, fill.g, fill.b, fill.a or 1)
+                local edge = style.boxBorder or STYLE_DEFAULTS.boxBorder
+                box:SetBackdropBorderColor(edge.r, edge.g, edge.b, edge.a or 1)
+            end
             box:Show()
         elseif box then
             box:Hide()
         end
         -- Bars.
         if bar then
-            if style and style.texture then bar:SetStatusBarTexture(PS.Media.StatusBarPath(style.texture)) end
+            if style and style.texture then PS.Media.SetStatusBar(bar, style.texture) end
             if not component.styleBackground then
                 component.styleBackground = bar:CreateTexture(nil, "BACKGROUND", nil, -8)
                 component.styleBackground:SetAllPoints(bar)
             end
-            local background = style and style.background
-            if background then
-                component.styleBackground:SetColorTexture(background.r, background.g, background.b, background.a or 1)
-                component.styleBackground:Show()
-            else
-                component.styleBackground:Hide()
-            end
+            -- As the plates (Factory, Styles.StyledBar): every bar has its dark background, the style's
+            -- colour or the default one, so a target glow behind the plate never shows through a bar.
+            local background = style and style.background or STYLE_DEFAULTS.background
+            component.styleBackground:SetColorTexture(background.r, background.g, background.b, background.a or 1)
+            component.styleBackground:Show()
             local border = component.styleBorder
             local size = style and style.border or 0
             if size > 0 then
@@ -232,9 +235,47 @@ function Options:ApplyEditorPreviewRules(profile)
     end
 end
 
+-- Threat colours in the preview, from the test values (ThreatColours.ForSample): the health bar and
+-- the name where no rule colours them (ruled[key]), and the health bar's edge.
+function Options:ApplyEditorPreviewThreat(ruled)
+    local Threat, settings = PS.ThreatColours, PS.GetSettings and PS.GetSettings()
+    if not Threat or not settings then return end
+    local components, samples = self.editorComponents or {}, self.templateSamples or {}
+    for _, key in ipairs(Threat.RULE_PARTS) do
+        local component = components[key]
+        local colour = not ruled[key] and Threat.ForSample(settings, key, samples)
+        if colour and component and component:IsShown() and not component.previewNative then
+            if component.previewBar then
+                component.previewBar:SetStatusBarColor(colour.r, colour.g, colour.b)
+            elseif component.previewText then
+                component.previewText:SetTextColor(colour.r, colour.g, colour.b)
+            end
+        end
+    end
+    local health = components.health
+    if not health then return end
+    local colour = health:IsShown() and Threat.ForSample(settings, "border", samples)
+    local edge = health.previewThreatEdge
+    if colour and not edge then
+        edge = CreateFrame("Frame", nil, health, "BackdropTemplate")
+        edge:SetPoint("TOPLEFT", health, "TOPLEFT", -1, 1)
+        edge:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", 1, -1)
+        edge:SetBackdrop({ edgeFile = PREVIEW_WHITE, edgeSize = 1 })
+        if health.previewBar then edge:SetFrameLevel(health.previewBar:GetFrameLevel() + 2) end
+        health.previewThreatEdge = edge
+    end
+    if not edge then return end
+    if colour then edge:SetBackdropBorderColor(colour.r, colour.g, colour.b, 1) end
+    edge:SetShown(colour and true or false)
+end
+
 function Options:ApplyEditorPreviewPartRules(profile)
     local rules = profile and profile.rules
-    if not rules or not PS.Template then return end
+    local ruled = {}
+    if not rules or not PS.Template then
+        self:ApplyEditorPreviewThreat(ruled)
+        return
+    end
     local samples, forced = self.templateSamples or {}, self.editorRulesPreviewTrue
     local function Read(token) return samples[token] end
     local percent = tonumber(samples["health.percent"]) or 72
@@ -254,6 +295,7 @@ function Options:ApplyEditorPreviewPartRules(profile)
                 end
             end
             if colour then
+                ruled[key] = true
                 if component.previewBar then component.previewBar:SetStatusBarColor(colour.r, colour.g, colour.b)
                 elseif component.previewTexture then component.previewTexture:SetVertexColor(colour.r, colour.g, colour.b)
                 elseif component.previewText then component.previewText:SetTextColor(colour.r, colour.g, colour.b) end
@@ -265,6 +307,7 @@ function Options:ApplyEditorPreviewPartRules(profile)
             component.previewRuleHidden = (hide or alpha == 0) or nil
         end
     end
+    self:ApplyEditorPreviewThreat(ruled)
 end
 
 local function SetTargetPreviewStrength(options, strength)
@@ -300,9 +343,85 @@ function Options:UpdateEditorPulse()
     PS.Ticker.SetEnabled(PULSE_TICKER, pulsing and true or false)
 end
 
+-- The soft glow style's preview: the plates' own glow (Nameplates/TargetGlow.lua), placed and coloured
+-- as they do it, round the sample's bars and texts under every part, in the sample's colour (Test values' reaction; a
+-- player sample in your class colour; Threat: the threat colour Test values' role and threat flags give, as the bars'
+-- Threat colours take it, out of combat the custom colour). highlight: the design's (Schema's HIGHLIGHT).
+local function SoftGlowColour(options, highlight)
+    local samples, reactions = options.templateSamples or {}, PS.TargetGlow.REACTION
+    local classFile -- never truth-tested: it may be protected (Glow.Colour reads it through Secret)
+    if samples.player then classFile = PS.Secret.ClassFile("player") end
+    local reaction = samples.hostile and reactions.hostile or samples.friendly and reactions.friendly or reactions.neutral
+    local threat = highlight.targetGlowColourMode == "threat" and PS.ThreatColours
+        and PS.ThreatColours.ForSample(PS.GetSettings(), PS.ThreatColours.GLOW, samples) or nil
+    return PS.TargetGlow.Colour(highlight, classFile, reaction, threat)
+end
+local function EditorTransforms(_, options) return options:EditorTransforms() end
+-- As on the plates, a part counts only while it draws something: not a faint sample (the cast bar while
+-- Test values' Casting is off, which the plates hide, or a part turned off in Settings).
+-- The design's part sizes as the stage draws them (its parts are sized at the profile's scale), for
+-- Glow.Bounds' boxes.
+local stageSizes = {}
+local SIZE_FIELDS = { "width", "healthHeight", "powerWidth", "powerHeight", "castWidth", "castHeight", "nameFontSize" }
+local function StageSizes(profile)
+    local scale = tonumber(profile.scale) or 1
+    for _, field in ipairs(SIZE_FIELDS) do
+        local value = tonumber(profile[field])
+        stageSizes[field] = value and value * scale or nil
+    end
+    if not stageSizes.castHeight and stageSizes.healthHeight then
+        stageSizes.castHeight = math.max(5, (tonumber(profile.healthHeight) or 10) - 3) * scale
+    end
+    return stageSizes
+end
+-- The sample name's drawn width (Studio's own text, always readable), so a long one widens the glow.
+local function EditorNameWidth(options)
+    local component = options.editorComponents and options.editorComponents.name
+    local text = component and component.previewText
+    return text and PS.Secret.ReadNumber(text, "GetStringWidth") or nil
+end
+local function EditorEdgeDrawn(_, _, component)
+    if component.previewIdle or not component.targetPreviewVisible then return false end
+    local text = not component.previewBar and component.previewText
+    if not text then return true end
+    return (not text.GetText or (text:GetText() or "") ~= "") and (not text.GetAlpha or (text:GetAlpha() or 1) >= 0.99)
+end
+
+function Options:RefreshSoftGlowPreview(settings, shown)
+    local Glow, glow = PS.TargetGlow, self.targetPreviewSoftGlow
+    local components = self.editorComponents or {}
+    local health, name = components.health, components.name
+    if not (shown and name) then
+        if glow then Glow.Hide(glow) end
+        return
+    end
+    local stage = self.editorPreviewStage or self.editorCanvas
+    if not glow then
+        glow = Glow.Create(stage)
+        self.targetPreviewSoftGlow = glow
+    end
+    Glow.SetLevel(glow, stage:GetFrameLevel())
+    -- Its spread at the sample's drawn size (the preview's zoom and the profile's scale).
+    local scale = health and health.GetScale and health:GetScale() or 1
+    local spread = settings.targetGlowSpread
+    Glow.Style(glow, { targetGlowSpread = spread and spread * scale, targetGlowOpacity = settings.targetGlowOpacity,
+        targetGlowPulse = settings.targetGlowPulse, targetGlowOffsetX = (settings.targetGlowOffsetX or 0) * scale,
+        targetGlowOffsetY = (settings.targetGlowOffsetY or 0) * scale })
+    local layout = self.editorLayout or {}
+    local barless = not (health and health:IsShown() and layout.health)
+    Glow.Place(glow, Glow.Bounds(layout, components, barless, EditorTransforms, self,
+        StageSizes(self:EditorProfileSettings() or settings), EditorEdgeDrawn, EditorNameWidth))
+    Glow.Paint(glow, SoftGlowColour(self, settings))
+    Glow.Show(glow)
+end
+
+-- settings: the general settings; the sample shows the open design's own highlight over them (Schema's
+-- HIGHLIGHT), as its plates do.
 function Options:RefreshTargetHighlightPreview(settings)
     if not self.editorCanvas then return end
-    local style = settings.targetHighlightStyle
+    local highlight = PS.ProfileSchema.HIGHLIGHT.Resolve(settings, self:EditorProfileSettings(), self.editorHighlight)
+    self.editorHighlight = highlight
+    local style = highlight.targetHighlightStyle
     if self.targetPreviewStyle ~= style then
         self.targetPreviewStyle = style
         self:UpdateEditorPulse()
@@ -316,25 +435,56 @@ function Options:RefreshTargetHighlightPreview(settings)
             glow:SetBackdropBorderColor(1, 0.7, 0.14, 1)
         end
     end
-    -- Test values: only a targeted sample shows the glow.
-    local targeted = not (self.templateSamples and self.templateSamples.targeted == false)
+    -- Test values: only a targeted sample shows the glow, except while the Plate row (its Target
+    -- highlight) is selected: then it always shows, and Test values stay as they are.
+    local targeted = self.editorInspectingPlate == true and not self.selectedComponent
+        or not (self.templateSamples and self.templateSamples.targeted == false)
     SetTargetPreviewStrength(self, targeted and (style == "border" and 0.7 or style == "halo" and 0.55) or nil)
+    self:RefreshSoftGlowPreview(highlight, targeted and style == "glow" and not self:IsEditorBlizzardNames(settings))
 end
 
 -- Test values' reaction flags colour the sample's name: hostile red, friendly green for a
--- player or blue for an NPC, otherwise neutral yellow. Each plate type starts from its own.
+-- player or blue for an NPC, otherwise neutral yellow. Each plate type starts from its own; the
+-- Enemies' Battlegrounds & arenas design from an enemy player.
 local SAMPLE_REACTIONS = {
     enemy = { hostile = true, friendly = false, player = false },
+    enemyPlayer = { hostile = true, friendly = false, player = true },
     friendlyPlayer = { hostile = false, friendly = true, player = true },
     friendlyNPC = { hostile = false, friendly = true, player = false },
 }
-SAMPLE_REACTIONS.enemyDungeon = SAMPLE_REACTIONS.enemy
+local function SampleKind(plateType, design)
+    if plateType == "enemy" and design == "pvp" then return "enemyPlayer" end
+    return plateType
+end
+-- The import preview's plates take the same reactions.
+function Options.EditorSampleReactions(plateType, design) return SAMPLE_REACTIONS[SampleKind(plateType, design)] end
+local ENEMY_PLAYER_SAMPLE = L["Arena Challenger"]
+-- View's sample name: the plates' own, or a name and guild in another alphabet, so the preview
+-- shows whether the chosen font draws it (through the plates' font route, as a real name would be).
+Options.editorSampleScripts = { { value = "latin", label = L["Latin"] } }
+do
+    local labels = { chinese = L["Chinese"], korean = L["Korean"], russian = L["Russian"] }
+    for _, sample in ipairs(PS.Media.sampleNames) do
+        Options.editorSampleScripts[#Options.editorSampleScripts + 1] = { value = sample.value,
+            label = labels[sample.value], name = sample.name, guild = sample.guild }
+    end
+end
+function Options:EditorSampleScript()
+    for _, script in ipairs(self.editorSampleScripts) do
+        if script.value == self.editorSampleScript then return script end
+    end
+    return self.editorSampleScripts[1]
+end
+
 -- Test values' Reset: the samples as made, with this plate type's reaction.
 function Options:ResetEditorSamples(defaults)
+    self.editorSampleScript = nil
     local samples = self.templateSamples
     for token in pairs(samples) do samples[token] = nil end
     for token, value in pairs(defaults) do samples[token] = value end
-    for flag, value in pairs(SAMPLE_REACTIONS[self.editorProfile] or {}) do samples[flag] = value end
+    for flag, value in pairs(SAMPLE_REACTIONS[SampleKind(self.editorProfile, self.editorDesign)] or {}) do
+        samples[flag] = value
+    end
 end
 
 local function SampleNameColour(samples)
@@ -377,33 +527,65 @@ function Options:ApplyEditorBlizzardName(settings)
     local text = component and component.previewText
     local sample = BLIZZARD_NAME_SAMPLES[self.editorProfile]
     if not (text and sample) then return end
-    text:SetText(sample.text)
+    text:SetText(self:EditorSampleScript().name or sample.text)
     local class = sample.class and type(RAID_CLASS_COLORS) == "table" and RAID_CLASS_COLORS[sample.class]
     local colour = sample.colour
     if type(class) == "table" and type(class.r) == "number" then colour = { class.r, class.g, class.b } end
     text:SetTextColor(colour[1], colour[2], colour[3])
     local path, size, flags = self:EditorBlizzardNameFont(settings)
     -- The plates' font route (Factory) keeps its own size mark and gives the face back on the next
-    -- refresh after this layout is left.
-    if text.SetTextScale then text:SetTextScale(1) end
-    if text.SetFont then text:SetFont(path, size, flags) end
+    -- refresh after this layout is left. Blizzard's names are a font family (its faces for every
+    -- alphabet), so the sample is drawn through one too where the client can.
+    if not PS.Media.SetFamilyFont(text, path, size, flags) then
+        if text.SetTextScale then text:SetTextScale(1) end
+        if text.SetFont then text:SetFont(path, size, flags) end
+        text.plateSmithOwnFace = true
+    end
     -- One line, as on Blizzard's plates (a long name measured as wrapped makes a tall outline).
     if text.SetWordWrap then
         text:SetWordWrap(false)
         text.previewNoWrap = true
     end
-    text.plateSmithOwnFace = true
     if text.SetShadowColor then
         text:SetShadowColor(0, 0, 0, 1)
         text:SetShadowOffset(flags == "" and 1 or 0, flags == "" and -1 or 0)
     end
 end
 
+-- The client keeps a face set with SetFont over any font object set later, so a preview text that
+-- had one (plateSmithOwnFace: a fallback where no family could be made) never draws through a font
+-- family again, and a name in another alphabet shows boxes. Where a family can be made such a text
+-- is swapped for a fresh one, at most RENEW_LIMIT times per part.
+local RENEWED_TEXTS = { name = true, guild = true }
+local RENEW_LIMIT = 2
+local function RenewPreviewText(component)
+    local old = component.previewText
+    if not (old and old.plateSmithOwnFace) or (component.previewTextRenewals or 0) >= RENEW_LIMIT
+        or not PS.Media.FamilyAvailable() then
+        return old
+    end
+    local ok, text = pcall(component.CreateFontString, component, nil, "OVERLAY", "GameFontNormal")
+    if not ok or type(text) ~= "table" then return old end
+    component.previewTextRenewals = (component.previewTextRenewals or 0) + 1
+    for index = 1, old.GetNumPoints and old:GetNumPoints() or 0 do text:SetPoint(old:GetPoint(index)) end
+    if (old.GetNumPoints and old:GetNumPoints() or 0) == 0 then text:SetPoint("CENTER") end
+    -- Studio's own sample text and colours, never a unit's.
+    text:SetText(old:GetText() or "")
+    text:SetTextColor(old:GetTextColor())
+    text:SetShadowColor(old:GetShadowColor())
+    text:SetShadowOffset(old:GetShadowOffset())
+    text.plateSmithFontSize = old.plateSmithFontSize
+    old:SetText("")
+    old:Hide()
+    component.previewText = text
+    return text
+end
+
 -- The preview's look from the settings, then its layout (sizes and text widths move stacked and
 -- pinned parts). light: a value is being dragged, so the tree and the inspector are left alone.
 function Options:RefreshEditorAppearance(settings, light)
     if not self.editorComponents or not settings then return end
-    local profile = type(PS.GetPlateProfileSettings) == "function" and PS.GetPlateProfileSettings(self.editorProfile) or settings
+    local profile = self:EditorProfileSettings() or settings
     local blizzardNames = self:IsEditorBlizzardNames(settings)
     for key, component in pairs(self.editorComponents) do
         component.previewNative = blizzardNames and key == "name" or nil
@@ -413,14 +595,11 @@ function Options:RefreshEditorAppearance(settings, light)
             wrapped.previewNoWrap = nil
         end
         local definition = editorDefinitions[key]
-        local baseText, baseFont, baseBar = component.previewBaseText, component.previewBaseFont, component.previewBaseBar
+        if RENEWED_TEXTS[key] then RenewPreviewText(component) end
+        local baseText, baseBar = component.previewBaseText, component.previewBaseBar
         if baseText and component.previewText then component.previewText:SetTextColor(unpack(baseText)) end
-        -- Text the plates' font route draws is set again by its refresh (a face set here would stay
-        -- over that route's font object on the client).
-        if baseFont and baseFont[1] and component.previewText and component.previewText.SetFont
-            and not component.previewText.plateSmithFontSize then
-            component.previewText:SetFont(baseFont[1], baseFont[2] or 12, baseFont[3])
-        end
+        -- No face is put back here: each text's font is set again by its refresh or style, and a face
+        -- set with SetFont would stay over the plates' font family on the client (boxes for CJK).
         if baseBar and component.previewBar and component.previewBar == component.previewBaseBarFrame then
             component.previewBar:SetStatusBarColor(unpack(baseBar))
         end
@@ -442,6 +621,8 @@ function Options:RefreshEditorAppearance(settings, light)
         elseif relevant then
             component:SetAlpha((position and position.visible == false) and 0.18 or (globallyEnabled and 1 or 0.35))
         end
+        -- Its alpha is set anew: RefreshEditorComponentLayers decides again whether it is a stack ghost.
+        component.ghostApplied, component.ghostAlpha = nil, nil
     end
     -- A part turned off leaves what sits under it shown (a pinned part takes its place, as on the
     -- plates); what a rule hides takes its children with it (ApplyEditorPreviewRules, below).
@@ -449,20 +630,18 @@ function Options:RefreshEditorAppearance(settings, light)
     if not light then self:RefreshEditorComponentList(settings) end
     local sample
     for _, definition in ipairs(editorProfiles) do
-        if definition.key == self.editorProfile
-            or (definition.key == "enemy" and self.editorProfile == "enemyDungeon") then
-            sample = definition break
-        end
+        if definition.key == self.editorProfile then sample = definition break end
     end
     local name = self.editorComponents.name
     if name and name.previewText and sample then
-        local text = sample.sampleName
+        local text = SampleKind(self.editorProfile, self.editorDesign) == "enemyPlayer" and ENEMY_PLAYER_SAMPLE
+            or sample.sampleName
         if self.editorProfile == "friendlyPlayer" then
             -- As on the plates (Nameplates/Identity): without surnames only the first word shows.
             text = CurrentCharacterName()
             if settings.showPlayerSurnames == false then text = text:match("^(%S+)") or text end
         end
-        name.previewText:SetText(text)
+        name.previewText:SetText(self:EditorSampleScript().name or text)
         local colour = self.editorProfile == "friendlyPlayer"
             and (settings.friendlyPvpStyle == "colour" or settings.friendlyPvpStyle == "both")
             and settings.relationshipColours and settings.relationshipColours.pvp
@@ -474,14 +653,16 @@ function Options:RefreshEditorAppearance(settings, light)
     end
     local level = self.editorComponents.level
     if level and level.previewText then
-        level.previewText:SetText((self.editorProfile == "enemy"
-            or self.editorProfile == "enemyDungeon") and "14" or "15")
+        level.previewText:SetText(self:IsEditorEnemy() and "14" or "15")
     end
     local guild = self.editorComponents.guild
     if guild and guild.previewText and self.editorProfile == "friendlyPlayer" then
         local ok, guildName = false, nil
         if type(GetGuildInfo) == "function" then ok, guildName = pcall(GetGuildInfo, "player") end
-        if ok and IsReadableValue(guildName) and type(guildName) == "string" and guildName ~= "" then
+        local script = self:EditorSampleScript()
+        if script.guild then
+            guild.previewText:SetText(script.guild)
+        elseif ok and IsReadableValue(guildName) and type(guildName) == "string" and guildName ~= "" then
             guild.previewText:SetText("<" .. guildName .. ">")
         else
             guild.previewText:SetText(L["<Guild Name>"])
@@ -504,19 +685,23 @@ function Options:RefreshEditorAppearance(settings, light)
     -- Sizes and text are final: lay the parts out again from them.
     self:InvalidateEditorTransforms()
     self:RefreshEditorLayout()
+    -- And with every part in its place, which ghosts lie over a drawn part (IsEditorStackGhost).
+    self:RefreshEditorComponentLayers()
     -- Blizzard's name was given its font after the selection outline was placed: hug it again.
     if blizzardNames then self:UpdateEditorSelectionHandles() end
     if self.editorPreviewFit and not self.editorDrag then self:FitEditorPreview(self.editorPreviewFitZoom) end
+    -- The model behind the plate follows its lowest part (PreviewModel.lua; nothing while Off).
+    if self.PlaceEditorModel then self:PlaceEditorModel() end
 end
 
--- The preview's Names only / Full plate switch: friendly plates outdoors only. The one the plates
--- use now (Settings > Friendly units) is gold.
+-- The preview's Names only / Full plate switch: friendly plates, on every design but Dungeons &
+-- raids (Blizzard's). The one the plates use now (Settings > Friendly units) is gold.
 local LIVE_VIEW = { 1, 0.82, 0.2 }
 function Options:RefreshEditorFriendlyViewButtons()
     local buttons = self.editorFriendlyViewButtons
     if not buttons then return end
     local friendly = (self.editorProfile == "friendlyPlayer" or self.editorProfile == "friendlyNPC")
-        and self.editorContext ~= "dungeon"
+        and self.editorDesign ~= "dungeon"
     local view, live = self:EditorFriendlyView(), self:EditorLiveFriendlyView()
     local chrome = self.studioChrome
     for key, button in pairs(buttons) do
@@ -529,21 +714,25 @@ function Options:RefreshEditorFriendlyViewButtons()
     end
 end
 
-function Options:SetEditorProfile(profileKey)
-    if profileKey == "enemy" and self.editorContext == "dungeon" then profileKey = "enemyDungeon" end
-    if not editorProfileSet[profileKey] then return false end
-    if profileKey ~= self.editorProfile and self.templateSamples then
-        for flag, value in pairs(SAMPLE_REACTIONS[profileKey]) do self.templateSamples[flag] = value end
-    end
-    -- Each plate type and layout keeps its own view: a zoom or pan on one leaves the others fitted.
+-- The design Studio opens on a plate type: the one last edited there while it still exists, else World.
+function Options:EditorDesignFor(plateType)
+    if plateType == "enemyPlayer" then return "world" end
+    local design = self.editorDesignByType[plateType] or "world"
+    local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
+    if design ~= "world" and not (settings and Designs.HasDesign(settings, plateType, design)) then design = "world" end
+    return design
+end
+
+-- Keeps the open view (zoom and pan) under its key and opens the one for the plate type, design and
+-- layout now edited: each keeps its own, so a zoom on one leaves the others fitted.
+local function SwitchEditorView(self)
     self.editorViews = self.editorViews or {}
     if self.editorViewKey then
         self.editorViews[self.editorViewKey] = {
             fit = self.editorPreviewFit ~= false, fitZoom = self.editorPreviewFitZoom,
             zoom = self.editorPreviewZoom, x = self.editorPreviewPanX, y = self.editorPreviewPanY }
     end
-    self.editorProfile = profileKey
-    self.editorViewKey = profileKey .. "." .. self:CurrentEditorVariant()
+    self.editorViewKey = self.editorProfile .. "." .. self.editorDesign .. "." .. self:CurrentEditorVariant()
     local view = self.editorViews[self.editorViewKey]
     if view and not view.fit and view.zoom then
         self.editorPreviewPanX, self.editorPreviewPanY = view.x or 0, view.y or 0
@@ -551,16 +740,25 @@ function Options:SetEditorProfile(profileKey)
     else
         self.editorPreviewFit, self.editorPreviewFitZoom = true, view and view.fitZoom
     end
+end
+
+function Options:SetEditorProfile(profileKey)
+    if not editorProfileSet[profileKey] then return false end
+    local design = self:EditorDesignFor(profileKey)
+    local changed = profileKey ~= self.editorProfile or design ~= self.editorDesign
+    if changed and self.templateSamples then
+        for flag, value in pairs(SAMPLE_REACTIONS[SampleKind(profileKey, design)]) do self.templateSamples[flag] = value end
+    end
+    -- A design's "added" banner belongs to the moment it was added (Options:AddEditorDesign).
+    if changed then self.editorDesignAdded = nil end
+    self.editorProfile, self.editorDesign = profileKey, design
+    self.editorDesignByType[profileKey] = design
+    SwitchEditorView(self)
     self:ReloadEditorLayoutCopy()
     for key, button in pairs(self.editorProfileButtons or {}) do
-        self.studioChrome.SetStudioButtonState(button, key == profileKey
-            or (key == "enemy" and profileKey == "enemyDungeon"))
+        self.studioChrome.SetStudioButtonState(button, key == profileKey)
     end
     self:RefreshEditorFriendlyViewButtons()
-    -- Dungeon enemies' Settings reset goes back to the World design instead.
-    if self.editorResetButton and self.editorResetButton.label then
-        self.editorResetButton.label:SetText(profileKey == "enemyDungeon" and L["Use World"] or L["Reset settings"])
-    end
     -- This switch selects for the new view itself (below); Refresh only rebuilds a view a setting changes.
     self.editorBlizzardNamesShown = self:IsEditorBlizzardNames()
     self:Refresh(true)
@@ -579,19 +777,47 @@ function Options:SetEditorProfile(profileKey)
     return true
 end
 
-function Options:SetEditorContext(context)
-    if context ~= "world" and context ~= "dungeon" then return false end
-    self.editorContext = context
-    if self.editorContextDropdown then
-        self.editorContextDropdown:SetText(context == "dungeon" and L["Dungeon"] or L["World"])
+-- Which design of the open plate type Studio edits: "world", or a context it has a design for
+-- (Designs.HasDesign; friendly plates always have Dungeons & raids, Blizzard's).
+function Options:SetEditorDesign(design)
+    if not Designs.LABELS[design] then return false end
+    -- Enemy players have one layer, over the Enemies' design wherever they are.
+    if self.editorProfile == "enemyPlayer" and design ~= "world" then return false end
+    local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
+    if design ~= "world" and not (settings and Designs.HasDesign(settings, self.editorProfile, design)) then return false end
+    self.editorDesignByType[self.editorProfile] = design
+    return self:SetEditorProfile(self.editorProfile)
+end
+
+-- Opens Studio on a plate type's design (nil: World) with a part selected: Settings' links, Search.
+function Options:OpenEditorDesign(plateType, design, part)
+    design = design or "world"
+    if not editorProfileSet[plateType] or not Designs.LABELS[design] then return false end
+    if plateType == "enemyPlayer" and design ~= "world" then return false end
+    if not (self.editor and self.editor:IsShown()) and not (PS.OpenVisualEditor and PS.OpenVisualEditor()) then
+        return false
     end
-    local category = self.editorProfile == "enemyDungeon" and "enemy" or self.editorProfile
-    return self:SetEditorProfile(category)
+    self.editorDesignByType[plateType] = design
+    if not self:SetEditorProfile(plateType) or self.editorDesign ~= design then return false end
+    if part then self:SelectEditorComponent(part) end
+    return true
+end
+
+-- Settings came back without the open design (Revert, a profile switch, an import): World instead.
+function Options:CheckEditorDesign(settings)
+    local design = self.editorDesign
+    if design == "world" or Designs.HasDesign(settings, self.editorProfile, design) then return false end
+    self.editorDesignByType[self.editorProfile] = nil
+    self.editorDesign, self.editorDesignAdded = "world", nil
+    SwitchEditorView(self)
+    self:RefreshEditorFriendlyViewButtons()
+    return true
 end
 
 function Options:CreateEditorComponent(key, definition)
     if not self.editorCanvas or self.editorComponents[key] then return self.editorComponents[key] end
-    local component = MakeEditorComponent(self.editorPreviewStage or self.editorCanvas,
+    -- The import preview's plates make plain frames (MakeEditorComponentFrame): no selecting or dragging.
+    local component = (self.MakeEditorComponentFrame or MakeEditorComponent)(self.editorPreviewStage or self.editorCanvas,
         key, definition.width, definition.height)
     component.editorDefinition = definition
     self.editorComponents[key] = component
@@ -601,7 +827,6 @@ function Options:CreateEditorComponent(key, definition)
         -- on goes away when it no longer applies.
         local text, bar = component.previewText, component.previewBar
         if text and text.GetTextColor then component.previewBaseText = { text:GetTextColor() } end
-        if text and text.GetFont then component.previewBaseFont = { text:GetFont() } end
         if bar and bar.GetStatusBarColor then
             component.previewBaseBar, component.previewBaseBarFrame = { bar:GetStatusBarColor() }, bar
         end
@@ -630,11 +855,16 @@ function Options:CreateEditorComponent(key, definition)
 end
 
 local PENCIL = "Interface\\Buttons\\UI-GuildButton-PublicNote-Up"
+-- A tree row's name ends this far from the row's right: near the edge, or clear of the drag grip (at
+-- -6, about 19 wide) while it shows.
+local TREE_LABEL_RIGHT, TREE_LABEL_RIGHT_GRIP = -6, -26
 
 -- A part's row in the component tree: its connector to the group, its eye (show or hide),
 -- its name, and the kit's row art when selected or hovered.
 function Options:CreateEditorComponentButton(key)
-    if not self.editorListContent or self.editorComponentButtons[key] then return end
+    if not self.editorListContent or not editorDefinitions[key] then return nil end
+    local made = rawget(self.editorComponentButtons, key)
+    if made then return made end
     local Theme = PS.StudioTheme
     local button = CreateFrame("Button", nil, self.editorListContent)
     button:SetSize(248, 29)
@@ -658,10 +888,12 @@ function Options:CreateEditorComponentButton(key)
     button:HookScript("OnEnter", function(instance)
         instance.hoverArt:SetShown(not instance.selection:IsShown())
         instance.grip:Show()
+        instance.label:SetPoint("RIGHT", instance, "RIGHT", instance.labelRight[2], 0)
     end)
     button:HookScript("OnLeave", function(instance)
         instance.hoverArt:Hide()
         instance.grip:Hide()
+        instance.label:SetPoint("RIGHT", instance, "RIGHT", instance.labelRight[1], 0)
     end)
     -- The connector: a 2 px line down from the parent's eye and a short dash to this part's.
     local vertical = button:CreateTexture(nil, "ARTWORK")
@@ -688,8 +920,13 @@ function Options:CreateEditorComponentButton(key)
     button.fold = fold
     local label = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     label:SetPoint("LEFT", button, "LEFT", 70, 0)
-    -- Values keep room for their pencil and X at the row's right.
-    label:SetPoint("RIGHT", button, "RIGHT", key:match("^value%d+$") and -66 or -26, 0)
+    -- Values keep room for their pencil and X at the row's right. Other rows use the drag grip's room
+    -- too while it is hidden, so a nested part's name shows in full; under the pointer the name gives
+    -- the grip its room (the client ends a name that no longer fits with "...", and the row's tooltip
+    -- names it whole).
+    local value = key:match("^value%d+$") ~= nil
+    button.labelRight = value and { -66, -66 } or { TREE_LABEL_RIGHT, TREE_LABEL_RIGHT_GRIP }
+    label:SetPoint("RIGHT", button, "RIGHT", button.labelRight[1], 0)
     label:SetJustifyH("LEFT")
     if label.SetWordWrap then label:SetWordWrap(false) end
     label:SetText(editorLabels[key])
@@ -722,7 +959,9 @@ function Options:CreateEditorComponentButton(key)
         PS.UI.Controls.AttachTooltip(rename, PS.L["Rename"], { PS.L["Give this custom part its own name."] })
         button.rename = rename
     end
-    PS.UI.Controls.AttachTooltip(button, editorLabels[key] or key, { PS.L["Click to select; the eye shows or hides it. "
+    -- Titled with the name the tree shows now (a renamed custom part's own), whole.
+    PS.UI.Controls.AttachTooltip(button, function() return self:EditorComponentLabel(key) end,
+        { PS.L["Click to select; the eye shows or hides it. "
         .. "Right-click for more; drag to move it in the tree."] })
     button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     button:SetScript("OnClick", function(instance, mouseButton)
@@ -734,7 +973,7 @@ function Options:CreateEditorComponentButton(key)
     button:RegisterForDrag("LeftButton")
     button:SetScript("OnDragStart", function() self:StartEditorTreeDrag("part", key) end)
     button:SetScript("OnDragStop", function() self:StopEditorTreeDrag() end)
-    -- The tree is laid out once every row exists (Studio's build, or the next refresh).
+    -- The tree places it (RefreshEditorComponentList, which asks for the rows it shows).
     self.editorComponentButtons[key] = button
     return button
 end

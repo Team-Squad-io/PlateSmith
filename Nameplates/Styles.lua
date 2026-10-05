@@ -41,26 +41,42 @@ function Blend.Colour(stops, percent)
     return last.r, last.g, last.b
 end
 
+-- A text's box drawn rounded (style boxShape): Blizzard's own nameplate level box, nine-sliced by the
+-- client to the box's size, on a texture over frame made the first time it is wanted. Rounded returns
+-- true while it shows, false when it is not wanted or the client lacks the atlas (the caller then draws
+-- the square box). Studio's preview uses it too.
+local StyleBox = { ROUNDED_ATLAS = "ui-hud-nameplates-levelindicator" }
+PS.StyleBox = StyleBox
+
+function StyleBox.Rounded(frame, wanted)
+    local art = frame.plateSmithRounded
+    if not wanted then
+        if art then art:Hide() end
+        return false
+    end
+    if art == nil then
+        local texture = frame:CreateTexture(nil, "BACKGROUND")
+        texture:SetAllPoints(frame)
+        local ok, result = false, nil
+        if texture.SetAtlas then ok, result = pcall(texture.SetAtlas, texture, StyleBox.ROUNDED_ATLAS) end
+        art = (ok and result ~= false) and texture or false
+        if not art then texture:Hide() end
+        frame.plateSmithRounded = art
+    end
+    if not art then return false end
+    art:Show()
+    return true
+end
+
 PS._CreatePlateStyles = function(context)
     local ApplyNameplateFont = context.ApplyNameplateFont
     local Styles = {}
 
     local EMPTY = {}
-    local WHITE = "Interface\\Buttons\\WHITE8X8"
     local BAR_BACKGROUND = S.STYLE_DEFAULTS.background
     local DEFAULT_BOX_FILL = S.STYLE_DEFAULTS.boxColour
     local DEFAULT_BOX_EDGE = S.STYLE_DEFAULTS.boxBorder
     local DEFAULT_BAR_EDGE = { r = 0, g = 0, b = 0, a = 1 }
-    -- Backdrops are shared, never changed after creation: SetBackdrop keeps a reference.
-    local borderBackdrops = {}
-    local function BorderBackdrop(size)
-        local backdrop = borderBackdrops[size]
-        if not backdrop then
-            backdrop = { edgeFile = WHITE, edgeSize = size }
-            borderBackdrops[size] = backdrop
-        end
-        return backdrop
-    end
 
     -- Custom part keys (value1..valueN), in order and as a set, so hot paths never match patterns.
     local VALUE_KEYS, IS_VALUE_KEY = {}, {}
@@ -94,7 +110,13 @@ PS._CreatePlateStyles = function(context)
         local base = data.overlay:GetFrameLevel()
         local slot = IS_VALUE_KEY[key] and data.profile.valueSlots[key]
         if slot and slot.layer ~= "front" then return math.max(0, base - 1) end
-        return base + 1 + order.count - (order.rank[key] or order.count)
+        local level = base + 1 + order.count - (order.rank[key] or order.count)
+        -- Combo points on the health bar's bottom edge straddle it and what is stacked under it (the
+        -- cast bar while casting): they draw in front of both bars, so a cast never covers them.
+        if key == "combo" and S.ComboOnBarEdge(data.profile, data.layout) then
+            level = math.max(level, LayerLevel(data, "health") + 1, LayerLevel(data, "cast") + 1)
+        end
+        return level
     end
     Styles.LayerLevel = LayerLevel
 
@@ -107,6 +129,8 @@ PS._CreatePlateStyles = function(context)
         if data.beacon then
             data.beacon:SetFrameLevel(data.overlay:GetFrameLevel() + 2 + DrawOrder(data.layout).count)
         end
+        -- The target's soft glow stays under every part (TargetGlow.lua).
+        if data.targetSoftGlow then PS.TargetGlow.Under(data.targetSoftGlow, data.overlay) end
     end
 
     -- The target glow puts a text's own shadow back when it ends (targetShadowDefaults), so a
@@ -147,20 +171,14 @@ PS._CreatePlateStyles = function(context)
         StyledShadow(data, style, region)
     end
 
-    -- The box's fill and 1 px edges as plain textures, not a backdrop: it is anchored to its text,
-    -- whose width the client keeps secret in instances, and a backdrop works out its texture
-    -- coordinates from its size (Blizzard's Backdrop errors on a secret width).
+    -- The box's fill and 1 px edges as plain textures (PS.EdgeFrame), not a backdrop: it is anchored
+    -- to its text, whose width the client keeps secret in instances, and a backdrop works out its
+    -- texture coordinates from its size (Blizzard's Backdrop errors on a secret width).
     local function BoxFrame(parent)
-        local box = CreateFrame("Frame", nil, parent)
+        local box = PS.EdgeFrame(parent, 1)
         box.fill = box:CreateTexture(nil, "BACKGROUND")
         box.fill:SetAllPoints(box)
-        local top, bottom = box:CreateTexture(nil, "BORDER"), box:CreateTexture(nil, "BORDER")
-        local left, right = box:CreateTexture(nil, "BORDER"), box:CreateTexture(nil, "BORDER")
-        top:SetPoint("TOPLEFT", box, "TOPLEFT") top:SetPoint("TOPRIGHT", box, "TOPRIGHT") top:SetHeight(1)
-        bottom:SetPoint("BOTTOMLEFT", box, "BOTTOMLEFT") bottom:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT") bottom:SetHeight(1)
-        left:SetPoint("TOPLEFT", box, "TOPLEFT") left:SetPoint("BOTTOMLEFT", box, "BOTTOMLEFT") left:SetWidth(1)
-        right:SetPoint("TOPRIGHT", box, "TOPRIGHT") right:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT") right:SetWidth(1)
-        box.edges = { top, bottom, left, right }
+        box.edges = box.plateSmithEdges
         return box
     end
 
@@ -182,17 +200,22 @@ PS._CreatePlateStyles = function(context)
         box:ClearAllPoints()
         box:SetPoint("TOPLEFT", region, "TOPLEFT", -padding, padding)
         box:SetPoint("BOTTOMRIGHT", region, "BOTTOMRIGHT", padding, -padding)
-        local fill = style.boxColour or DEFAULT_BOX_FILL
-        box.fill:SetColorTexture(fill.r, fill.g, fill.b, fill.a or 1)
-        local edge = style.boxBorder or DEFAULT_BOX_EDGE
-        for _, line in ipairs(box.edges) do line:SetColorTexture(edge.r, edge.g, edge.b, edge.a or 1) end
+        local rounded = StyleBox.Rounded(box, style.boxShape == "rounded")
+        box.fill:SetShown(not rounded)
+        for _, line in ipairs(box.edges) do line:SetShown(not rounded) end
+        if not rounded then
+            local fill = style.boxColour or DEFAULT_BOX_FILL
+            box.fill:SetColorTexture(fill.r, fill.g, fill.b, fill.a or 1)
+            local edge = style.boxBorder or DEFAULT_BOX_EDGE
+            for _, line in ipairs(box.edges) do line:SetColorTexture(edge.r, edge.g, edge.b, edge.a or 1) end
+        end
         box.plateSmithStyled = true
     end
 
     -- A bar's texture, background and border (an outer frame, so the target edge stays its own).
     function Styles.StyledBar(data, key, bar, baseTexture)
         local style = PartStyle(data, key) or EMPTY
-        bar:SetStatusBarTexture(PS.Media.StatusBarPath(style.texture or baseTexture))
+        PS.Media.SetStatusBar(bar, style.texture or baseTexture)
         local background = bar.plateSmithBackground
         if background then
             local colour = style.background
@@ -210,18 +233,14 @@ PS._CreatePlateStyles = function(context)
             return
         end
         if not frame then
-            frame = CreateFrame("Frame", nil, bar, "BackdropTemplate")
+            frame = PS.EdgeFrame(bar, size)
             frame:SetFrameLevel(bar:GetFrameLevel() + 3)
             data.styleBorders[key] = frame
         end
         frame:ClearAllPoints()
         frame:SetPoint("TOPLEFT", bar, "TOPLEFT", -size, size)
         frame:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", size, -size)
-        local backdrop = BorderBackdrop(size)
-        if frame.plateSmithBackdrop ~= backdrop then
-            frame:SetBackdrop(backdrop)
-            frame.plateSmithBackdrop = backdrop
-        end
+        if frame.plateSmithEdgeSize ~= size then frame:SetEdgeSize(size) end
         local colour = style.borderColour or DEFAULT_BAR_EDGE
         frame:SetBackdropBorderColor(colour.r, colour.g, colour.b, colour.a or 1)
         frame:Show()
@@ -252,9 +271,48 @@ PS._CreatePlateStyles = function(context)
 
     Styles.BlendColour = Blend.Colour
 
+    -- A folded colour (FoldedRuleColour) keeps no channels, so it is never near a readable one.
     local function Near(r, g, b, colour)
-        return colour ~= nil and math.abs(r - colour[1]) < 0.003 and math.abs(g - colour[2]) < 0.003
-            and math.abs(b - colour[3]) < 0.003
+        return colour ~= nil and colour.folded ~= true and math.abs(r - colour[1]) < 0.003
+            and math.abs(g - colour[2]) < 0.003 and math.abs(b - colour[3]) < 0.003
+    end
+
+    -- The region's colour getter and setter, and its colour now (readable or not).
+    local function ColourAccess(region)
+        local bar = region.SetStatusBarColor ~= nil
+        local text = not bar and region.SetTextColor ~= nil
+        local get = bar and region.GetStatusBarColor or text and region.GetTextColor or region.GetVertexColor
+        local set = bar and region.SetStatusBarColor or text and region.SetTextColor or region.SetVertexColor
+        if not get or not set then return nil end
+        local ok, cr, cg, cb = pcall(get, region)
+        local readable = ok and IsReadable(cr) and IsReadable(cg) and IsReadable(cb) and type(cr) == "number"
+            and type(cg) == "number" and type(cb) == "number"
+        return set, readable, cr, cg, cb
+    end
+
+    -- Before a rule's colour goes on: the part's own colour to go back to, taken when it is readable
+    -- and not the one a rule applied (the part set its own since), else the one OwnColour wrote.
+    local function KeepBase(region, readable, cr, cg, cb, applied)
+        local own = region.plateSmithOwnColour
+        if readable and not Near(cr, cg, cb, applied) then
+            local base = region.plateSmithBaseColour or region.plateSmithBaseSpare or {}
+            base[1], base[2], base[3] = cr, cg, cb
+            region.plateSmithBaseColour = base
+        elseif own and not applied then
+            -- A protected own colour cannot be read back: the one OwnColour wrote is kept.
+            local base = region.plateSmithBaseColour or region.plateSmithBaseSpare or {}
+            base[1], base[2], base[3] = own[1], own[2], own[3]
+            region.plateSmithBaseColour = base
+        end
+    end
+
+    local function Applied(region)
+        local applied = region.plateSmithRuleColour
+        if not applied then
+            applied = region.plateSmithRuleSpare or {}
+            region.plateSmithRuleColour = applied
+        end
+        return applied
     end
 
     -- A rule's colour over a part (r nil: no rule colour). The part's own colour is kept to go
@@ -262,45 +320,41 @@ PS._CreatePlateStyles = function(context)
     -- since (it is not the one the rule applied). region.plateSmithRuleColour is the applied
     -- colour while a rule holds and nil otherwise; its tables are reused.
     function Styles.RuleColour(region, r, g, b)
-        local bar = region.SetStatusBarColor ~= nil
-        local text = not bar and region.SetTextColor ~= nil
-        local get = bar and region.GetStatusBarColor or text and region.GetTextColor or region.GetVertexColor
-        local set = bar and region.SetStatusBarColor or text and region.SetTextColor or region.SetVertexColor
-        if not get or not set then return end
-        local ok, cr, cg, cb = pcall(get, region)
-        local readable = ok and IsReadable(cr) and IsReadable(cg) and IsReadable(cb) and type(cr) == "number"
-            and type(cg) == "number" and type(cb) == "number"
+        local set, readable, cr, cg, cb = ColourAccess(region)
+        if not set then return end
         local applied = region.plateSmithRuleColour
         local own = region.plateSmithOwnColour
         if r then
-            if readable and not Near(cr, cg, cb, applied) then
-                local base = region.plateSmithBaseColour or region.plateSmithBaseSpare or {}
-                base[1], base[2], base[3] = cr, cg, cb
-                region.plateSmithBaseColour = base
-            elseif own and not applied then
-                -- A protected own colour cannot be read back: the one OwnColour wrote is kept.
-                local base = region.plateSmithBaseColour or region.plateSmithBaseSpare or {}
-                base[1], base[2], base[3] = own[1], own[2], own[3]
-                region.plateSmithBaseColour = base
-            end
+            KeepBase(region, readable, cr, cg, cb, applied)
             if not (readable and math.abs(cr - r) < 0.003 and math.abs(cg - g) < 0.003 and math.abs(cb - b) < 0.003) then
                 set(region, r, g, b)
             end
-            if not applied then
-                applied = region.plateSmithRuleSpare or {}
-                region.plateSmithRuleColour = applied
-            end
-            applied[1], applied[2], applied[3] = r, g, b
+            applied = Applied(region)
+            applied[1], applied[2], applied[3], applied.folded = r, g, b, nil
         elseif applied then
             local base = region.plateSmithBaseColour
             -- With an own colour (OwnColour), only the rule has written the region since, so it
-            -- goes back even when the colour cannot be read.
-            if base and (own or (readable and Near(cr, cg, cb, applied))) then
+            -- goes back even when the colour cannot be read; likewise a folded colour that still
+            -- reads back protected (a readable one is the part's own, set since).
+            if base and (own or (applied.folded and not readable) or (readable and Near(cr, cg, cb, applied))) then
                 pcall(set, region, base[1], base[2], base[3])
             end
             region.plateSmithRuleColour, region.plateSmithRuleSpare = nil, applied
             region.plateSmithBaseColour, region.plateSmithBaseSpare = nil, base or region.plateSmithBaseSpare
         end
+    end
+
+    -- A rule's colour picked inside the client (Threat colours' FoldForPlate): r, g, b may be
+    -- protected, so they only reach the setter, and the applied colour is marked folded instead of
+    -- kept. The colour to go back to is kept as RuleColour keeps it. False when the setter refused.
+    function Styles.FoldedRuleColour(region, r, g, b)
+        local set, readable, cr, cg, cb = ColourAccess(region)
+        if not set then return false end
+        KeepBase(region, readable, cr, cg, cb, region.plateSmithRuleColour)
+        if not pcall(set, region, r, g, b) then return false end
+        local applied = Applied(region)
+        applied[1], applied[2], applied[3], applied.folded = nil, nil, nil, true
+        return true
     end
 
     -- A part's own colour that may be protected (the cast bar's Colour by interrupt): written at

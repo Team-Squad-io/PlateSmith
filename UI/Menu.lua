@@ -3,17 +3,24 @@ local _, PS = ...
 -- PlateSmith's one menu: context menus (right-click on a HUD window, Studio's menus) and every
 -- dropdown's list (Controls.Dropdown). Its own frame rather than UIDropDownMenu or a StaticPopup,
 -- so opening it never touches Blizzard's shared menu state. items: { text, func, checked,
--- disabled, title, children, tooltip = { title, text } } in order; { separator = true } draws a
--- gap. An item with children opens them in a submenu beside it; with a func as well, clicking it
--- runs the func. A list longer than MAX_ROWS scrolls with the mouse wheel.
+-- disabled, title, children, childWidth, tooltip = { title, text } } in order; { separator = true } draws a
+-- gap. An item with children opens them in a submenu beside it (submenus nest up to MAX_LEVELS deep);
+-- with a func as well, clicking it runs the func. A list longer than MAX_ROWS scrolls with the mouse wheel.
 PS.UI = PS.UI or {}
 local Menu = {}
 PS.UI.Menu = Menu
 
-local ROW_HEIGHT, WIDTH, PADDING, MAX_ROWS = 18, 190, 6, 20
-Menu.ROW_HEIGHT, Menu.PADDING, Menu.MAX_ROWS = ROW_HEIGHT, PADDING, MAX_ROWS
+local ROW_HEIGHT, WIDTH, PADDING, MAX_ROWS, MAX_LEVELS = 18, 190, 6, 20, 3
+Menu.ROW_HEIGHT, Menu.PADDING, Menu.MAX_ROWS, Menu.MAX_LEVELS = ROW_HEIGHT, PADDING, MAX_ROWS, MAX_LEVELS
 local frames = {}
 local CreateRow, Build
+
+-- Hides the submenus deeper than level.
+local function HideBelow(level)
+    for deeper = MAX_LEVELS, level + 1, -1 do
+        if frames[deeper] then frames[deeper]:Hide() end
+    end
+end
 
 local function Sound()
     if type(PlaySound) ~= "function" or type(SOUNDKIT) ~= "table" then return end
@@ -111,20 +118,23 @@ CreateRow = function(frame)
     row.label:SetPoint("RIGHT", row, "RIGHT", -14, 0)
     row.label:SetJustifyH("LEFT")
     if row.label.SetWordWrap then row.label:SetWordWrap(false) end
-    -- Pointing at an item with children opens them; any other item closes an open submenu.
+    -- Pointing at an item with children opens them; any other item closes the submenus past its own.
+    local function OpenChildren(owner, item)
+        HideBelow(frame.level + 1)
+        OpenLevel(frame.level + 1, owner, item.children, true, item.childWidth)
+    end
     row:SetScript("OnEnter", function(owner)
         local item = owner.item
         Tooltip(owner)
-        if frame.level ~= 1 then return end
-        if item and item.children and not item.disabled then OpenLevel(2, owner, item.children, true)
-        elseif frames[2] then frames[2]:Hide() end
+        if item and item.children and not item.disabled and frame.level < MAX_LEVELS then OpenChildren(owner, item)
+        else HideBelow(frame.level) end
     end)
     row:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
     row:SetScript("OnClick", function(owner)
         local item = owner.item
         if not item or item.disabled or item.title or item.separator then return end
         if item.children and not item.func then
-            if frame.level == 1 then OpenLevel(2, owner, item.children, true) end
+            if frame.level < MAX_LEVELS then OpenChildren(owner, item) end
             return
         end
         Sound()
@@ -135,7 +145,9 @@ CreateRow = function(frame)
 end
 
 Build = function(level)
-    local frame = PS.UI.Window.Create(level == 1 and "PlateSmithContextMenu" or "PlateSmithContextSubmenu", {
+    local name = level == 1 and "PlateSmithContextMenu" or level == 2 and "PlateSmithContextSubmenu"
+        or "PlateSmithContextSubmenu" .. level
+    local frame = PS.UI.Window.Create(name, {
         width = WIDTH, height = 40, strata = "FULLSCREEN_DIALOG", movable = false, closeButton = false,
         closeOnEscape = level == 1, background = { 0.03, 0.035, 0.04, 0.97 }, border = { 0.58, 0.42, 0.19, 0.95 },
     })
@@ -151,8 +163,10 @@ Build = function(level)
         -- (the field's own click toggles the menu).
         frame:SetScript("OnEvent", function(owner, event)
             if event ~= "GLOBAL_MOUSE_DOWN" or (owner.IsMouseOver and owner:IsMouseOver()) then return end
-            local sub = frames[2]
-            if sub and sub:IsShown() and sub.IsMouseOver and sub:IsMouseOver() then return end
+            for deeper = 2, MAX_LEVELS do
+                local sub = frames[deeper]
+                if sub and sub:IsShown() and sub.IsMouseOver and sub:IsMouseOver() then return end
+            end
             local field = Menu.owner
             if field and field.IsMouseOver and field:IsMouseOver() then return end
             Menu.Close()
@@ -167,13 +181,13 @@ Build = function(level)
         frame:SetScript("OnHide", function(owner)
             if owner.UnregisterEvent then pcall(owner.UnregisterEvent, owner, "GLOBAL_MOUSE_DOWN") end
             if owner.EnableKeyboard then pcall(owner.EnableKeyboard, owner, false) end
-            if frames[2] then frames[2]:Hide() end
+            HideBelow(1)
             local field = Menu.owner
             Menu.owner = nil
             if field and field.OnMenuClosed then field:OnMenuClosed() end
         end)
         Menu.frame = frame
-    else
+    elseif level == 2 then
         Menu.submenu = frame
     end
     frames[level] = frame
@@ -184,7 +198,7 @@ end
 -- it: clicking it again closes the menu, and the menu closes when it hides).
 function Menu.Open(anchor, items, options)
     options = options or {}
-    if frames[2] then frames[2]:Hide() end
+    HideBelow(1)
     if frames[1] and frames[1]:IsShown() then frames[1]:Hide() end
     local frame = OpenLevel(1, anchor, items, false, options.width)
     Menu.owner = options.owner
@@ -215,8 +229,14 @@ function Menu.IsOpenFor(owner)
 end
 
 function Menu.Close()
-    if frames[2] then frames[2]:Hide() end
+    HideBelow(1)
     if frames[1] then frames[1]:Hide() end
+end
+
+-- The open submenu at level (2 is Menu.submenu), or nil.
+function Menu.Submenu(level)
+    local frame = frames[level]
+    return frame and frame:IsShown() and frame or nil
 end
 
 function Menu.IsOpen()

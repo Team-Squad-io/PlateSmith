@@ -21,15 +21,20 @@ local ROUTES = {
     { "format", "context" }, { "version", "context" }, { "context", "context" },
     { "api", "context", L["APIs"] },
     { "profile", "profile" }, { "settings", "profile", L["Settings"] },
-    { "performance", "performance" }, { "performance.profiler", "performance", L["Profiler"] },
+    { "performance", "performance" },
+    { "performance.profiler", "performance", L["Client profiler (all PlateSmith code, Studio included)"] },
+    { "performance.frames", "performance", L["Timed work per frame (ticker passes and timed events)"] },
     { "performance.ticker", "performance", skip = true }, { "performance.events", "performance", skip = true },
     { "performance.recentEvents", "performance", skip = true }, { "performance.plateAdds", "performance", skip = true },
-    { "performance.addPhases", "performance", skip = true },
+    { "performance.addPhases", "performance", skip = true }, { "performance.auraPhases", "performance", skip = true },
     { "performance.debugSettings", "performance", L["Client debug settings"] },
+    { "performance.addQueue", "performance", L["Plate adds left for a later frame"] },
+    { "performance.spares", "performance", L["Spare plates (built ahead)"] },
     { "target", "target" }, { "raid", "target", L["Raid marker"] },
     { "target.buffs", "auras", L["Buffs"] }, { "target.debuffs", "auras", L["Debuffs"] },
     { "target.blizzardAuras", "auras", L["Blizzard aura frames"] },
     { "target.threat", "threat" }, { "target.threatProbe", "threat", L["Probe"] },
+    { "role", "threat", L["Your role"] },
     { "threatConsole", "threatWindows" }, { "blizzardMeter", "threatWindows", L["Blizzard damage meter"] },
     { "questProviders", "quest", L["Providers"] }, { "target.quest", "quest", L["Target"] },
     { "restrictions", "restrictions" }, { "protectedAction", "restrictions", L["Blocked action"] },
@@ -42,19 +47,35 @@ local NAMES = {
     quest = L["Quest"], secret = L["Secret values"], mode = L["Mode"], friendly = L["Friendly"],
     active = L["Active"], unsaved = L["Unsaved changes"], studio = L["Studio"], changes = L["Recent changes"],
     recentAverageMs = L["Recent average"], sessionAverageMs = L["Session average"],
-    encounterAverageMs = L["Encounter average"], peakMs = L["Peak"], ticksOver5Ms = L["Frames over 5 ms"],
-    ticksOver50Ms = L["Frames over 50 ms"], recentWindowSeconds = L["Recent window"], state = L["State"],
+    encounterAverageMs = L["Encounter average"], peakMs = L["Peak"], ticksOver5Ms = L["Frames over 5 ms (since login)"],
+    ticksOver50Ms = L["Frames over 50 ms (since login)"], recentWindowSeconds = L["Recent window"], state = L["State"],
+    recentFrames = L["Frames (recent)"], recentPeakMs = L["Recent peak"], recentOver5Ms = L["Frames over 5 ms (recent)"],
+    recentOver50Ms = L["Frames over 50 ms (recent)"], sessionFrames = L["Frames (session)"],
+    sessionOver5Ms = L["Frames over 5 ms (session)"], sessionOver50Ms = L["Frames over 50 ms (session)"],
+    sessionPeakMs = L["Session peak"], recentUntimedHooksPerFrame = L["Untimed hook calls per frame (recent)"],
     display = L["Display"], pvp = L["PvP name"], legacy = L["Legacy name"], names = L["Names"],
     identity = L["Identity"], plate = L["Plate"], highlight = L["Highlight"], shownValues = L["Shown values"],
+    waits = L["Waits in frames (session)"], recentWaits = L["Waits in frames (recent)"], upTo1 = L["1 or less"],
+    upTo3 = L["2 to 3"], upTo10 = L["4 to 10"], over10 = L["More than 10"],
+    maxWaitMs = L["Longest wait, ms (session)"], recentMaxWaitMs = L["Longest wait, ms (recent)"],
+    overdue = L["Run past the budget after waiting (session)"],
+    recentOverdue = L["Run past the budget after waiting (recent)"],
 }
 
 -- The kinds of plate add and the phases of one (Performance.PLATE_ADDED, Performance.ADD_PHASES).
 Details.PLATE_ADD_NAMES = { new = L["New frame"], reused = L["Reused frame"], queued = L["Queued"] }
 Details.PHASE_NAMES = {
     build = L["Build frame"], layout = L["Layout"], styles = L["Styles and fonts"], text = L["Name, level, guild"],
-    quest = L["Quest relevance"], bars = L["Bars, cast, raid mark"], auras = L["Auras"], threat = L["Threat"],
+    quest = L["Quest relevance"], bars = L["Bars, cast, raid mark"], auras = L["Auras"],
+    aurasLater = L["Auras (deferred)"], threat = L["Threat"],
     placement = L["Placement and stacks"], values = L["Custom parts"], rules = L["Rules"], flush = L["First flush"],
     other = L["Other"],
+}
+-- The parts of one aura pass (Performance.AURA_PHASES).
+Details.AURA_PHASE_NAMES = {
+    read = L["Reads"], textures = L["Textures"], build = L["Icons made"], times = L["Swipes and countdowns"],
+    place = L["Rows shown and laid out"], native = L["Client aura container"], reflow = L["Stack layout"],
+    earlier = L["Earlier plate work"],
 }
 
 -- The field that names an entry of a list (a list of actors reads "party1", not "#2").
@@ -231,7 +252,9 @@ end
 
 local function PerformanceTables(section, performance)
     if type(performance) ~= "table" then return end
-    local average = Number(type(performance.profiler) == "table" and performance.profiler.recentAverageMs)
+    -- PlateSmith's own timed work per frame when the report has it, else the client profiler's figure.
+    local average = Number(type(performance.frames) == "table" and performance.frames.recentAverageMs)
+        or Number(type(performance.profiler) == "table" and performance.profiler.recentAverageMs)
     if average and average > Summary.frameBudgetMs then
         Flag(section, "problem", L["Frame cost"], string.format(L["PlateSmith averages %.2f ms per frame (budget %.1f ms)."],
             average, Summary.frameBudgetMs))
@@ -284,6 +307,14 @@ local function PerformanceTables(section, performance)
         end
     end
     Table(section, L["Plate add phases"], { L["Phase"], L["Average ms"], L["Peak ms"], L["Calls"] }, phases)
+    local parts = {}
+    for _, entry in ipairs(type(performance.auraPhases) == "table" and performance.auraPhases or {}) do
+        if type(entry) == "table" then
+            parts[#parts + 1] = { name = Details.AURA_PHASE_NAMES[entry.phase] or tostring(entry.phase or "?"),
+                sort = Number(entry.totalMs), cells = { Ms(entry.averageMs), Ms(entry.peakMs), Count(entry.calls) } }
+        end
+    end
+    Table(section, L["Aura pass parts"], { L["Part"], L["Average ms"], L["Peak ms"], L["Calls"] }, parts)
 end
 
 -- report: a diagnostic report; entry (optional): the History capture it came from.

@@ -149,20 +149,39 @@ function NamePolicy.OriginalsMissing(key)
     return type(missing[key]) == "table" and next(missing[key]) ~= nil
 end
 
--- In a dungeon or raid, where Blizzard owns friendly plates and enemies use the dungeon profile.
+-- In a dungeon or raid, where Blizzard owns friendly plates (each plate type's design for the place
+-- comes from PlateContext, which reads ReadInstance).
 -- Every plate asks as it arrives, so the answer is read once per zone (NamePolicy.ZoneChanged on
 -- PLAYER_ENTERING_WORLD and ZONE_CHANGED_NEW_AREA).
-local groupInstance
-function NamePolicy.InGroupInstance()
-    if groupInstance == nil then
-        local inInstance, instanceType = IsInInstance()
-        groupInstance = inInstance and (instanceType == "party" or instanceType == "raid") or false
+-- instanceKind: IsInInstance's type ("none" outside an instance), or "unknown" when the read failed
+-- or was protected; then the player counts as in the world.
+local groupInstance, instanceKind
+local function ReadInstance()
+    local ok, inInstance, kind = false, nil, nil
+    if type(IsInInstance) == "function" then ok, inInstance, kind = pcall(IsInInstance) end
+    if not ok or not Secret.IsReadable(inInstance) or not Secret.IsReadable(kind) then
+        groupInstance, instanceKind = false, "unknown"
+    elseif not inInstance then
+        groupInstance, instanceKind = false, "none"
+    else
+        instanceKind = type(kind) == "string" and kind or "unknown"
+        groupInstance = instanceKind == "party" or instanceKind == "raid"
     end
+end
+
+function NamePolicy.InGroupInstance()
+    if groupInstance == nil then ReadInstance() end
     return groupInstance
 end
 
+-- The instance type read with InGroupInstance (same read, once per zone).
+function NamePolicy.InstanceType()
+    if groupInstance == nil then ReadInstance() end
+    return instanceKind
+end
+
 function NamePolicy.ZoneChanged()
-    groupInstance = nil
+    groupInstance, instanceKind = nil, nil
 end
 local InRestrictedInstance = NamePolicy.InGroupInstance
 
@@ -260,8 +279,10 @@ function NamePolicy.MarkLost(group, name)
 end
 
 -- Puts back one CVar of group (name), or all of them (name nil), and forgets them: its captured
--- original, else the client's default when the original was lost.
-function NamePolicy.RestoreGroup(group, name, immediate)
+-- original, else the client's default when the original was lost. keep (a logout or /reload in
+-- combat, where the client may block the write unseen): written, but the record stays (a lost
+-- original's default recorded too), so the next session puts it back.
+function NamePolicy.RestoreGroup(group, name, immediate, keep)
     local record = Captured(group)
     record = type(record) == "table" and record or nil
     for key in pairs(NamePolicy.GroupNames(group)) do
@@ -269,11 +290,15 @@ function NamePolicy.RestoreGroup(group, name, immediate)
             local value = record and record[key]
             if value == nil then value = Fallback(group, key) end
             if value ~= nil then NamePolicy.Write(key, value, immediate) end
-            if record then record[key] = nil end
-            Forget(group, key)
+            if not keep then
+                if record then record[key] = nil end
+                Forget(group, key)
+            elseif value ~= nil then
+                GroupRecord(group)[key] = value
+            end
         end
     end
-    if record and next(record) == nil then ClearRestore(group) end
+    if not keep and record and next(record) == nil then ClearRestore(group) end
 end
 
 local RESTRICTED_NAMES, CLASS_COLOUR, FRIENDLY_NAMES = "restrictedFriendlyNames", "restrictedFriendlyClassColour",
@@ -318,11 +343,13 @@ local function ApplyRestrictedNames(settings, restricted)
     end
 end
 
-local function ApplyClassColour(settings, restricted)
+-- keep: put back but still recorded (NamePolicy.RestoreAll).
+local function ApplyClassColour(settings, restricted, keep)
     local restore = Captured(CLASS_COLOUR)
     if not restricted or not settings.restrictedFriendlyClassColour then
         if restore == nil then restore = Fallback(CLASS_COLOUR, CLASS_COLOUR_CVAR) end
         if restore ~= nil then NamePolicy.Write(CLASS_COLOUR_CVAR, restore) end
+        if keep then return end
         ClearRestore(CLASS_COLOUR)
         Forget(CLASS_COLOUR)
         return
@@ -396,12 +423,14 @@ function NamePolicy.Apply()
     end
 end
 
--- Puts every captured CVar back and forgets the captures (logout, reset).
-function NamePolicy.RestoreAll()
+-- Puts every captured CVar back and forgets the captures (logout, reset). keep (a logout or /reload
+-- in combat, where a write may be blocked unseen): put back but still recorded, so the next login's
+-- Apply puts them back again.
+function NamePolicy.RestoreAll(keep)
     local settings = Settings()
-    RestoreFriendlyNames(true)
-    RestoreRestrictedNames(true)
-    ApplyClassColour(settings, false)
+    RestoreFriendlyNames(not keep)
+    RestoreRestrictedNames(not keep)
+    ApplyClassColour(settings, false, keep)
 end
 
 -- Behaviour & display › Plates' "Restore Blizzard nameplate settings": every CVar NamePolicy changes

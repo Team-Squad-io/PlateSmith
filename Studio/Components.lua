@@ -160,14 +160,16 @@ PS.RegisterEditorComponent("health", {
         local scale = settings.scale or 1
         component:SetSize(math.floor((settings.width or 112) * scale + 0.5), math.floor((settings.healthHeight or 10) * scale + 0.5))
         if component.previewBar then
-            component.previewBar:SetStatusBarTexture(PS.Media.StatusBarPath(settings.healthTexture))
+            PS.Media.SetStatusBar(component.previewBar, settings.healthTexture)
             local colour = settings.healthColour
             if settings.healthColourMode == "custom" and colour then
                 component.previewBar:SetStatusBarColor(colour.r, colour.g, colour.b)
             else
-                if Options.editorProfile == "friendlyPlayer" then
+                -- previewOwner: the import preview's plate this part belongs to (Studio's own: none).
+                local plateType = (component.previewOwner or Options).editorProfile
+                if plateType == "friendlyPlayer" then
                     component.previewBar:SetStatusBarColor(0.25, 1, 0.45)
-                elseif Options.editorProfile == "friendlyNPC" then
+                elseif plateType == "friendlyNPC" then
                     component.previewBar:SetStatusBarColor(0.35, 0.9, 1)
                 else
                     component.previewBar:SetStatusBarColor(0.85, 0.12, 0.1)
@@ -192,7 +194,7 @@ PS.RegisterEditorComponent("power", {
         local scale = settings.scale or 1
         component:SetSize(math.floor((settings.powerWidth or settings.width or 112) * scale + 0.5),
             math.floor((settings.powerHeight or 5) * scale + 0.5))
-        component.previewBar:SetStatusBarTexture(PS.Media.StatusBarPath(settings.healthTexture))
+        PS.Media.SetStatusBar(component.previewBar, settings.healthTexture)
     end,
 })
 
@@ -228,6 +230,10 @@ PS.RegisterEditorComponent("cast", {
         component:SetSize(math.floor((settings.castWidth or settings.width or 112) * scale + 0.5), drawn)
         local casting = TEMPLATE_SAMPLES.casting == true
         local bar, spell, time, icon = component.previewBar, component.previewSpell, component.previewTime, component.previewIcon
+        -- Not casting: idle, as on the plates, so it takes no room in its stack (what follows closes up);
+        -- drawn faint to place it.
+        component.previewIdle = not casting or nil
+        bar:SetAlpha(casting and 1 or 0.3)
         bar:SetValue(casting and 58 or 0)
         if settings.castInterruptColours == true then
             local colours = PS.ProfileSchema.NormalizeCastColours(settings.castColours)
@@ -417,31 +423,21 @@ PS.RegisterEditorComponent("combo", {
         end
     end,
     refresh = function(component, profile)
-        local defaults = PS.ProfileSchema.STYLE_DEFAULTS
+        local Combo = PS.ComboPoints
         local style = profile and profile.styles and profile.styles.combo or {}
-        local scale = profile and profile.scale or 1
-        local width = (style.pipWidth or defaults.pipWidth) * scale
-        local height = (style.pipHeight or defaults.pipHeight) * scale
-        local spacing = (style.pipSpacing or defaults.pipSpacing) * scale
-        local fill, empty = style.pipFill or defaults.pipFill, style.pipEmpty or defaults.pipEmpty
         local pips = component.previewPips
-        component:SetSize(#pips * width + (#pips - 1) * spacing, height)
+        -- Your own class colour, as on the plates; a rogue's yellow while it is unknown.
+        local classColour = style.pipClassColour and (Combo.ClassColour() or { 1, 0.96, 0.41 }) or nil
+        -- Fit to bar width spans the health bar as the plates do: its width at the preview layout's scales.
+        local fitWidth = style.pipFit and PS.ProfileSchema.PipFitWidth(profile, Options.editorLayout or profile and profile.layout)
+        Combo.StylePips(component, pips, #pips, style, profile and profile.scale or 1, classColour, fitWidth or nil)
         local count = math.max(0, math.min(#pips, math.floor(tonumber(TEMPLATE_SAMPLES.combo) or 0)))
-        local inset = (width >= 6 and height >= 6) and 1 or 0
-        local alpha = TEMPLATE_SAMPLES.targeted == false and 0.3 or 1
-        for index, pip in ipairs(pips) do
-            pip.edge:ClearAllPoints()
-            pip.edge:SetPoint("LEFT", component, "LEFT", (index - 1) * (width + spacing), 0)
-            pip.edge:SetSize(width, height)
-            pip.edge:SetColorTexture(0, 0, 0, 0.9)
-            for _, texture in ipairs({ pip.empty, pip.fill }) do
-                texture:ClearAllPoints()
-                texture:SetPoint("TOPLEFT", pip.edge, "TOPLEFT", inset, -inset)
-                texture:SetPoint("BOTTOMRIGHT", pip.edge, "BOTTOMRIGHT", -inset, inset)
-            end
-            pip.empty:SetColorTexture(empty.r, empty.g, empty.b, empty.a or 1)
-            pip.fill:SetColorTexture(fill.r, fill.g, fill.b, fill.a or 1)
-            pip.fill:SetShown(index <= count)
+        Combo.ShowPips(component, pips, #pips, count)
+        -- Show row, as on the plates (Test values' combo points and In combat): a row its style hides
+        -- with 0 is drawn faint and takes no room in its stack.
+        component.previewIdle = count == 0 and Combo.EmptyHidden(style.pipShowRow, TEMPLATE_SAMPLES.combat ~= false) or nil
+        local alpha = (TEMPLATE_SAMPLES.targeted == false or component.previewIdle) and 0.3 or 1
+        for _, pip in ipairs(pips) do
             for _, texture in pairs(pip) do texture:SetAlpha(alpha) end
         end
     end,

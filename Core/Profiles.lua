@@ -2,6 +2,7 @@ local _, PS = ...
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
 local Table = assert(PS.Table, "PlateSmith Table missing")
 local Secret = assert(PS.Secret, "PlateSmith Secret missing")
+local Designs = assert(PS.Designs, "PlateSmith Designs missing")
 
 -- Named settings profiles; each character picks one. The runtime edits a
 -- working copy, and a profile in SavedVariables only changes on Save, so
@@ -164,15 +165,41 @@ function Profiles.Load()
     if type(store.profiles) ~= "table" then store.profiles = {} end
     if type(store.profileKeys) ~= "table" then store.profileKeys = {} end
     store.state = S.NormalizeState(store.state)
+    -- Threat colours arriving off is said once, however many profiles had it turned off; so is where
+    -- 1.1.x's Studio Layout switch went (a profile saved before 1.2.0: schema 27 or older), naming the
+    -- Dungeon layout's new place when one had it.
+    local threatColoursOff, designsNote = false, nil
     for name, settings in pairs(store.profiles) do
         if Profiles.CleanName(name) ~= name or type(settings) ~= "table" then
             store.profiles[name] = nil
         else
+            if (tonumber(settings.schemaVersion) or 1) < 28 then
+                local plates = settings.plateProfiles
+                local dungeon = type(plates) == "table" and type(plates.enemyDungeon) == "table"
+                designsNote = (designsNote == "dungeon" or dungeon) and "dungeon" or "designs"
+            end
             S.NormalizeSettings(settings)
-            Profiles.NoteMigration(name, S.TakeMigrationNote(settings))
+            local note = S.TakeMigrationNote(settings)
+            threatColoursOff = threatColoursOff or (type(note) == "table" and note.threatColoursOff == true)
+            Profiles.NoteMigration(name, note)
         end
     end
-    if next(store.profiles) == nil then store.profiles[Profiles.DEFAULT] = Defaults() end
+    if threatColoursOff then
+        PS.Chat.Print(PS.L["New: Threat colours, in Studio › Settings › Behaviour & display › Threat colours "
+            .. "(off for your existing profiles)."])
+    end
+    if designsNote == "dungeon" then
+        PS.Chat.Print(PS.L["1.2.0: Studio's Layout switch is now a Design menu on each tab; your Dungeon layout is now "
+            .. "the Enemies › Dungeons & raids design."])
+    elseif designsNote then
+        PS.Chat.Print(PS.L["1.2.0: Studio's Layout switch is now a Design menu on each tab."])
+    end
+    if next(store.profiles) == nil then
+        store.profiles[Profiles.DEFAULT] = Defaults()
+        -- A fresh install: Studio's first open offers the first-run picker until a choice is made
+        -- (Studio/FirstRun.lua). An existing install never has firstRunDone false.
+        if store.state.firstRunDone == nil then store.state.firstRunDone = false end
+    end
 
     characterKey = CharacterKey()
     local active = store.profileKeys[characterKey]
@@ -182,6 +209,7 @@ function Profiles.Load()
     end
     working = Table.DeepCopy(store.profiles[active])
     Invalidate()
+    Designs.Invalidate()
     return working
 end
 
@@ -220,6 +248,7 @@ local function Load(settings)
     Table.Replace(working, Table.DeepCopy(settings))
     S.NormalizeSettings(working)
     Invalidate()
+    Designs.Invalidate()
     PS.NamePolicy.Apply()
     PS.Refresh()
     Profiles.Notify()

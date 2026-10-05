@@ -26,16 +26,28 @@ local HEALTH_BACKSTOP_INTERVAL = 0.5
 local AURA_EVENT_INTERVAL = 0.1
 -- Cadences and budgets (tests/perf_smoke.lua measures them): the state pass visits each plate
 -- that has time-based work at most every STATE_INTERVAL, a few plates a frame; social updates
--- re-read relationships at most every RELATIONSHIP_INTERVAL; plate adds past ADD_BUDGET_MS in one
--- frame wait for the next.
+-- re-read relationships at most every RELATIONSHIP_INTERVAL; plate adds and aura reads past
+-- ADD_BUDGET_MS of measured time in one frame wait for the next. An add that has waited both
+-- ADD_OVERDUE_FRAMES frames and ADD_OVERDUE_MS of profiler time (so a high frame rate keeps the
+-- budget and a low one still caps the wait) runs whatever the budget says: ADD_OVERDUE_PER_FRAME such
+-- adds a frame, one if a plate was built in the frame. A frame builds at most half a plate on any path
+-- (a timed build is split over two frames, adds.Half).
+-- CONTEXT_HOLD: after a resting flip is applied, the next is worked out no sooner (a city's edge).
+-- Spares (PlateParts): SPARE_IDLE_MS, or SPARE_IDLE_SHARE of the last frame's length (up to ADD_BUDGET_MS),
+-- is the most plate work a frame may have done for the spares entry to build in it. Warming (SPARE_WARM_*):
+-- SPARE_CHURN_ADDS adds within SPARE_CHURN_SECONDS (a flight or a mount arriving), or a change into a city,
+-- out of combat, raises the target to the peak plus SPARE_WARM (up to SPARE_CROWD) for SPARE_WARM_SECONDS.
 local LIMITS = { STATE_INTERVAL = 0.25, STATE_PLATES_PER_FRAME = 4, NATIVE_PLATES_PER_PASS = 4,
-    RELATIONSHIP_INTERVAL = 1, ADD_BUDGET_MS = 3, RAID_FALLBACK_INTERVAL = 0.25, NATIVE_INTERVAL = 2,
-    SPARE_PLATES = 8, SPARE_MAX = 24, SPARE_DELAY = 2, SPARE_INTERVAL = 0.1 }
+    RELATIONSHIP_INTERVAL = 1, ADD_BUDGET_MS = 3, ADD_OVERDUE_FRAMES = 2, ADD_OVERDUE_MS = 50, ADD_OVERDUE_PER_FRAME = 2,
+    RAID_FALLBACK_INTERVAL = 0.25, NATIVE_INTERVAL = 2, CONTEXT_HOLD = 2,
+    SPARE_PLATES = 8, SPARE_MAX = 24, SPARE_CROWD = 64, SPARE_IDLE_MS = 1, SPARE_IDLE_SHARE = 0.05, SPARE_DELAY = 2,
+    SPARE_INTERVAL = 0.1, SPARE_WARM = 16, SPARE_WARM_SECONDS = 30, SPARE_CHURN_ADDS = 8, SPARE_CHURN_SECONDS = 2 }
 
 -- Call counts for the performance guards (PS._Test.Counters); plain integers.
 local counters = { appearance = 0, componentLayout = 0, renderValues = 0, applyRules = 0, reflow = 0,
     parentVisibility = 0, updateIdentity = 0, auraReads = 0, auraRowLayouts = 0, applyLayout = 0, flushes = 0,
-    deferredAdds = 0, batches = 0, platesBuilt = 0, sparesBuilt = 0, sparesUsed = 0 }
+    deferredAdds = 0, overdueAdds = 0, batches = 0, platesBuilt = 0, sparesBuilt = 0, sparesUsed = 0, auraPasses = 0, auraReflows = 0,
+    contextRelayouts = 0, contextPlates = 0, buildHalves = 0, sparesWarmed = 0 }
 
 local function Clock()
     return type(debugprofilestop) == "function" and debugprofilestop() or nil
@@ -182,6 +194,8 @@ end
 -- pulses: plates whose target halo pulses (the animation entry runs only while one does or a
 -- spotlight dims other plates).
 local rounds = { state = {}, native = {}, stateCursor = 0, nativeCursor = 0, clock = 0, targetDueAt = 0, pulses = {} }
+-- Calls of the hooks on Blizzard's plate frames (Diagnostics/Performance.lua reports them).
+rounds.untimed = PS.Performance and PS.Performance.untimed or { hooks = 0 }
 -- The range pass (Nameplates/Range.lua): each checked plate's data.inRange, while a layout reads it.
 rounds.range = assert(PS._CreatePlateRange, "PlateSmith PlateRange missing")({
     active = active, MarkValues = MarkValues, RunBatch = RunBatch,
@@ -201,9 +215,22 @@ local function OwnsAppearance()
     return PS.Conflicts.CachedProvider() == nil
 end
 
--- friendly: the unit's UnitIsFriend, read once by the caller.
+-- friendly: the unit's friendliness (rounds.Friendly), read once by the caller.
 local function RestrictedFriendly(friendly)
     return friendly == true and NamePolicy.InGroupInstance()
+end
+
+-- Whether unit is friendly to the player: UnitIsFriend, else (the client keeps it private, as for a
+-- hostile player not flagged for PvP) a readable UnitReaction, 3 or less hostile and 5 or more friendly.
+-- Neutral (4) or nothing readable is nil: the plate is left to Blizzard.
+function rounds.Friendly(unit)
+    local friendly = Secret.ReadBoolean(UnitIsFriend, "player", unit)
+    if friendly ~= nil or type(UnitReaction) ~= "function" then return friendly end
+    local ok, reaction = pcall(UnitReaction, unit, "player")
+    if not ok or not IsReadable(reaction) or type(reaction) ~= "number" then return nil end
+    if reaction <= 3 then return false end
+    if reaction >= 5 then return true end
+    return nil
 end
 
 local function GetSettings() return db end
@@ -218,12 +245,19 @@ local SafeColourForUnit = PlateIdentity.SafeColourForUnit
 -- rows are off, UNIT_AURA is ignored for it (data.aurasWanted), and the slow pass visits only plates
 -- with a timed or unsettled row (auraWork.polls), switching itself off when there are none.
 -- auraWork.containers: native aura containers made ahead (Auras.lua's pool), built by the spares entry.
-local auraWork = { ticker = "plates.auras", polls = {}, pending = {}, tickerOn = true }
-local AURA_ICON_COUNT, CreateAuraRow, UpdateAuras, AurasNeedPoll, AurasPolled = assert(PS._CreatePlateAuras,
-    "PlateSmith PlateAuras missing")({ GetSettings = GetSettings, Counters = counters, Work = auraWork,
-    PoolTaken = function() PS.Ticker.SetEnabled("plates.spares", true) end })
+-- auraWork.pending/order: plates whose rows are read in the frame's aura round (auraWork.Run), oldest
+-- first: a UNIT_AURA's, and a timed add's own aura pass (deferring, set by adds.Now), which waits for
+-- that round so the add draws the name and bars at once and its auras a frame or so later.
+local auraWork = { ticker = "plates.auras", polls = {}, pending = {}, order = {}, tickerOn = true, deferring = false,
+    frame = 0 }
+local AURA_ICON_COUNT, CreateAuraRow, UpdateAuras, AurasNeedPoll, AurasPolled
+-- auraWork.Reserve: a timed add's rows shown ahead (Auras.lua's ReserveRows).
+AURA_ICON_COUNT, CreateAuraRow, UpdateAuras, AurasNeedPoll, AurasPolled, auraWork.Reserve =
+    assert(PS._CreatePlateAuras, "PlateSmith PlateAuras missing")({ GetSettings = GetSettings, Counters = counters,
+    Work = auraWork, PoolTaken = function() PS.Ticker.SetEnabled("plates.spares", true) end })
 local function UpdatePlateAuras(data)
-    local wanted = UpdateAuras(data)
+    -- data.auraOnly: one row of a pass the aura round split (auraWork.Read).
+    local wanted = UpdateAuras(data, data.auraOnly)
     data.aurasWanted = wanted
     if wanted and AurasPolled(data) then
         auraWork.polls[data] = true
@@ -236,6 +270,34 @@ local function UpdatePlateAuras(data)
     end
 end
 
+-- The plate's rows are read in the frame's aura round, once however often it is queued.
+-- data.auraQueuedFrame: the frame (auraWork.frame, counted by adds.Frame) it was queued in.
+function auraWork.Queue(data)
+    if auraWork.pending[data] then
+        -- The second half of a split pass (auraWork.Read) is waiting: what queued it again may have
+        -- changed the half already read, so the plate's whole pass runs instead.
+        data.auraRowsLeft = nil
+        return
+    end
+    auraWork.pending[data] = true
+    auraWork.order[#auraWork.order + 1] = data
+    data.auraQueuedFrame = auraWork.frame
+end
+
+-- The oldest waiting aura pass has waited AURA_WAIT_FRAMES frames: frames full of adds kept it back,
+-- so the next frame's first plate work is the aura round's (adds wait a frame instead).
+local AURA_WAIT_FRAMES = 2
+function auraWork.Starving()
+    -- Without a profiler clock nothing is budgeted, so nothing waits.
+    if type(debugprofilestop) ~= "function" then return false end
+    local order = auraWork.order
+    for index = 1, #order do
+        local data = order[index]
+        if auraWork.pending[data] then return auraWork.frame - (data.auraQueuedFrame or auraWork.frame) >= AURA_WAIT_FRAMES end
+    end
+    return false
+end
+
 -- The plate's frames (Factory.lua): CreatePlate, the parts made on first use, and the plate font.
 local PlateParts = assert(PS._CreatePlateFactory,
     "PlateSmith PlateFactory missing")({ CreateAuraRow = CreateAuraRow, GetSettings = GetSettings })
@@ -245,21 +307,44 @@ local ApplyNameplateFont = PlateParts.ApplyNameplateFont
 -- adds, half a plate a pass) for nameplates the client has not made yet, so the add of a new
 -- nameplate (a camera turn or a pull showing more plates than ever before) attaches one instead of
 -- building. PlateParts.attached: nameplates given a plate this session (a root keeps its plate);
--- partial: a spare with only its first half built, never taken.
+-- partial: a plate with only its first half built, never taken; the spares entry and a waiting add's
+-- build (adds.Half) both finish it. warmUntil: GetTime until which the target is raised (Warm); churn,
+-- churnAt: adds counted since churnAt (Churn).
 PlateParts.spares, PlateParts.warmAt, PlateParts.attached = {}, math.huge, 0
+PlateParts.warmUntil, PlateParts.churn, PlateParts.churnAt = 0, 0, 0
 function PlateParts.TakeSpare(root)
     local spares = PlateParts.spares
     local data = spares[#spares]
     if not data then return nil end
     spares[#spares] = nil
     PlateParts.AttachPlate(data, root)
-    counters.sparesUsed = counters.sparesUsed + 1
-    PS.Ticker.SetEnabled("plates.spares", true)
+    -- A plate an add built for itself (adds.Half) waits here only until that add takes it.
+    if data.builtLive then
+        data.builtLive = nil
+    else
+        counters.sparesUsed = counters.sparesUsed + 1
+    end
+    if not PS.Ticker.IsEnabled("plates.spares") then PS.Ticker.SetEnabled("plates.spares", true) end
     return data
 end
 
+-- Half a plate (Factory's StartPlate, or FinishPlate on the partial one), so no frame builds a whole
+-- one. Returns true when a plate was finished: it waits in spares.
+function PlateParts.BuildHalf()
+    local partial = PlateParts.partial
+    if not partial then
+        PlateParts.partial = PlateParts.StartPlate(nil)
+        return false
+    end
+    PlateParts.partial = nil
+    local spares = PlateParts.spares
+    spares[#spares + 1] = PlateParts.FinishPlate(partial)
+    return true
+end
+
 -- A nameplate got its plate: the most this client has had at once is kept in the account state
--- (platePeak), so the next session builds that many ahead.
+-- (platePeak), so the next session builds that many ahead. (In a crowd the target grows with it: the
+-- spare taken, or the last one before a build, switched the spares entry on.)
 function PlateParts.Attached()
     local count = PlateParts.attached + 1
     PlateParts.attached = count
@@ -267,13 +352,52 @@ function PlateParts.Attached()
     if state and (type(state.platePeak) ~= "number" or count > state.platePeak) then state.platePeak = count end
 end
 
--- How many plates (attached and spare) to have ready: the stored peak, at least SPARE_PLATES and
--- at most SPARE_MAX.
-function PlateParts.SpareTarget()
+-- How many plates (attached and spare) to have ready: the stored peak up to SPARE_MAX (built ahead
+-- next session), and in a crowd SPARE_PLATES more than are attached up to SPARE_CROWD (a city's
+-- client keeps making nameplates as players stream in, each a 7 ms build without a spare); at least
+-- SPARE_PLATES. Warmed (Warm), the peak or the plates attached, whichever is more, plus SPARE_WARM, up to
+-- SPARE_CROWD: built before a city's or a flight's nameplates arrive, so their adds take spares.
+function PlateParts.SpareTarget(now)
     local state = PS.GetState and PS.GetState()
     local peak = state and type(state.platePeak) == "number" and state.platePeak or 0
-    return math.max(LIMITS.SPARE_PLATES, math.min(peak, LIMITS.SPARE_MAX))
+    local target = math.max(LIMITS.SPARE_PLATES, math.min(peak, LIMITS.SPARE_MAX),
+        math.min(PlateParts.attached + LIMITS.SPARE_PLATES, LIMITS.SPARE_CROWD))
+    now = now or (type(GetTime) == "function" and GetTime() or 0)
+    if now < PlateParts.warmUntil then
+        target = math.max(target, math.min(math.max(peak, PlateParts.attached) + LIMITS.SPARE_WARM, LIMITS.SPARE_CROWD))
+    end
+    return target
 end
+
+-- Raises the target for SPARE_WARM_SECONDS (out of combat only: spares are never built in combat).
+function PlateParts.Warm(now)
+    if Secret.InCombat() then return end
+    if now >= PlateParts.warmUntil then counters.sparesWarmed = counters.sparesWarmed + 1 end
+    PlateParts.warmUntil = now + LIMITS.SPARE_WARM_SECONDS
+    if not PS.Ticker.IsEnabled("plates.spares") then PS.Ticker.SetEnabled("plates.spares", true) end
+end
+
+-- Counts a plate add (adds.Request): SPARE_CHURN_ADDS within SPARE_CHURN_SECONDS warm the spares. A flight
+-- or a mount arriving in a city brings its nameplates within seconds.
+function PlateParts.Churn()
+    local now = type(GetTime) == "function" and GetTime() or 0
+    if now - PlateParts.churnAt > LIMITS.SPARE_CHURN_SECONDS then PlateParts.churnAt, PlateParts.churn = now, 0 end
+    PlateParts.churn = PlateParts.churn + 1
+    if PlateParts.churn >= LIMITS.SPARE_CHURN_ADDS then
+        PlateParts.churnAt, PlateParts.churn = now, 0
+        PlateParts.Warm(now)
+    end
+end
+
+-- /ps diagnose's performance.spares: spares built ahead and taken, plates built for adds (two halves
+-- each, one a frame), how many wait now, the target, whether it is warmed and how often it was.
+function PlateParts.Report()
+    local now = type(GetTime) == "function" and GetTime() or 0
+    return { builtAhead = counters.sparesBuilt, used = counters.sparesUsed, builtForAdds = counters.platesBuilt,
+        buildHalves = counters.buildHalves, waiting = #PlateParts.spares, attached = PlateParts.attached,
+        target = PlateParts.SpareTarget(now), warm = now < PlateParts.warmUntil, warmed = counters.sparesWarmed }
+end
+if PS.Performance then PS.Performance.SpareFigures = PlateParts.Report end
 
 -- Spares are built again SPARE_DELAY after login or a loading screen.
 function PlateParts.WarmLater()
@@ -326,7 +450,29 @@ end
 local function KeepNativeHidden(data)
     local frames = data.nativeFrames
     if not frames then return end
-    for index = 1, #frames do frames[index]:SetAlpha(0) end
+    for index = 1, #frames do rounds.OwnAlpha(frames[index], 0) end
+end
+
+-- The hooks read whether to hide from the frame itself (platesmithNativeHidden), not from the record
+-- that hooked it, so a waiting add's stand-in record (adds.Hold) and the plate that takes over from it
+-- share them. rounds.untimed counts Blizzard's calls only: PlateSmith's own alpha writes (OwnAlpha) go
+-- through the SetAlpha hook too, and are skipped there (rounds.ownAlpha), so they neither count nor
+-- recurse. pcall: a flag left set would stop the hook putting Blizzard's alphas back.
+function rounds.OwnAlpha(frame, alpha)
+    rounds.ownAlpha = true
+    pcall(frame.SetAlpha, frame, alpha)
+    rounds.ownAlpha = false
+end
+function rounds.NativeOnShow(instance)
+    rounds.untimed.hooks = rounds.untimed.hooks + 1
+    if instance.platesmithNativeHidden and instance.SetAlpha then rounds.OwnAlpha(instance, 0) end
+end
+function rounds.NativeSetAlpha(instance, alpha)
+    if rounds.ownAlpha then return end
+    rounds.untimed.hooks = rounds.untimed.hooks + 1
+    if instance.platesmithNativeHidden and IsReadable(alpha) and type(alpha) == "number" and alpha > 0 then
+        rounds.OwnAlpha(instance, 0)
+    end
 end
 
 local function HideNative(data)
@@ -334,22 +480,26 @@ local function HideNative(data)
     local frames = CollectNativeFrames(data)
     for index = 1, #frames do
         local frame = frames[index]
-        if data.nativeAlphas[frame] == nil and frame.GetAlpha then data.nativeAlphas[frame] = frame:GetAlpha() end
+        if data.nativeAlphas[frame] == nil and frame.GetAlpha then
+            -- A frame a waiting add hid already (adds.Hold) keeps the alpha it had before that.
+            local alpha
+            if frame.platesmithNativeHidden and frame.platesmithNativeAlphaKept then
+                alpha = frame.platesmithNativeAlpha
+            else
+                alpha = frame:GetAlpha()
+            end
+            data.nativeAlphas[frame], frame.platesmithNativeAlpha, frame.platesmithNativeAlphaKept = alpha, alpha, true
+        end
+        frame.platesmithNativeHidden = true
         if not frame.platesmithHideHooked and frame.HookScript then
-            frame:HookScript("OnShow", function(instance)
-                if data.hideNative and instance.SetAlpha then instance:SetAlpha(0) end
-            end)
+            -- Blizzard's code calls these, outside any timed handler: counted (performance.frames) so the
+            -- client profiler's larger figure can be told apart from PlateSmith's timed work.
+            frame:HookScript("OnShow", rounds.NativeOnShow)
             -- Blizzard's plate code sets these alphas itself (target and selection changes, and its
             -- distance fade every frame while the camera turns); put them straight back rather than
-            -- wait for the ticker, which showed as a flash. O(1): our own SetAlpha(0) re-enters with 0
-            -- and stops there, so the hook cannot recurse.
-            if type(hooksecurefunc) == "function" then
-                hooksecurefunc(frame, "SetAlpha", function(instance, alpha)
-                    if data.hideNative and IsReadable(alpha) and type(alpha) == "number" and alpha > 0 then
-                        instance:SetAlpha(0)
-                    end
-                end)
-            end
+            -- wait for the ticker, which showed as a flash. O(1): our own SetAlpha(0) re-enters
+            -- flagged (rounds.OwnAlpha) and stops there, so the hook cannot recurse.
+            if type(hooksecurefunc) == "function" then hooksecurefunc(frame, "SetAlpha", rounds.NativeSetAlpha) end
             frame.platesmithHideHooked = true
         end
     end
@@ -361,8 +511,12 @@ end
 local function RestoreNative(data)
     data.hideNative = false
     ListSet(rounds.native, data, "nativeIndex", false)
+    for frame in pairs(data.nativeAlphas or EMPTY) do
+        frame.platesmithNativeHidden, frame.platesmithNativeAlpha, frame.platesmithNativeAlphaKept = nil, nil, nil
+    end
+    for _, frame in ipairs(data.nativeFrames or EMPTY) do frame.platesmithNativeHidden = nil end
     for frame, alpha in pairs(data.nativeAlphas or EMPTY) do
-        if frame.SetAlpha then frame:SetAlpha(alpha) end
+        if frame.SetAlpha then rounds.OwnAlpha(frame, alpha) end
     end
 end
 
@@ -679,7 +833,7 @@ local function UpdatePvPIcon(data)
 end
 
 local function UpdateClassification(data)
-    if not data.own or (data.profileKey ~= "enemy" and data.profileKey ~= "enemyDungeon")
+    if not data.own or data.friendly ~= false
         or data.layout.classification.visible == false or type(UnitClassification) ~= "function" then
         data.classification:Hide()
         data.classificationIcon:Hide()
@@ -750,7 +904,12 @@ local function UpdateIdentity(data)
     data.relationship = ReadRelationship(data)
     local displayName = UnitDisplayNameValue(unit)
     local SetPlateText = PlateIdentity.SetPlateText
-    if not (HasValue(displayName) and SetPlateText(data.name, displayName)) then SetPlateText(data.name, "") end
+    -- /ps testname: typed text (a plain string) in the unit's name's place until cleared (rounds.SetTestName).
+    if data.testName then
+        SetPlateText(data.name, data.testName)
+    elseif not (HasValue(displayName) and SetPlateText(data.name, displayName)) then
+        SetPlateText(data.name, "")
+    end
     ApplyLevelText(data.level, unit)
     -- The guild line: written only when the guild differs from the one shown (plateSmithGuild).
     local guild, guildName = data.guild, nil
@@ -811,6 +970,10 @@ local RenderValueSlots, ApplyValueKind = Values.RenderValueSlots, Values.ApplyVa
 rounds.combo = assert(PS._CreatePlateCombo, "PlateSmith PlateCombo missing")({
     active = active, RunBatch = RunBatch, MarkStacks = MarkStacks, MarkValues = MarkValues, Styles = Styles,
     AnchorPart = Placement.AnchorPart, ApplyNameplateFont = ApplyNameplateFont,
+})
+-- The target's soft glow (TargetGlow.lua; targetHighlightStyle "glow").
+rounds.targetGlow = assert(PS._CreatePlateTargetGlow, "PlateSmith PlateTargetGlow missing")({
+    Transforms = Placement.Transforms,
 })
 -- "Targeted by" badges on enemy plates (TargetedBy.lua).
 rounds.targetedBy = assert(PS._CreatePlateTargetedBy, "PlateSmith PlateTargetedBy missing")({
@@ -926,20 +1089,36 @@ end
 local ApplyHealthBorder
 do
     local BORDER_COLOURS = { warning = { 1, 0.12, 0.08, 1 }, target = { 1, 0.82, 0.12, 1 }, plain = { 0.05, 0.05, 0.05, 1 } }
+    -- With Threat colours on the edge, the threat colour (its table is the state) comes first.
     ApplyHealthBorder = function(data)
+        local threat = PS.ThreatColours.ForPlate(data, "border")
+        if not threat then
+            -- Picked inside the client from protected answers: written each time, never compared.
+            local folded, r, g, b = PS.ThreatColours.FoldForPlate(data, "border")
+            if folded == true and pcall(data.healthBorder.SetBackdropBorderColor, data.healthBorder, r, g, b, 1) then
+                data.borderState = "folded"
+                return
+            end
+        end
         local state = "plain"
-        if data.tankWarning then state = "warning" elseif data.targeted then state = "target" end
+        if threat then state = threat elseif data.tankWarning then state = "warning" elseif data.targeted then state = "target" end
         if data.borderState == state then return end
         data.borderState = state
-        local colour = BORDER_COLOURS[state]
-        data.healthBorder:SetBackdropBorderColor(colour[1], colour[2], colour[3], colour[4])
+        if threat then
+            data.healthBorder:SetBackdropBorderColor(threat.r, threat.g, threat.b, 1)
+        else
+            local colour = BORDER_COLOURS[state]
+            data.healthBorder:SetBackdropBorderColor(colour[1], colour[2], colour[3], colour[4])
+        end
     end
 end
 
 local function UpdateTarget(data)
     local targeted = SameUnit(data.unit, "target")
-    local showHighlight = targeted and data.own and db.targetHighlightStyle ~= "off"
-    local style = showHighlight and db.targetHighlightStyle or "off"
+    -- The plate's own design's highlight (its own values over the general settings).
+    local highlight = targeted and data.own and rounds.targetGlow.Highlight(data, db) or nil
+    local showHighlight = highlight ~= nil and highlight.targetHighlightStyle ~= "off"
+    local style = showHighlight and highlight.targetHighlightStyle or "off"
     local changed = data.targeted ~= targeted
     data.targeted = targeted
     if changed then PS.Stacking.PlateTargeted(data, targeted) end
@@ -950,18 +1129,21 @@ local function UpdateTarget(data)
         data.targetGlowStyle = style
         data.targetPulseActive = style == "halo"
         rounds.pulses[data] = data.targetPulseActive or nil
+        -- The glow style lights the plate from behind instead of its bars' edges and text.
+        local edges = showHighlight and style ~= "glow"
         -- Made the first time this plate is highlighted; never made, they have nothing to hide.
         -- data.targetGlowsHidden: every glow was hidden here or by RemovePlate, their only writers
         -- (they are made hidden), so hiding them again writes nothing.
-        local glows = data.targetBarGlows or (showHighlight and PlateParts.EnsureTargetGlows(data)) or EMPTY
-        if showHighlight or not data.targetGlowsHidden then
+        local glows = data.targetBarGlows or (edges and PlateParts.EnsureTargetGlows(data)) or EMPTY
+        if edges or not data.targetGlowsHidden then
             for _, glow in ipairs(glows) do
-                glow.steady:SetShown(showHighlight)
+                glow.steady:SetShown(edges)
                 glow.pulse:SetShown(data.targetPulseActive)
             end
-            data.targetGlowsHidden = not showHighlight
+            data.targetGlowsHidden = not edges
         end
-        SetTargetTextGlow(data, showHighlight and 0.7 or nil)
+        SetTargetTextGlow(data, edges and 0.7 or nil)
+        if style == "glow" then rounds.targetGlow.Show(data, db) else rounds.targetGlow.Hide(data) end
     elseif style == "border" then
         -- Newly shown labels can acquire the steady glow without touching other plates.
         SetTargetTextGlow(data, 0.7, true)
@@ -984,18 +1166,21 @@ local function UpdateThreatValues(data, info, idle)
     end
     data.threatInfo, data.threatIdle, data.threatRevision, data.threatValuesSet = info, idle, revision, true
     MarkValues(data, "threat")
+    rounds.targetGlow.Recolour(data)
 end
 
 local function UpdateThreat(data)
+    -- The edge goes after the record is forgotten: a threat colour reads it.
     if data.friendly or not PlateNeeds().threat then
         data.tankWarning = false
+        if not (data.threatValuesSet and data.threatInfo == nil) then
+            data.threat:Hide()
+            data.threat:SetText("")
+            ThreatText.Forget(data.threat)
+            data.threatTextInfo, data.threatTextRevision = nil, nil
+            UpdateThreatValues(data, nil, data.friendly == true)
+        end
         ApplyHealthBorder(data)
-        if data.threatValuesSet and data.threatInfo == nil then return end
-        data.threat:Hide()
-        data.threat:SetText("")
-        ThreatText.Forget(data.threat)
-        data.threatTextInfo, data.threatTextRevision = nil, nil
-        UpdateThreatValues(data, nil, data.friendly == true)
         return
     end
     local showCombined = data.layout.threat.visible ~= false
@@ -1016,8 +1201,8 @@ local function UpdateThreat(data)
         ThreatText.Forget(data.threat)
         data.threatTextInfo, data.threatTextRevision = nil, nil
         data.tankWarning = false
-        ApplyHealthBorder(data)
         UpdateThreatValues(data, nil, info ~= nil)
+        ApplyHealthBorder(data)
         return
     end
     -- Written once per refresh of the record (its revision), not on every state visit.
@@ -1068,46 +1253,13 @@ function PlateParts.Placed(layout)
     return keys
 end
 
--- The cast bar's icon (square, the bar's height, beside it), time (inside the right end) and name:
--- with the time shown the name runs from the left end to the time and is cut short before it.
-local function ApplyCastLayout(data, height, fontSize)
-    local profile, cast, icon, time, name = data.profile, data.cast, data.castIcon, data.castTime, data.castName
-    icon:SetSize(height, height)
-    icon:ClearAllPoints()
-    if profile.castIcon == "right" then
-        icon:SetPoint("LEFT", cast, "RIGHT", 2, 0)
-    else
-        icon:SetPoint("RIGHT", cast, "LEFT", -2, 0)
-    end
-    if profile.castIcon == "off" then icon:Hide() end
-    -- The spell's name and time in the cast part's Display choices (font, size, outline, shadow).
-    Styles.StyledFont(data, "cast", time, fontSize)
-    Styles.StyledFont(data, "cast", name, fontSize)
-    time:ClearAllPoints()
-    time:SetPoint("RIGHT", cast, "RIGHT", -3, 0)
-    time:SetJustifyH("RIGHT")
-    name:ClearAllPoints()
-    name:SetPoint("LEFT", cast, "LEFT", 3, 0)
-    if profile.castTime ~= false then
-        name:SetPoint("RIGHT", time, "LEFT", -2, 0)
-        name:SetJustifyH("LEFT")
-    else
-        name:SetPoint("RIGHT", cast, "RIGHT", -3, 0)
-        name:SetJustifyH("CENTER")
-    end
-    if name.SetWordWrap then name:SetWordWrap(false) end
-    name:SetShown(profile.castName ~= false)
-    data.castTimeWanted = profile.castTime ~= false
-    if not data.castTimeWanted then time:Hide() end
-end
-
 -- The cast bar as the profile draws it. A names-only plate's slim bar (Placement's NameCast) is
 -- made again by UpdateCast, which every layout pass runs after this.
 function rounds.CastGeometry(data)
     local profile = data.profile
     local castHeight = profile.castHeight or math.max(5, profile.healthHeight - 3)
     data.cast:SetSize(profile.castWidth or profile.width, castHeight)
-    ApplyCastLayout(data, castHeight, math.max(7, profile.nameFontSize - 4))
+    Placement.CastLayout(data, castHeight, math.max(7, profile.nameFontSize - 4))
     data.nameCast = nil
 end
 
@@ -1178,10 +1330,25 @@ end
 -- Frames that show and hide during play (the power bar with the unit's power type, auras)
 -- reflow their stack as they do.
 local STACK_FRAMES = { "power", "cast", "buffs", "debuffs" }
+-- What the stacks were last placed for: each frame's own shown state (plateSmithStackShown), recorded by
+-- the flush that placed them.
+function rounds.RecordStackFrames(data)
+    for index = 1, #STACK_FRAMES do
+        local frame = data[STACK_FRAMES[index]]
+        if frame and frame.IsShown then frame.plateSmithStackShown = frame:IsShown() end
+    end
+end
+
 local function HookStackFrames(data)
     if data.stackHooks then return end
     data.stackHooks = true
-    local function Reflow() MarkStacks(data) end
+    -- These also fire when an ancestor shows or hides (the nameplate coming into view, the plate's own
+    -- overlay), which changes nothing the stacks were placed for: only a change of the frame's own
+    -- shown state since that placement lays them out again.
+    local function Reflow(frame)
+        if frame.IsShown and frame:IsShown() == frame.plateSmithStackShown then return end
+        MarkStacks(data)
+    end
     for _, key in ipairs(STACK_FRAMES) do
         local frame = data[key]
         if frame and frame.HookScript then
@@ -1217,17 +1384,31 @@ local function ApplyPartRules(data, key, list, now)
             elseif set == "hide" then hide = true end
         end
     end
-    local r, g, b
+    local r, g, b, folded
     if colourRule and colourRule.set == "colour" then
         local colour = colourRule.colour
         if type(colour) == "table" then r, g, b = colour.r, colour.g, colour.b end
     elseif colourRule then
         r, g, b = Styles.BlendColour(colourRule.stops, Readers.Get(data)("health.percent"))
+    else
+        -- No rule colours it: Threat colours may (Nameplates/ThreatColours.lua), picked inside the
+        -- client when only protected answers say who holds it (r, g, b then reach the setter only).
+        local threat = PS.ThreatColours.ForPlate(data, key)
+        if threat then
+            r, g, b = threat.r, threat.g, threat.b
+        else
+            folded, r, g, b = PS.ThreatColours.FoldForPlate(data, key)
+            if folded ~= true then folded, r, g, b = nil, nil, nil, nil end
+        end
     end
     for index = 1, 2 do
         local region = index == 1 and first or second
         if region then
-            Styles.RuleColour(region, r, g, b)
+            if not folded then
+                Styles.RuleColour(region, r, g, b)
+            elseif not Styles.FoldedRuleColour(region, r, g, b) then
+                Styles.RuleColour(region)
+            end
             region.plateSmithRuleAlpha = hide and 0 or alpha
             region.plateSmithRuleHidden = hide or nil
             now[region] = true
@@ -1239,11 +1420,19 @@ local function ApplyRules(data)
     local profile = data.profile
     local rules = profile and profile.rules
     local touched = data.ruleRegions
-    if not touched and not (rules and next(rules)) then return end
+    local ThreatColours = PS.ThreatColours
+    local threat = ThreatColours.Wanted(data)
+    if not touched and not (rules and next(rules)) and not threat then return end
     -- The regions ruled this time go into the plate's spare table; the two swap each call.
     local now = data.ruleSpare or {}
     data.ruleSpare = nil
     for key, list in pairs(rules or EMPTY) do ApplyPartRules(data, key, list, now) end
+    -- Threat colours go on like a rule's colour, under any rule of the part's own.
+    if threat then
+        for _, key in ipairs(ThreatColours.RULE_PARTS) do
+            if not (rules and rules[key]) and ThreatColours.Colours(data, key) then ApplyPartRules(data, key, EMPTY, now) end
+        end
+    end
     -- Parts whose rules went away go back to their own style.
     if touched then
         for region in pairs(touched) do
@@ -1296,6 +1485,7 @@ local function RunFlush(data)
         local measure = data.dirtyMeasure
         data.dirtyStacks, data.dirtyMeasure = false, false
         ReflowStacks(data, measure)
+        rounds.RecordStackFrames(data)
     end
     if data.dirtyVisibility then
         data.dirtyVisibility = false
@@ -1370,14 +1560,20 @@ end
 
 local function ApplyLayout(data)
     counters.applyLayout = counters.applyLayout + 1
+    -- Laid out now: a relayout still waiting for a change of place (adds.relayouts) is not needed.
+    data.relayoutFrame = nil
     data.own = OwnsAppearance()
-    data.friendly = Secret.ReadBoolean(UnitIsFriend, "player", data.unit)
+    data.friendly = rounds.Friendly(data.unit)
     local restrictedFriendly = RestrictedFriendly(data.friendly)
     data.restrictedFriendly = restrictedFriendly
     data.restrictedOverlayEnabled = restrictedFriendly
         and db.experimentalDungeonFriendlyText and data.own
-    data.profileKey = PlateIdentity.ProfileKeyForUnit(data.unit, data.friendly)
-    data.profile = db.plateProfiles[data.profileKey] or db.plateProfiles.enemy
+    -- The plate type, then its design for where the player is (World, or a context design). A kind
+    -- change has just read the plate type (KindChanged): one UnitIsPlayer read, not two.
+    data.profileKey = data.nextProfileKey or PlateIdentity.ProfileKeyForUnit(data.unit, data.friendly)
+    data.nextProfileKey = nil
+    data.design = PS.PlateContext.DesignFor(data.profileKey)
+    data.profile = PS.Designs.For(db, data.profileKey, data.design) or db.plateProfiles.enemy
     data.namesOnly = not restrictedFriendly and data.friendly and db.friendly == "names"
     data.layout = restrictedFriendly and data.profile.dungeonNamesLayout
         or (data.namesOnly and data.profile.namesLayout or data.profile.layout)
@@ -1387,7 +1583,9 @@ local function ApplyLayout(data)
     data.threatTextInfo, data.threatTextRevision = nil, nil
     -- What the plate's custom parts and rules read (MarkValues skips the rest).
     data.reads = Readers.PlateReads(data.profile, data.layout, settingsRevision)
-    local prepared = data.own and data.preparedLayout == data.layout and data.preparedRevision == settingsRevision
+    -- The profile too: a sparse context design without layout overrides shares World's layout table.
+    local prepared = data.own and data.preparedLayout == data.layout and data.preparedProfile == data.profile
+        and data.preparedRevision == settingsRevision
     -- A plate PlateSmith does not draw (unknown, restricted without the opt-in text, friendly off)
     -- is only hidden below: it is not styled for its own layout, so a frame the client hands to a
     -- party member between pulls is still prepared for the enemy it comes back to.
@@ -1462,7 +1660,7 @@ local function ApplyLayout(data)
                 ApplyComponentLayout(data)
             end
         end
-        data.preparedLayout, data.preparedRevision = data.layout, settingsRevision
+        data.preparedLayout, data.preparedProfile, data.preparedRevision = data.layout, data.profile, settingsRevision
         if data.namesOnly then
             data.threat:SetText("")
             data.tagged:Hide()
@@ -1504,7 +1702,14 @@ local function ApplyLayout(data)
     UpdateCast(data)
     addPhases.Stop("bars", started, nested)
     started, nested = addPhases.Start()
-    UpdatePlateAuras(data)
+    if auraWork.deferring and auraWork.Reserve(data) then
+        -- A timed add: the rows are read in the aura round; one whose unit has an aura shows now, empty,
+        -- so this add's layout already makes room for it. A plate with no row shown reads nothing below.
+        data.aurasLater = true
+        auraWork.Queue(data)
+    else
+        UpdatePlateAuras(data)
+    end
     addPhases.Stop("auras", started, nested)
     started, nested = addPhases.Start()
     HookStackFrames(data)
@@ -1536,6 +1741,8 @@ local function AddPlate(unit)
     data.unit = unit
     data.targetUnit = Secret.TargetToken(unit)
     data.buffsIndexError, data.debuffsIndexError = nil, nil
+    -- For /ps diagnose: when it was added, and how long it waited (and hid Blizzard's plate) if it queued.
+    data.addedAt, data.addWaitFrames, data.addHeld = type(GetTime) == "function" and GetTime() or nil, nil, nil
     active[unit] = data
     if PS.ThreatService then
         local started, nested = addPhases.Start()
@@ -1557,16 +1764,194 @@ end
 -- a profiler clock every add runs at once. The budget is the frame's, events and ticker pass
 -- together: GetTime is the same all frame, so a new reading starts a new budget. (Starting it in
 -- the ticker pass alone let a frame spend it twice, once in its events and again in its pass.)
-local adds = { pending = {}, order = {}, spent = 0 }
+-- The frame's aura round (auraWork.Run) spends the same budget after the adds.
+-- waiting: how many units in order are still pending (order also keeps entries a removal dropped).
+-- cost: what the next item is expected to cost (ms), learnt from what items cost (adds.Learn): an add
+-- on a frame that exists or a spare (add), half of a plate's build for an add whose nameplate has none
+-- (build, adds.Half), a plate's aura pass (auras), or one whose rows have no icons yet, so it makes them
+-- (fresh). The seeds are what build 1.1.1+20261003.3 measured in Orgrimmar (a whole build was 7 ms).
+-- base: each kind's typical cost (an even average), which the estimate falls back towards every frame
+-- (adds.Frame). relayout: a plate laid out again for a change of place (adds.RunRelayouts). overdueRan:
+-- this frame's items run past the budget because they waited too long (adds.Run); built: whether this
+-- frame built (half) a plate (adds.Half, the spares entry, or a whole one in adds.Now).
+local adds = { pending = {}, order = {}, spent = 0, waiting = 0, overdueRan = 0, built = false,
+    cost = { add = 1.6, build = 3.5, auras = 1.2, fresh = 2.5, relayout = 2 },
+    base = { add = 1.6, build = 3.5, auras = 1.2, fresh = 2.5, relayout = 2 } }
 
--- ticker: called from the frame's ticker pass (without GetTime, the budget starts there).
+-- An estimate rises at once to a dearer item and eases down slowly, so it errs high; it never sits
+-- below the typical cost. One dear item no longer holds admission back for long: the estimate falls
+-- half way back to the typical cost each frame, and the typical cost moves at most a tenth of the way
+-- to twice itself per item, so an outlier barely moves it while a lasting change (a CPU-bound client)
+-- still carries it in a few items.
+function adds.Learn(kind, ms)
+    local cost, base = adds.cost[kind], adds.base[kind]
+    adds.base[kind] = base + (math.min(ms, base * 2) - base) * 0.1
+    adds.cost[kind] = math.max(adds.base[kind], cost + (ms - cost) * (ms > cost and 0.5 or 0.1))
+end
+
+function adds.Decay()
+    for kind, cost in pairs(adds.cost) do
+        local base = adds.base[kind]
+        if base and cost > base then adds.cost[kind] = base + (cost - base) * 0.5 end
+    end
+end
+
+-- Whether an item expected to cost cost (ms) fits what the frame's budget has left. A frame's first
+-- item always runs, so the queues move: a frame's plate work is the budget plus the misjudgement of
+-- its last item at most, or one item alone (a frame's build).
+function adds.Fits(cost)
+    return adds.spent <= 0 or adds.spent + cost <= LIMITS.ADD_BUDGET_MS
+end
+
+-- What adding unit is expected to cost, and whether it needs a build first: its nameplate has no plate
+-- and no spare waits (the cost is then the next half of a build's, adds.Half).
+function adds.Estimate(unit)
+    local root = C_NamePlate and C_NamePlate.GetNamePlateForUnit and C_NamePlate.GetNamePlateForUnit(unit)
+    if root and not root.PlateSmithData and not PlateParts.spares[1] and not (root.IsForbidden and root:IsForbidden()) then
+        return adds.cost.build, true
+    end
+    return adds.cost.add, false
+end
+
+-- Half a plate for a waiting add whose nameplate has none, with no spare waiting: the frame's build (one
+-- half a frame, adds.built), timed as an add's build phase. The plate it finishes waits in spares for the
+-- add, which runs when the budget lets it (in the same frame if late), its nameplate held meanwhile.
+function adds.Half()
+    local started = Clock()
+    counters.buildHalves = counters.buildHalves + 1
+    if PlateParts.BuildHalf() then
+        counters.platesBuilt = counters.platesBuilt + 1
+        PlateParts.spares[#PlateParts.spares].builtLive = true
+    end
+    adds.built = true
+    if not started then return end
+    local span = Clock() - started
+    adds.spent = adds.spent + span
+    adds.Learn("build", span)
+    if addPhases.Record then addPhases.Record("build", span) end
+end
+
+-- A waiting unit leaves the queue (added now, or its plate removed); its order entry is skipped.
+function adds.Drop(unit)
+    if adds.pending[unit] then
+        adds.pending[unit] = nil
+        adds.waiting = adds.waiting - 1
+    end
+end
+
+-- Whether PlateSmith draws unit's plate (and hides Blizzard's), as ApplyLayout decides: readable
+-- answers only, so an unknown unit is left to Blizzard.
+function adds.Drawn(unit)
+    if not (db and db.enabled) or not OwnsAppearance() then return false end
+    local friendly = rounds.Friendly(unit)
+    if friendly == nil or RestrictedFriendly(friendly) then return false end
+    return not (friendly and db.friendly == "off")
+end
+
+-- A waiting add's nameplate shows nothing until the add draws it: Blizzard's own plate (its name at
+-- Blizzard's size and opacity) showed meanwhile, for up to a second in a busy city, then PlateSmith's
+-- took its place at the plate's own size. Only a plate PlateSmith will draw is held, the way an add
+-- hides it (HideNative, the alphas kept to put back). held: unit -> the root's plate, or a stand-in
+-- { root } for a nameplate with no plate yet; queuedAt: unit -> the frame (auraWork.frame) it queued in;
+-- queuedMs: unit -> the profiler clock then.
+adds.held, adds.queuedAt, adds.queuedMs = {}, {}, {}
+-- performance.addQueue (Diagnostics/Performance.lua): queued, held, each wait in frames and ms, overdue runs.
+local function NoRecord() end
+adds.record = PS.Performance and PS.Performance.RecordAddQueue or NoRecord
+
+-- Its cost is the frame's plate work too (adds.spent), so a burst's holds leave less for the frame's adds.
+function adds.Hold(unit)
+    local started = Clock()
+    adds.queuedMs[unit] = started
+    adds.Holding(unit)
+    if started then adds.spent = adds.spent + Clock() - started end
+end
+
+function adds.Holding(unit)
+    adds.queuedAt[unit] = auraWork.frame
+    if adds.held[unit] or not adds.Drawn(unit) then return end
+    local root = C_NamePlate.GetNamePlateForUnit(unit)
+    if not root or (root.IsForbidden and root:IsForbidden()) then return end
+    local record = root.PlateSmithData
+    -- Still another unit's plate: that unit's own removal comes first.
+    if record and record.unit ~= nil then return end
+    record = record or { root = root }
+    HideNative(record)
+    adds.held[unit] = record
+    adds.record("held")
+end
+
+-- The add ran (added) or the unit went (not added): a plate that drew takes the held frames over (its
+-- own HideNative or RestoreNative already ran); otherwise they are put back.
+function adds.Release(unit, added)
+    local queuedAt, queuedMs = adds.queuedAt[unit], adds.queuedMs[unit]
+    adds.queuedAt[unit], adds.queuedMs[unit] = nil, nil
+    local data = added and active[unit]
+    if data and queuedAt then
+        local waited, clock = auraWork.frame - queuedAt, queuedMs and Clock()
+        data.addWaitFrames = waited
+        adds.record("waited", waited, clock and clock - queuedMs or nil)
+    end
+    local record = adds.held[unit]
+    if not record then return end
+    adds.held[unit] = nil
+    if data then data.addHeld = true end
+    if data == record then return end
+    if data then
+        ListSet(rounds.native, record, "nativeIndex", false)
+    else
+        RestoreNative(record)
+    end
+end
+
+-- ticker: called from the frame's ticker pass (without GetTime, the budget starts there). frameMs: the
+-- last frame's length (the spares entry's idle share).
 function adds.Frame(ticker)
     local now = type(GetTime) == "function" and GetTime() or nil
     if now == nil then
-        if ticker then adds.spent = 0 end
+        if ticker then adds.spent, adds.overdueRan, adds.built = 0, 0, false end
     elseif now ~= adds.stamp then
-        adds.stamp, adds.spent = now, 0
+        adds.frameMs = adds.stamp and (now - adds.stamp) * 1000 or 0
+        adds.stamp, adds.spent, adds.overdueRan, adds.built, auraWork.frame = now, 0, 0, false, auraWork.frame + 1
+        adds.Decay()
     end
+end
+
+-- How many frames unit has waited since it queued (0: it is not waiting).
+function adds.Waited(unit)
+    local queuedAt = adds.queuedAt[unit]
+    return queuedAt and auraWork.frame - queuedAt or 0
+end
+
+-- Whether an item queued in frame (auraWork.frame) at ms (the profiler clock) has waited long enough
+-- to run past the budget: ADD_OVERDUE_FRAMES frames and ADD_OVERDUE_MS both.
+function adds.LateSince(frame, ms)
+    if auraWork.frame - frame < LIMITS.ADD_OVERDUE_FRAMES then return false end
+    local clock = Clock()
+    return not (ms and clock) or clock - ms >= LIMITS.ADD_OVERDUE_MS
+end
+
+function adds.Late(unit)
+    local queuedAt = adds.queuedAt[unit]
+    return queuedAt ~= nil and adds.LateSince(queuedAt, adds.queuedMs[unit])
+end
+
+-- How many more items may run past the budget this frame: ADD_OVERDUE_PER_FRAME, one once the frame
+-- has built half a plate. So a frame holds at most one half and one other overdue item.
+function adds.OverdueLeft()
+    return (adds.built and 1 or LIMITS.ADD_OVERDUE_PER_FRAME) - adds.overdueRan
+end
+
+-- Whether the oldest waiting add is late and may still run past the budget this frame: it then goes
+-- first, ahead of the aura round's starvation guard.
+function adds.Overdue()
+    if adds.OverdueLeft() <= 0 then return false end
+    local order = adds.order
+    for index = 1, #order do
+        local unit = order[index]
+        if adds.pending[unit] then return adds.Late(unit) end
+    end
+    return false
 end
 
 local function AddAndFlush(unit)
@@ -1579,46 +1964,111 @@ local function AddAndFlush(unit)
     end
 end
 
+-- A timed add leaves its aura pass to the frame's aura round (auraWork.deferring), which the same
+-- budget bounds: its name and bars show now, its auras in the same frame's ticker pass when the budget
+-- has room, else a frame or so later. A row that will show is shown empty by the add (auraWork.Reserve),
+-- so filling it does not lay the plate out again. Keeping the aura pass out of the add keeps each add a
+-- small step (a new frame's build with its icons made was a 16 ms frame on its own). Without a
+-- profiler clock everything runs at once.
 function adds.Now(unit)
     local started = Clock()
-    if not started or not addPhases.Record then return AddAndFlush(unit) end
+    if not started or not addPhases.Record then
+        AddAndFlush(unit)
+        return adds.Release(unit, true)
+    end
     addPhases.on, addPhases.nested = true, 0
+    auraWork.deferring = true
+    local built = counters.platesBuilt
     local ok, reason = pcall(AddAndFlush, unit)
+    auraWork.deferring = false
+    adds.Release(unit, ok)
     local span = Clock() - started
     -- What no phase covers (finding the plate, its tokens, the dirty marks).
     if ok and active[unit] then addPhases.spent.other, addPhases.ran.other = span - addPhases.nested, true end
     addPhases.Finish()
     adds.spent = adds.spent + span
+    if counters.platesBuilt ~= built then adds.built = true end
+    if ok and active[unit] then adds.Learn(counters.platesBuilt ~= built and "build" or "add", span) end
     if not ok then error(reason, 0) end
 end
 
+-- While adds wait, a new one queues behind them (oldest first), so a run of busy frames cannot
+-- keep the waiting ones back. One whose nameplate needs a build builds half a plate now if the frame
+-- has not built and the half fits (adds.Half), and waits for the other half; it is added here only if
+-- that finished a plate and the add still fits. Without a profiler clock every add runs at once.
 function adds.Request(unit)
     if not IsReadable(unit) or type(unit) ~= "string" then return end
     adds.Frame(false)
-    if adds.spent < LIMITS.ADD_BUDGET_MS then
-        adds.pending[unit] = nil
+    PlateParts.Churn()
+    local first = adds.spent <= 0
+    local now = adds.waiting == 0 and not (first and auraWork.Starving())
+    if now and Clock() then
+        local cost, build = adds.Estimate(unit)
+        if build and not adds.built and adds.Fits(cost) then
+            adds.Half()
+            cost, build = adds.Estimate(unit)
+        end
+        now = not build and adds.Fits(cost)
+    end
+    if now then
         adds.Now(unit)
     elseif not adds.pending[unit] then
-        adds.pending[unit] = true
+        adds.pending[unit], adds.waiting = true, adds.waiting + 1
         adds.order[#adds.order + 1] = unit
         counters.deferredAdds = counters.deferredAdds + 1
+        adds.record("queued")
+        adds.Hold(unit)
     end
 end
 
--- The frame's queued adds, oldest first, within the frame's budget (at least one a frame).
+-- The frame's queued adds, oldest first, while the next fits what the frame's budget has left (the
+-- first of a frame always does). The queue still moves, as a frame's events add nothing while adds
+-- wait (adds.Request). One that does not fit but is late (adds.Late) runs anyway while the frame has
+-- overdue room (adds.OverdueLeft): a waiting add's name is hidden (adds.Hold), and a plate drawn with
+-- its auras a frame later beats a missing name. One whose nameplate needs a build gets half a plate
+-- (adds.Half) when the frame has not built and the half fits, or it is late and the frame has overdue
+-- room and has not spent its budget (so a late half never joins an add past the budget: such a frame
+-- would hold about a whole build); once a half finished its plate, its add follows on the same terms as
+-- any other, so a late name's frame is its second half and its add. A build is passed over, keeping its
+-- place, once the frame has built, and while it does not fit and is not late: the adds behind it on
+-- frames that exist need not wait for it.
 function adds.Run()
-    local index = 0
-    while index < #adds.order and (index == 0 or adds.spent < LIMITS.ADD_BUDGET_MS) do
-        index = index + 1
-        local unit = adds.order[index]
+    local order, kept, stopped = adds.order, 0, false
+    for index = 1, #order do
+        local unit = order[index]
         if adds.pending[unit] then
-            adds.pending[unit] = nil
-            adds.Now(unit)
+            local run = not stopped
+            if run then
+                local cost, build = adds.Estimate(unit)
+                if build and not adds.built and (adds.Fits(cost)
+                    or adds.Late(unit) and adds.OverdueLeft() > 0 and adds.spent < LIMITS.ADD_BUDGET_MS) then
+                    adds.Half()
+                    cost, build = adds.Estimate(unit)
+                end
+                if build then
+                    run = false
+                elseif not adds.Fits(cost) then
+                    if adds.OverdueLeft() > 0 and adds.Late(unit) then
+                        adds.overdueRan = adds.overdueRan + 1
+                        counters.overdueAdds = counters.overdueAdds + 1
+                        adds.record("overdue")
+                    else
+                        -- Those behind a waiting add with a plate ready waited less: none is late, and
+                        -- none takes the spare it waits for.
+                        run, stopped = false, true
+                    end
+                end
+            end
+            if run then
+                adds.Drop(unit)
+                adds.Now(unit)
+            else
+                kept = kept + 1
+                order[kept] = unit
+            end
         end
     end
-    local remaining = #adds.order - index
-    for position = 1, remaining do adds.order[position] = adds.order[position + index] end
-    for position = remaining + 1, remaining + index do adds.order[position] = nil end
+    for index = kept + 1, #order do order[index] = nil end
 end
 
 -- The threat spotlight: a thin line with a faint glow, fitted to what the plate draws. Warm gold
@@ -1674,7 +2124,7 @@ local function UpdateSpotlight(now)
     end
     spotlightDimmed = false
     for unit, data in pairs(active) do
-        local enemy = data.profileKey == "enemy" or data.profileKey == "enemyDungeon"
+        local enemy = data.friendly == false
         local alpha = spotlightUnit and unit ~= spotlightUnit and enemy
             and db.threatSpotlightOthersAlpha or 1
         if data.spotlightAlpha ~= alpha and (alpha ~= 1 or data.spotlightAlpha ~= nil) then
@@ -1688,13 +2138,18 @@ end
 
 local function RemovePlate(unit)
     if not IsReadable(unit) or type(unit) ~= "string" then return end
-    -- A unit still waiting to be added is dropped too.
-    adds.pending[unit] = nil
+    -- A unit still waiting to be added is dropped too, and Blizzard's frames it held put back.
+    adds.Drop(unit)
+    adds.Release(unit, false)
     local data = active[unit]
     if not data then return end
     if PS.ThreatService then PS.ThreatService:UntrackEnemy(unit) end
     rounds.SetState(data, false)
-    auraWork.polls[data], auraWork.pending[data] = nil, nil
+    data.nextProfileKey = nil
+    -- An aura read still waiting (UNIT_AURA's, or the add's own) is dropped; its order entry is skipped.
+    auraWork.polls[data], auraWork.pending[data], data.aurasLater = nil, nil, nil
+    -- What this unit's aura passes cost is not the next unit's estimate (a unit with no aura cost little).
+    data.auraCost, data.auraRowsLeft = nil, nil
     RestoreNative(data)
     data.nativeAlphas = nil
     data.threatTrackRetryAt = nil
@@ -1703,6 +2158,9 @@ local function RemovePlate(unit)
     data.targeted, data.relationship, data.taggedShown, data.aurasWanted, data.pvpState = nil, nil, nil, nil, nil
     data.inRange, data.questProgressText, data.questProgressPercent = nil, nil, nil
     data.beaconUntil = nil
+    -- A test name is never carried to the next unit on this frame.
+    if rounds.testNamePlate == data then rounds.testNamePlate = nil end
+    data.testName = nil
     if data.beacon then data.beacon:Hide() end
     rounds.combo.Release(data)
     rounds.targetedBy.Release(data)
@@ -1713,6 +2171,7 @@ local function RemovePlate(unit)
             glow.pulse:Hide()
         end
         data.targetGlowsHidden = true
+        rounds.targetGlow.Hide(data)
     end
     SetTargetTextGlow(data)
     data.targetPulseActive, rounds.pulses[data] = nil, nil
@@ -1879,13 +2338,17 @@ local function ApplyNativeNameFont() PS.NativeFonts.Apply(db) end
 local platesReleased = false
 
 -- relayoutOnly: nothing in the settings changed (a zone change), so plates keep what was prepared
--- for their layouts and the profile is not marked changed.
-local function RefreshAllNow(relayoutOnly)
+-- for their layouts and the profile is not marked changed. changedOnly (a change of place): only the
+-- plates whose design changed are laid out again, a few a frame (adds.QueueRelayouts).
+local function RefreshAllNow(relayoutOnly, changedOnly)
     -- Stacking sizes plates from their layouts, so every refresh may change them.
     PS.Stacking.Invalidate()
+    -- Where plates show follows the settings and the place (a context change relayouts through here).
+    PS.PlateVisibility.Apply()
     PS.Conflicts.ForgetProvider()
     if not relayoutOnly then
         PS.Profiles.MarkChanged()
+        PS.Designs.Invalidate()
         settingsRevision = settingsRevision + 1
         -- A layout that now shows threat (or none that does) starts or stops the service.
         local service = PS.ThreatService
@@ -1905,6 +2368,7 @@ local function RefreshAllNow(relayoutOnly)
         platesReleased = false
         ScanPlates()
     end
+    if changedOnly then return adds.QueueRelayouts() end
     for unit, data in pairs(active) do
         if data.unit == unit then
             ApplyLayout(data)
@@ -1991,6 +2455,28 @@ local function RefreshTargetState()
     lastTargetPlate = current
 end
 
+-- /ps testname: one plate (the target's when set) draws text in its name's place, through the
+-- plates' own font route, so a font can be checked on a live plate. nil clears it. Returns
+-- whether it was set, else why not ("no-plate", or "withheld" when the client hides the target's plate).
+function rounds.SetTestName(text)
+    local previous = rounds.testNamePlate
+    if previous then
+        rounds.testNamePlate, previous.testName = nil, nil
+        if previous.unit and active[previous.unit] == previous then
+            RunBatch(false, SafePlateUpdate, previous, UpdateIdentity)
+        end
+    end
+    if text == nil then return true end
+    local data = TargetPlate()
+    if data == false then return false, "withheld" end
+    if not (data and data.own and not (data.restrictedFriendly and not data.restrictedOverlayEnabled)) then
+        return false, "no-plate"
+    end
+    data.testName, rounds.testNamePlate = text, data
+    RunBatch(false, SafePlateUpdate, data, UpdateIdentity)
+    return true
+end
+
 -- What unit and social events change on a plate, each applied only where something changed.
 local changes = {}
 
@@ -2008,13 +2494,17 @@ function changes.Relationships()
     end
 end
 
--- Whether the unit is now another kind of plate (friendliness, a restricted friendly, profile, or
--- who draws it): only then is it laid out again.
+-- Whether the unit is now another kind of plate (friendliness, a restricted friendly, plate type, its
+-- design here, or who draws it): only then is it laid out again.
 function changes.KindChanged(data)
-    local friendly = Secret.ReadBoolean(UnitIsFriend, "player", data.unit)
+    local friendly = rounds.Friendly(data.unit)
     if friendly ~= data.friendly or OwnsAppearance() ~= data.own then return true end
     if RestrictedFriendly(friendly) ~= data.restrictedFriendly then return true end
-    return PlateIdentity.ProfileKeyForUnit(data.unit, friendly) ~= data.profileKey
+    local plateType = PlateIdentity.ProfileKeyForUnit(data.unit, friendly)
+    if plateType == data.profileKey and PS.PlateContext.DesignFor(plateType) == data.design then return false end
+    -- For the ApplyLayout that follows (an enemy whose player status the client now gives is one).
+    data.nextProfileKey = plateType
+    return true
 end
 
 -- A unit's faction, flags or classification changed: a new kind is laid out, else its identity
@@ -2107,7 +2597,8 @@ local Diagnose, ProbePlayerPlate, AuraProbe, BuildDiagnosticReport = assert(PS._
 DiagnosticUI._buildReport = BuildDiagnosticReport
 
 local pending = { kinds = false, relationships = false, relationshipsAt = 0, auras = false, aurasAt = 0,
-    quests = false, questsAt = 0, raidFallback = false, raidFallbackAt = 0, raidTokens = {} }
+    quests = false, questsAt = 0, raidFallback = false, raidFallbackAt = 0, raidTokens = {}, context = false,
+    contextAt = 0 }
 
 local function UpdateCastTimes(now)
     local castTime = now * 1000
@@ -2124,18 +2615,154 @@ local function UpdateCastTimes(now)
     end
 end
 
--- Each plate's UNIT_AURA of this frame, once.
-function auraWork.Run()
-    for data in pairs(auraWork.pending) do
-        auraWork.pending[data] = nil
-        if data.unit and active[data.unit] == data then SafePlateUpdate(data, UpdatePlateAuras) end
+-- One plate's rows read for the round. Timed, it counts against the frame's plate budget (adds.spent),
+-- with the stack reflow a row shown or hidden asks for (flushed here, inside the time, not at the
+-- batch's end), and an add's own aura pass is recorded as its "aurasLater" phase.
+-- data.auraCost: what the plate's last whole aura pass cost here (for this unit), its estimate for the
+-- next. budgeted (the frame's round): a pass expected to cost more than the frame's budget has left
+-- (a first pass making both rows' icons, which ran as a frame's first item alone at over 7 ms) is split:
+-- the buffs row now, the debuffs row in a later round (data.auraRowsLeft).
+function auraWork.Read(data, budgeted)
+    local started = Clock()
+    local only = data.auraRowsLeft
+    data.auraRowsLeft = nil
+    if budgeted and started and not only and adds.spent + auraWork.Estimate(data) > LIMITS.ADD_BUDGET_MS then
+        only, data.auraRowsLeft = "buffs", "debuffs"
+    end
+    local later = data.aurasLater
+    data.aurasLater = nil
+    local fresh = not (data.buffIcons[1] or data.debuffIcons[1])
+    -- Work marked before the pass (this frame's deferred unit events) is flushed with it, but timed
+    -- apart (earlier), so reflow is only the stack layout the pass itself asked for.
+    local earlier = dirtyPlates[data] == true
+    counters.auraPasses = counters.auraPasses + 1
+    data.auraOnly = only
+    SafePlateUpdate(data, UpdatePlateAuras)
+    data.auraOnly = nil
+    if data.auraRowsLeft then auraWork.Queue(data) end
+    if dirtyPlates[data] and not earlier then counters.auraReflows = counters.auraReflows + 1 end
+    if not started then return end
+    if dirtyPlates[data] then
+        local flushed = Clock()
+        FlushPlate(data)
+        if PS.Performance then PS.Performance.RecordAuraPhase(earlier and "earlier" or "reflow", Clock() - flushed) end
+    end
+    local span = Clock() - started
+    adds.spent = adds.spent + span
+    if later and addPhases.Record then addPhases.Record("aurasLater", span) end
+    -- Half a pass teaches no estimate (the whole one's is learnt from whole passes).
+    if only then return end
+    data.auraCost = span
+    adds.Learn(fresh and "fresh" or "auras", span)
+end
+
+-- What a plate's aura pass is expected to cost: its own last pass, else the learnt cost of a pass
+-- (one that makes the rows' first icons, when the plate has none yet); half that for the row a split
+-- pass left.
+function auraWork.Estimate(data)
+    local cost = data.auraCost
+    if not cost then cost = (data.buffIcons[1] or data.debuffIcons[1]) and adds.cost.auras or adds.cost.fresh end
+    return data.auraRowsLeft and cost / 2 or cost
+end
+
+-- The frame's aura round: each queued plate's rows once, oldest first. budgeted (the frame's
+-- ticker pass): after the frame's adds, while the next plate's expected cost fits what their budget
+-- left (the first of a frame always runs), the rest the next frame. So while a burst of adds fills
+-- frames their names come first and their auras right after, and no frame runs a plate's aura pass
+-- the budget has no room for. force (starving): the first live pass runs even past the budget, so
+-- overdue adds taking the frame cannot keep the auras back beyond the starvation guard.
+function auraWork.Run(budgeted, force)
+    local order, index = auraWork.order, 0
+    while index < #order do
+        local data = order[index + 1]
+        local live = auraWork.pending[data] and data.unit and active[data.unit] == data
+        if budgeted and live and not force and not adds.Fits(auraWork.Estimate(data)) then break end
+        if live then force = false end
+        index = index + 1
+        if auraWork.pending[data] then
+            auraWork.pending[data] = nil
+            if live then auraWork.Read(data, budgeted) end
+        end
+    end
+    local remaining = #order - index
+    for position = 1, remaining do order[position] = order[position + index] end
+    for position = remaining + 1, remaining + index do order[position] = nil end
+end
+
+-- A change of place lays out again only the plates whose design changed there (walking into a city
+-- restyles the plate types with a city design, nothing else), oldest first under the frame's add budget,
+-- never every plate in one frame. A plate waiting keeps its old design, so this comes after the adds;
+-- one that is late (adds.LateSince) runs past the budget as the frame's overdue item while there is room.
+-- adds.relayouts: plate records; data.relayoutFrame and relayoutMs: the frame and profiler clock it queued at.
+adds.relayouts = {}
+function adds.QueueRelayouts()
+    local list, DesignFor = adds.relayouts, PS.PlateContext.DesignFor
+    for unit, data in pairs(active) do
+        if data.unit == unit and not data.relayoutFrame and DesignFor(data.profileKey) ~= data.design then
+            data.relayoutFrame, data.relayoutMs = auraWork.frame, Clock()
+            list[#list + 1] = data
+        end
     end
 end
 
+function adds.RunRelayouts()
+    local list, kept, stopped = adds.relayouts, 0, false
+    for index = 1, #list do
+        local data = list[index]
+        if not (data.relayoutFrame and data.unit and active[data.unit] == data) then
+            data = nil
+        elseif PS.PlateContext.DesignFor(data.profileKey) == data.design then
+            -- The place changed back before its turn.
+            data.relayoutFrame, data = nil, nil
+        elseif not stopped and not adds.Fits(adds.cost.relayout) then
+            if adds.OverdueLeft() > 0 and adds.LateSince(data.relayoutFrame, data.relayoutMs) then
+                adds.overdueRan = adds.overdueRan + 1
+            else
+                stopped = true
+            end
+        end
+        if data then
+            if stopped then
+                kept = kept + 1
+                list[kept] = data
+            else
+                local started = Clock()
+                counters.contextPlates = counters.contextPlates + 1
+                ApplyLayout(data)
+                ApplySpotlightStyle(data)
+                if dirtyPlates[data] then FlushPlate(data) end
+                if started then
+                    local span = Clock() - started
+                    adds.spent = adds.spent + span
+                    adds.Learn("relayout", span)
+                end
+            end
+        end
+    end
+    for index = kept + 1, #list do list[index] = nil end
+end
+
 local function FrameTick(now)
-    -- Plate adds a burst left over, within this frame's budget.
+    -- Plate adds a burst left over, within this frame's budget. First, adds that waited too long (a
+    -- hidden name), then aura passes adds kept back (one even past the budget once starving).
+    if adds.order[1] and adds.Overdue() then adds.Run() end
+    if auraWork.Starving() then auraWork.Run(true, adds.spent > 0) end
     if adds.order[1] then adds.Run() end
     -- Bursty events set these flags; each is applied at most once per frame.
+    -- Resting flips (PLAYER_UPDATE_RESTING) at a city's edge: the context is worked out once a frame, and
+    -- after a change no sooner than CONTEXT_HOLD later, so walking along the edge (or bobbing on it) changes
+    -- the place at most that often; plates whose design changed are laid out again a few a frame.
+    if pending.context and now >= pending.contextAt then
+        pending.context = false
+        if PS.PlateContext.Refresh("resting") then
+            pending.contextAt = now + LIMITS.CONTEXT_HOLD
+            counters.contextRelayouts = counters.contextRelayouts + 1
+            -- Into a city: its crowd's nameplates come next, so the spares are built ahead of them.
+            if PS.PlateContext.Current() == "city" then PlateParts.Warm(now) end
+            RefreshAllNow(true, true)
+        end
+    end
+    if adds.relayouts[1] then adds.RunRelayouts() end
     if pending.kinds then
         pending.kinds = false
         changes.UnitKinds()
@@ -2147,10 +2774,10 @@ local function FrameTick(now)
     if pending.auras and now >= pending.aurasAt then
         pending.auras, pending.aurasAt = false, now + AURA_EVENT_INTERVAL
         for unit, data in pairs(active) do
-            if data.unit == unit and data.aurasWanted then auraWork.pending[data] = true end
+            if data.unit == unit and data.aurasWanted then auraWork.Queue(data) end
         end
     end
-    if next(auraWork.pending) then auraWork.Run() end
+    if auraWork.order[1] then auraWork.Run(true) end
     -- A token that can stand in for a withheld marker changed: the target, focus or mouseover (every
     -- stand-in resolved again, at most every RAID_FALLBACK_INTERVAL), or a group member's target
     -- (only that token tested, pending.raidTokens).
@@ -2222,26 +2849,30 @@ end)
 -- (TakeSpare, WarmLater and a container taken from the pool switch it on again).
 PS.Ticker.Register("plates.spares", LIMITS.SPARE_INTERVAL, function(_, now)
     local spares = PlateParts.spares
-    local platesFull = PlateParts.attached + #spares >= PlateParts.SpareTarget()
+    local platesFull = PlateParts.attached + #spares >= PlateParts.SpareTarget(now)
     local containers = auraWork.containers
     if not (db and db.enabled) or (platesFull and not (containers and containers.Wanted(now))) then
+        PS.Ticker.SetInterval("plates.spares", LIMITS.SPARE_INTERVAL)
         PS.Ticker.SetEnabled("plates.spares", false)
         return
     end
-    if now < PlateParts.warmAt or adds.order[1] or adds.spent > 0 or Secret.InCombat() then return end
+    -- Warmed and short of the target: every frame that is idle enough, not every SPARE_INTERVAL.
+    PS.Ticker.SetInterval("plates.spares", not platesFull and now < PlateParts.warmUntil and 0 or LIMITS.SPARE_INTERVAL)
+    -- Only out of combat, with no add waiting, in a frame that has built nothing and whose plate work (adds
+    -- and aura reads: adds.spent is the frame's) came to less than SPARE_IDLE_MS, or SPARE_IDLE_SHARE of the
+    -- last frame's length (at 15 fps a frame's plate work is a smaller share of it), up to the add budget.
+    -- Its own time counts in the frame's plate work too.
+    adds.Frame(false)
+    local idle = math.min(LIMITS.ADD_BUDGET_MS, math.max(LIMITS.SPARE_IDLE_MS, (adds.frameMs or 0) * LIMITS.SPARE_IDLE_SHARE))
+    if now < PlateParts.warmAt or adds.order[1] or adds.built or adds.spent >= idle or Secret.InCombat() then return end
     if platesFull then
         if not containers.Build(now) then PS.Ticker.SetEnabled("plates.spares", false) end
         return
     end
-    -- Half a plate a pass (Factory's StartPlate, then FinishPlate), so no pass builds a whole one.
-    local partial = PlateParts.partial
-    if not partial then
-        PlateParts.partial = PlateParts.StartPlate(nil)
-        return
-    end
-    PlateParts.partial = nil
-    spares[#spares + 1] = PlateParts.FinishPlate(partial)
-    counters.sparesBuilt = counters.sparesBuilt + 1
+    local started = Clock()
+    if PlateParts.BuildHalf() then counters.sparesBuilt = counters.sparesBuilt + 1 end
+    adds.built = true
+    if started then adds.spent = adds.spent + Clock() - started end
 end)
 PS.Ticker.SetEnabled("plates.spares", false)
 
@@ -2390,6 +3021,7 @@ local coreEvents = {
     "UNIT_POWER_UPDATE",
     "UNIT_MAXPOWER",
     "PLAYER_REGEN_ENABLED",
+    "PLAYER_UPDATE_RESTING",
 }
 for index = 1, #coreEvents do
     PS._RegisterEvent(eventFrame, coreEvents[index], "platesmith.nameplates")
@@ -2500,7 +3132,7 @@ local function HandleEvent(event, unit)
         else
             -- Read once in the frame's flush, and only for a plate that shows an aura row.
             local data = active[unit] or AuraStandIn(unit)
-            if data and data.aurasWanted then auraWork.pending[data] = true end
+            if data and data.aurasWanted then auraWork.Queue(data) end
         end
     elseif event == "NAME_PLATE_UNIT_ADDED" then
         adds.Request(unit)
@@ -2527,6 +3159,7 @@ local function HandleEvent(event, unit)
             end
         end
     elseif event == "PLAYER_TARGET_CHANGED" then
+        if rounds.testNamePlate then rounds.SetTestName(nil) end
         RefreshTargetState()
         pending.raidFallback = true
     elseif SOCIAL_EVENTS[event] then
@@ -2554,6 +3187,7 @@ local function HandleEvent(event, unit)
         PS.Conflicts.ForgetProvider()
         RaidMarker.InvalidateCandidates()
         NamePolicy.ZoneChanged()
+        PS.PlateContext.Refresh("zone")
         NamePolicy.Apply()
         RefreshAllNow(true)
         ScanPlates()
@@ -2564,19 +3198,28 @@ local function HandleEvent(event, unit)
         for plateUnit, data in pairs(active) do
             if data.unit == plateUnit and (data.buffsIndexError or data.debuffsIndexError) then
                 data.buffsIndexError, data.debuffsIndexError = nil, nil
-                if data.aurasWanted then auraWork.pending[data] = true end
+                if data.aurasWanted then auraWork.Queue(data) end
             end
         end
     elseif event == "ZONE_CHANGED_NEW_AREA" then
-        -- Plates up across a change into or out of a dungeon are laid out again for it.
+        -- Plates up across a change of context (into or out of a dungeon, a battleground, a city) are
+        -- laid out again for it: those whose design changed, a few a frame; every plate when the
+        -- dungeon check flipped (friendly plates become Blizzard's). Blizzard's friendly names follow it.
         local wasInstance = NamePolicy.InGroupInstance()
         NamePolicy.ZoneChanged()
-        if NamePolicy.InGroupInstance() ~= wasInstance then
-            NamePolicy.Apply()
-            RefreshAllNow(true)
+        local flipped = NamePolicy.InGroupInstance() ~= wasInstance
+        if PS.PlateContext.Refresh("zone") or flipped then
+            if PS.PlateContext.Current() == "city" then PlateParts.Warm(GetTime()) end
+            if flipped then NamePolicy.Apply() end
+            counters.contextRelayouts = counters.contextRelayouts + 1
+            RefreshAllNow(true, not flipped)
         end
+    elseif event == "PLAYER_UPDATE_RESTING" then
+        pending.context = true
     elseif event == "PLAYER_LOGOUT" then
-        NamePolicy.RestoreAll()
+        -- A /reload in combat: the writes are tried, but one the client blocks fails unseen, so the
+        -- records are kept for the next login to put back.
+        NamePolicy.RestoreAll(Secret.InCombat())
         NamePolicy.FlushPending()
     elseif event == "QUEST_LOG_UPDATE" or event == "QUEST_WATCH_LIST_CHANGED" then
         -- Providers get QUEST_LOG_UPDATE when one arrived in the window, so a watch-list-only change can be skipped.
@@ -2621,6 +3264,7 @@ PS.GetLayout = PlateSettings.GetLayout
 PS.SetLayout = PlateSettings.SetLayout
 PS.SetComponentPosition = PlateSettings.SetComponentPosition
 PS.SetComponentScale = PlateSettings.SetComponentScale
+PS.SetSettingsDrag = PlateSettings.SetSettingsDrag
 PS.SetComponentAttach = PlateSettings.SetComponentAttach
 PS.SetComponentVisibility = PlateSettings.SetComponentVisibility
 PS.SetPartShownEverywhere = PlateSettings.SetPartShownEverywhere
@@ -2632,13 +3276,17 @@ for _, name in ipairs({ "CreateComponentGroup", "RenameComponentGroup", "SetComp
     "RemoveComponent", "RestoreComponent", "ResetComponent", "SetComponentStack", "SetComponentFree", "SetComponentLayer",
     "RenameComponent", "SetLayoutMeasure", "MoveComponentGroup", "DeleteComponentGroup", "ComponentGroupKeys",
     "GetPlateProfileSettings", "GetDungeonEnemyOverride", "SetDungeonEnemyProfile", "GetDefaultLayout",
-    "SetPlateProfileOption", "SetPlateValueSlot", "SetPlateValueSlotFields", "SetPlateAuraLayout", "SetPartRules",
+    "SetPlateProfileOption", "CopyTargetHighlight", "SetPlateValueSlot", "SetPlateValueSlotFields", "SetPlateAuraLayout", "SetPartRules",
     "GetFadeState", "SetFadeEverywhere", "SetFadeAlpha",
     "SetPartStyle", "ResetValueSlot", "SaveStylePreset", "DeleteStylePreset", "ApplyStylePreset", "SetPlateProfileHealthColour",
-    "SetRelationshipColour", "GetCharacterSettings", "SetCharacterOption", "ResetSettings" }) do
+    "SetRelationshipColour", "SetThreatColour", "SetThreatPartOwnColours", "GetCharacterSettings", "SetCharacterOption",
+    "ResetSettings", "AddDesign", "RemoveDesign", "ResetDesign", "ResetDesignArea", "SlimDesign", "CopyDesign",
+    "FreeValueSlot" }) do
     PS[name] = PlateSettings[name]
 end
 PS.ApplyNameplateFont = ApplyNameplateFont
+-- Whether PlateSmith draws a unit's plate, so Blizzard's own name there is hidden (NativeFonts asks).
+PS.PlateDrawsUnit = adds.Drawn
 -- A part's text in its style (font, Font size, outline, shadow), for parts drawn outside this file.
 PS.StyledPartFont = Styles.StyledFont
 PS.ApplyThreatText = ApplyThreatText
@@ -2646,6 +3294,7 @@ PS.HighlightPlate = HighlightPlate
 PS.ExternalProvider = ExternalProvider
 PS.Diagnose = Diagnose
 PS.ProbePlayerPlate = ProbePlayerPlate
+PS.SetTestName = rounds.SetTestName
 PS._Test = {
     Abbreviate = PS.Format.Abbreviate,
     FormatThreat = ThreatText.Readable,
@@ -2664,6 +3313,18 @@ PS._Test = {
     Counters = counters,
     Limits = LIMITS,
     PendingAdds = function() return #adds.order end,
+    PendingAuras = function() return #auraWork.order end,
+    -- What the next add, build or aura pass is expected to cost (ms), as the budget judges them.
+    ItemCosts = adds.cost,
+    ItemBases = adds.base,
+    LearnCost = adds.Learn,
+    -- Plates waiting to be laid out again for a change of place.
+    PendingRelayouts = function() return #adds.relayouts end,
+    -- The frame's plate work so far (ms), as the spares pass reads it.
+    FrameSpent = function(ms)
+        if ms then adds.spent = ms end
+        return adds.spent
+    end,
     Spares = PlateParts.spares,
     -- The native aura containers made ahead (Auras.lua's pool).
     ContainerPool = auraWork.containers,
@@ -2690,5 +3351,8 @@ PS._Test = {
     PlateSize = function(region) return SafeSize(region) end,
     Range = rounds.range,
     Combo = rounds.combo,
+    TargetGlow = rounds.targetGlow,
+    -- The names-only cast bar (Placement's NameCast), for the store shot of it.
+    NameCast = rounds.nameCast,
     TargetedBy = rounds.targetedBy,
 }

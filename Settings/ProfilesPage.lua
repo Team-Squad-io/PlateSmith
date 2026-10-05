@@ -73,8 +73,14 @@ function Options:BuildAutoProfileSection(kit, flow)
         dropdowns[key] = dropdown
     end
     local contentLabels = { world = L["Open world"], dungeon = L["Dungeons"], raid = L["Raids"],
-        pvp = L["Battlegrounds and arenas"] }
-    for _, key in ipairs(Auto.CONTENT) do RuleRow(key, contentLabels[key]) end
+        pvp = L["Battlegrounds & arenas"] }
+    for _, key in ipairs(Auto.CONTENT) do
+        RuleRow(key, contentLabels[key])
+        -- Separate rows here (the rules keep dungeon and raid apart); Studio has one design for both.
+        if key == "raid" then
+            kit.Add(section, kit.ControlHelp(section, L["Studio's Dungeons & raids designs apply in both."]))
+        end
+    end
     local specs = Auto.SpecCount()
     for index = 1, specs do RuleRow(Auto.SPEC_KEYS[index], Auto.SpecLabel(index)) end
     if specs > 0 then
@@ -92,6 +98,23 @@ function Options:BuildAutoProfileSection(kit, flow)
         kit.Add(section, kit.ControlHelp(section, L["This client has no specializations to switch by."]))
     end
     Options.autoProfileDropdowns = dropdowns
+    Options.autoProfileSection = section
+end
+
+-- Studio's Profile menu › Switch automatically...: this page at Automatic switching. Blizzard's
+-- Settings panel is protected in combat, so the menu entry is off then; false if it cannot open.
+function Options:OpenAutoProfileSettings()
+    if PS.Secret.InCombat() then return false end
+    PS.CreateOptions()
+    local section, page = self.autoProfileSection, self.profilesPanel
+    if not (section and page and self.settingsSearch) then return false end
+    local opened = self.settingsSearch.Pick({ place = "blizzard", page = page, frame = section, section = section,
+        categoryObject = self.moduleSettings and self.moduleSettings.profiles })
+    -- Clients without the Settings panel's categories: the legacy route to the page itself.
+    if opened and not (Settings and Settings.OpenToCategory) and InterfaceOptionsFrame_OpenToCategory then
+        InterfaceOptionsFrame_OpenToCategory(page)
+    end
+    return opened
 end
 
 function Options:BuildProfilesPage(page)

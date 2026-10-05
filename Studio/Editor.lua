@@ -13,6 +13,7 @@ local editorProfiles = {
     { key = "enemy", label = L["Enemies"], sampleName = L["Training Raider"] },
     { key = "friendlyPlayer", label = L["Players"], sampleName = L["Your Character"] },
     { key = "friendlyNPC", label = L["Friendly NPCs"], sampleName = L["Innkeeper Allison"] },
+    { key = "enemyPlayer", label = L["Enemy players"], sampleName = L["Arena Challenger"] },
 }
 -- The inspector's controls for each part (Inspector's contexts); parts with none of their own
 -- (shown, hidden and moved from the tree and the preview) use "other".
@@ -49,7 +50,7 @@ local editorDescriptions = {
     classification = L["Shows elite, rare, rare elite, or world-boss status."],
     buffs = L["Buffs on this unit."],
     debuffs = L["Debuffs on this unit."],
-    combo = L["Your combo points (rogue, or druid in cat form), on your target's plate only."],
+    combo = L["Your combo points on your target's plate, in any form; an empty row only while you can build them."],
     targetedBy = L["Which group members target this enemy: a class-coloured badge each, where the game says."],
 }
 for index = 1, VALUE_SLOT_COUNT do
@@ -57,8 +58,11 @@ for index = 1, VALUE_SLOT_COUNT do
 end
 local editorBlueprint = assert(Options.editorBlueprint, "PlateSmith EditorBlueprint missing")
 local CopyEditorLayout = editorBlueprint.CopyLayout
+-- What Studio edits: a plate type (editorProfile) and which of its designs (editorDesign: "world" or
+-- a context, Core/Designs.lua), remembered per plate type for the session.
 Options.editorProfile = "enemy"
-Options.editorContext = "world"
+Options.editorDesign = "world"
+Options.editorDesignByType = {}
 -- 100% is the plate's size in game. The preview zooms from 100% to 300%; it opens fitted, as
 -- large as shows the whole plate up to PREVIEW_FIT_ZOOM.
 local PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX, PREVIEW_ZOOM_DEFAULT = 1, 3, 1
@@ -85,16 +89,38 @@ function Options:SetEditorFriendlyView(view)
     return self:SetEditorProfile(self.editorProfile)
 end
 
+-- Enemies or Enemy players (whose layer sits on the Enemies' designs): hostile plates, one full layout.
+function Options:IsEditorEnemy()
+    return self.editorProfile == "enemy" or self.editorProfile == "enemyPlayer"
+end
+
 function Options:CurrentEditorVariant()
-    if self.editorProfile == "enemy" or self.editorProfile == "enemyDungeon" then return "full" end
-    if self.editorContext == "dungeon" then return "dungeon" end
+    if self:IsEditorEnemy() then return "full" end
+    if self.editorDesign == "dungeon" then return "dungeon" end
     return self:EditorFriendlyView()
 end
 
+-- The edit target every PS.Set* and PS.Get* call in Studio passes (Core/Settings.lua): the plate
+-- type for its World design, else "<type>@<design>".
+function Options:EditorTarget()
+    local design = self.editorDesign
+    if not design or design == "world" then return self.editorProfile end
+    return self.editorProfile .. "@" .. design
+end
+
+-- The profile the preview draws (the edited design's); the import preview's plates draw their own.
+function Options:EditorProfileSettings()
+    return type(PS.GetPlateProfileSettings) == "function" and PS.GetPlateProfileSettings(self:EditorTarget()) or nil
+end
+
+-- Who draws the plates (Lifecycle's OwnsAppearance); the stored values stay auto, own and overlay.
 local modeChoices = {
-    { value = "auto", label = L["Automatic"] },
-    { value = "own", label = L["PlateSmith skin"] },
-    { value = "overlay", label = L["Overlay only"] },
+    { value = "auto", label = L["Automatic"],
+        help = L["PlateSmith draws the plates, unless another nameplate addon does; then it adds its extras to those."] },
+    { value = "own", label = L["PlateSmith"],
+        help = L["PlateSmith always draws its own plates, even beside another nameplate addon."] },
+    { value = "overlay", label = L["Blizzard, with PlateSmith extras"],
+        help = L["Blizzard's plates (or another addon's) stay; PlateSmith adds its quest markers and threat to them."] },
 }
 
 local friendlyChoices = {
@@ -115,11 +141,28 @@ local friendlyPvpChoices = {
     { value = "both", label = L["Colour and icon"] },
 }
 
+-- Selected target: Gold edge stands for both stored styles, "border" (steady) and "halo" (pulsing);
+-- the Target section's Pulse slowly box picks between them (Inspector).
 local targetHighlightChoices = {
-    { value = "off", label = L["Off"], help = L["No extra glow. The health bar keeps its normal target edge."] },
-    { value = "border", label = L["Steady glow"],
-        help = L["Gold light follows the selected plate's text and visible bars, without a box around the whole plate."] },
-    { value = "halo", label = L["Pulsing glow"], help = L["The same text-and-bar glow gently pulses around the selected plate."] },
+    { value = "off", label = L["Off"], help = L["No extra glow. The health bar keeps its gold target edge."] },
+    { value = "border", label = L["Gold edge"],
+        help = L["Gold light on the selected plate's text and bar edges, steady or pulsing."] },
+    { value = "glow", label = L["Soft glow behind"],
+        help = L["A soft cloud of light behind the selected plate, under its bars and text, in a colour you choose."] },
+}
+local targetGlowColourChoices = {
+    { value = "custom", label = L["Custom"], help = L["The colour picked beside it."] },
+    { value = "class", label = L["Class"], help = L["A player's class colour; anything else its reaction colour."] },
+    { value = "reaction", label = L["Reaction"], help = L["Red for hostile, yellow for neutral, green for friendly."] },
+    { value = "threat", label = L["Threat"],
+        help = L["Threat: your threat colour on this target while you're in combat with it; your custom colour otherwise."] },
+}
+
+local namesOnlyCastTextChoices = {
+    { value = "under", label = L["Under the bar"],
+        help = L["A slim bar with the spell's name and time small under it, cut short at the bar's width."] },
+    { value = "inside", label = L["Inside the bar"],
+        help = L["A small cast bar like the full plate's: the spell's name on the left and the time on the right, inside it."] },
 }
 
 local auraSourceChoices = {
@@ -141,7 +184,7 @@ function Options:GetEditorLayout()
 end
 
 function Options:ApplyEditorLayout(layout)
-    PS.SetLayout(layout, self.editorProfile, self:CurrentEditorVariant())
+    PS.SetLayout(layout, self:EditorTarget(), self:CurrentEditorVariant())
     self:ReloadEditorLayout()
 end
 
@@ -160,7 +203,7 @@ function Options:EditorComponentLabel(key)
     local position = type(key) == "string" and not key:match("^group%.%d+$") and self.editorLayout and self.editorLayout[key]
     if position and position.name and not key:match("^value%d+$") then return position.name end
     if type(key) == "string" and key:match("^value%d+$") then
-        local profile = PS.GetPlateProfileSettings(self.editorProfile)
+        local profile = PS.GetPlateProfileSettings(self:EditorTarget())
         local slot = profile and profile.valueSlots and profile.valueSlots[key]
         if slot and slot.name then return slot.name end
     end
@@ -299,11 +342,11 @@ function Options:BeginEditorTreeRename(key)
             if renamingKey:match("^group%.%d+$") then
                 self:RenameEditorGroup(renamingKey, text)
             elseif renamingKey:match("^value%d+$") then
-                PS.SetPlateValueSlot(self.editorProfile, renamingKey, "name", text)
+                PS.SetPlateValueSlot(self:EditorTarget(), renamingKey, "name", text)
                 self:RefreshEditorAppearance(PS.GetSettings())
             else
                 -- A built-in part's own name in the tree (blank: its standard name).
-                PS.RenameComponent(renamingKey, text, self.editorProfile, self:CurrentEditorVariant())
+                PS.RenameComponent(renamingKey, text, self:EditorTarget(), self:CurrentEditorVariant())
                 self:ReloadEditorLayout()
             end
         end
@@ -333,7 +376,7 @@ end
 function Options:RemoveValueSlot(key)
     if type(key) ~= "string" or not key:match("^value%d+$") then return false end
     -- Everything goes (settings, style, rules): the next part added here starts fresh.
-    if not PS.ResetValueSlot(self.editorProfile, key) then return false end
+    if not PS.ResetValueSlot(self:EditorTarget(), key) then return false end
     self:RefreshEditorAppearance(PS.GetSettings())
     if self.selectedComponent == key then self:SelectEditorComponent("health") end
     return true
@@ -342,9 +385,10 @@ end
 -- The tree: groups and parts as one hierarchy, children indented under their parent.
 local TREE_INDENT = 26
 
+-- Not while the Enemy players gate hides the tree (DesignRow.lua): taking it down refreshes it.
 function Options:RefreshEditorComponentList(settings, revealKey)
     local content = self.editorListContent
-    if not content then return end
+    if not content or self.editorPlayersGated then return end
     local layout = self.editorLayout or {}
     self.editorCustomGroupHeaders = self.editorCustomGroupHeaders or {}
     for key in pairs(layout) do
@@ -433,6 +477,7 @@ function Options:RefreshEditorComponentList(settings, revealKey)
             if header.SetFolded then header:SetFolded(header.folded) end
             y = y + HEADER_HEIGHT
         else
+            -- Made here the first time the tree shows it (Frame.lua).
             local button = self.editorComponentButtons[key]
             if not button then return end
             button:ClearAllPoints()
@@ -475,7 +520,7 @@ function Options:RefreshEditorComponentList(settings, revealKey)
         -- A part with children, not its parent's last: its line down to the next sibling runs past
         -- its children's rows, so the parent's line has no break.
         if not isGroup and #children > 0 and not last and depth > 0 then
-            local button = self.editorComponentButtons[key]
+            local button = rawget(self.editorComponentButtons, key)
             if button and button.connectors then button.connectors[1]:SetHeight(y - top) end
         end
         if isGroup then y = y + GROUP_GAP end
@@ -508,6 +553,8 @@ function Options:RefreshEditorComponentList(settings, revealKey)
     end
     self:FadeEditorListOverflow(scroll.GetVerticalScroll and scroll:GetVerticalScroll() or 0)
     self:ApplyEditorListInk()
+    -- What the open design changes from World, in the tree and the inspector (Marks.lua).
+    if self.RefreshEditorMarks then self:RefreshEditorMarks() end
 end
 
 -- Rows the list's bottom edge would cut through are hidden (and unclickable) until scrolled to,
@@ -546,12 +593,16 @@ function Options:IsEditorPartShown(key)
 end
 
 local function WritePartVisibility(self, key, visible)
-    PS.SetComponentVisibility(key, visible, self.editorProfile, self:CurrentEditorVariant())
+    PS.SetComponentVisibility(key, visible, self:EditorTarget(), self:CurrentEditorVariant())
 end
 
 -- After an eye: every control refreshes, so a Show on plates box shows the eyes' new state, and
 -- the layout, preview and tree follow.
-local function AfterPartVisibility(self) self:Refresh(true) end
+-- The selection box follows: it goes when the selected part is hidden and comes back when it shows.
+local function AfterPartVisibility(self)
+    self:Refresh(true)
+    self:UpdateEditorSelectionHandles()
+end
 
 function Options:SetEditorGroupVisibility(groupKey, visible)
     for _, key in ipairs(editorOrder) do
@@ -563,16 +614,14 @@ function Options:SetEditorGroupVisibility(groupKey, visible)
 end
 
 -- Whether this plate type can take another value, and the free slot it would use.
+-- A slot free in every design of the plate type (Settings' FreeValueSlot), so a part added in one
+-- design never lands on a slot another design uses.
 function Options:EditorFreeValueSlot()
-    if self.editorProfile ~= "enemy" and self.editorProfile ~= "enemyDungeon"
-        and self.editorContext ~= "dungeon"
+    if not self:IsEditorEnemy() and self.editorDesign ~= "dungeon"
         and self:EditorFriendlyView() ~= "full" then return nil, "plate" end
-    local profile = PS.GetPlateProfileSettings(self.editorProfile)
-    if not profile or not profile.valueSlots then return nil, "plate" end
-    for index = 1, VALUE_SLOT_COUNT do
-        local key = "value" .. index
-        if profile.valueSlots[key].source == "off" then return key end
-    end
+    if type(PS.FreeValueSlot) ~= "function" then return nil, "plate" end
+    local key = PS.FreeValueSlot(self:EditorTarget())
+    if key then return key end
     return nil, "full"
 end
 
@@ -580,10 +629,10 @@ end
 function Options:AddValueSlot(source, kind)
     local key = self:EditorFreeValueSlot()
     if not key then return false end
-    PS.SetPlateValueSlot(self.editorProfile, key, "kind", kind)
-    if not PS.SetPlateValueSlot(self.editorProfile, key, "source", source or "healthPercent") then return false end
+    PS.SetPlateValueSlot(self:EditorTarget(), key, "kind", kind)
+    if not PS.SetPlateValueSlot(self:EditorTarget(), key, "source", source or "healthPercent") then return false end
     if self.editorSelectedGroup then
-        PS.SetComponentParent(key, self.editorSelectedGroup, nil, self.editorProfile, self:CurrentEditorVariant())
+        PS.SetComponentParent(key, self.editorSelectedGroup, nil, self:EditorTarget(), self:CurrentEditorVariant())
     end
     self:ReloadEditorLayout()
     self:SelectEditorComponent(key)
@@ -593,27 +642,27 @@ end
 -- A copy of a value in a free slot: its settings, a little below it, under the same parent.
 function Options:DuplicateEditorValue(key)
     local copy = self:EditorFreeValueSlot()
-    local profile = PS.GetPlateProfileSettings(self.editorProfile)
+    local profile = PS.GetPlateProfileSettings(self:EditorTarget())
     local slot = profile and profile.valueSlots and profile.valueSlots[key]
     local position = self.editorLayout and self.editorLayout[key]
     if not copy or not slot or not position then return false end
-    PS.ResetValueSlot(self.editorProfile, copy)
+    PS.ResetValueSlot(self:EditorTarget(), copy)
     -- One write, one refresh: every field is checked before any is stored.
     local fields = {}
     for _, field in ipairs({ "kind", "source", "anchor", "layer", "whenMissing", "fontSize", "template", "width",
         "height", "icon", "colour" }) do
         if slot[field] ~= nil then fields[field] = slot[field] end
     end
-    PS.SetPlateValueSlotFields(self.editorProfile, copy, fields)
+    PS.SetPlateValueSlotFields(self:EditorTarget(), copy, fields)
     -- Its style and rules come along: a duplicate looks and behaves the same.
     local style = profile.styles and profile.styles[key]
-    if style then PS.ApplyStylePreset(self.editorProfile, copy, { style = style }) end
+    if style then PS.ApplyStylePreset(self:EditorTarget(), copy, { style = style }) end
     local rules = profile.rules and profile.rules[key]
-    if rules then PS.SetPartRules(self.editorProfile, copy, rules) end
+    if rules then PS.SetPartRules(self:EditorTarget(), copy, rules) end
     local variant = self:CurrentEditorVariant()
-    PS.SetComponentParent(copy, position.parent, nil, self.editorProfile, variant)
-    PS.SetComponentPosition(copy, position.x, position.y - 12, self.editorProfile, variant)
-    PS.SetComponentScale(copy, position.scale or 1, self.editorProfile, variant)
+    PS.SetComponentParent(copy, position.parent, nil, self:EditorTarget(), variant)
+    PS.SetComponentPosition(copy, position.x, position.y - 12, self:EditorTarget(), variant)
+    PS.SetComponentScale(copy, position.scale or 1, self:EditorTarget(), variant)
     self:ReloadEditorLayout()
     self:SelectEditorComponent(copy)
     return copy
@@ -621,7 +670,7 @@ end
 
 -- Puts a deleted part back (inside the selected group if there is one) and selects it.
 function Options:AddEditorComponent(key)
-    if not PS.RestoreComponent(key, self.editorSelectedGroup, self.editorProfile, self:CurrentEditorVariant()) then
+    if not PS.RestoreComponent(key, self.editorSelectedGroup, self:EditorTarget(), self:CurrentEditorVariant()) then
         return false
     end
     self.editorSelectedGroup = nil
@@ -631,7 +680,7 @@ function Options:AddEditorComponent(key)
 end
 
 function Options:RemoveEditorComponent(key)
-    if not PS.RemoveComponent(key, self.editorProfile, self:CurrentEditorVariant()) then return false end
+    if not PS.RemoveComponent(key, self:EditorTarget(), self:CurrentEditorVariant()) then return false end
     if self.selectedComponent == key then self.selectedComponent = nil end
     self:ReloadEditorLayout()
     self:SelectEditorPlate()
@@ -639,7 +688,7 @@ function Options:RemoveEditorComponent(key)
 end
 
 function Options:ResetEditorNode(key)
-    if not PS.ResetComponent(key, self.editorProfile, self:CurrentEditorVariant()) then return false end
+    if not PS.ResetComponent(key, self:EditorTarget(), self:CurrentEditorVariant()) then return false end
     self:ReloadEditorLayout()
     self:RefreshEditorInspectorContext()
     self:UpdateEditorSelectionHandles()
@@ -697,9 +746,9 @@ function Options:EditorAddMenuEntries()
         values[#values + 1] = { text = choice.label, disabled = not free,
             func = function() self:AddValueSlot(choice.value) end }
     end
-    local valueText = L["Value"]
+    local valueText = L["Custom part"]
     if not free then
-        valueText = reason == "full" and L["Value (all in use)"] or L["Value (not on this plate type)"]
+        valueText = reason == "full" and L["Custom part (all in use)"] or L["Custom part (not on this plate type)"]
     end
     entries[#entries + 1] = { text = valueText, children = values, disabled = not free }
     -- Shapes: a bar filled by a percentage, a box, an icon (custom parts that are not text).
@@ -728,7 +777,7 @@ end
 
 -- Stacks a node's children (down, up, right, left; nil: free).
 function Options:SetEditorStack(key, stack, gap)
-    if not PS.SetComponentStack(key, stack, gap, self.editorProfile, self:CurrentEditorVariant()) then return false end
+    if not PS.SetComponentStack(key, stack, gap, self:EditorTarget(), self:CurrentEditorVariant()) then return false end
     self:ReloadEditorLayout()
     self:RefreshEditorInspectorContext()
     self:UpdateEditorSelectionHandles()
@@ -738,7 +787,7 @@ end
 -- Layers: Bring to front / Send to back set a layer past every other part's; Reset returns to
 -- the tree's order.
 function Options:SetEditorLayer(key, layer)
-    if not PS.SetComponentLayer(key, layer, self.editorProfile, self:CurrentEditorVariant()) then return false end
+    if not PS.SetComponentLayer(key, layer, self:EditorTarget(), self:CurrentEditorVariant()) then return false end
     self:ReloadEditorLayout()
     self:RefreshEditorComponentLayers()
     return true
@@ -754,7 +803,7 @@ function Options:EditorLayerExtreme(front, except)
 end
 
 function Options:ReturnEditorComponentToStack(key)
-    if not PS.SetComponentFree(key, false, self.editorProfile, self:CurrentEditorVariant()) then return false end
+    if not PS.SetComponentFree(key, false, self:EditorTarget(), self:CurrentEditorVariant()) then return false end
     self:ReloadEditorLayout()
     self:UpdateEditorSelectionHandles()
     return true
@@ -802,15 +851,16 @@ function Options:OpenEditorContextMenu(key, anchor)
     self:ShowEditorMenu(self:EditorContextMenuEntries(key), anchor)
 end
 
+-- Not while the Enemy players gate hides the inspector (DesignRow.lua): taking it down refreshes it.
 function Options:RefreshEditorInspectorContext()
+    if self.editorPlayersGated then return end
     local key = self.selectedComponent
     local plate = self.editorInspectingPlate and not key
-    self:RefreshEditorBreadcrumb()
     local groupKey = not key and self.editorSelectedGroup
     local group = groupKey and self.editorLayout and self.editorLayout[groupKey]
     if groupKey and not group then self.editorSelectedGroup = nil end
     if self.editorComponentTitle then
-        self.editorComponentTitle:SetText(group and (group.name or L["Group"]) or plate and L["Plate"]
+        self.editorComponentTitle:SetText(group and (group.name or L["Group"]) or plate and L["Plate settings"]
             or key and self:EditorComponentLabel(key) or L["Select a part"])
     end
     local nameEdit = self.editorComponentNameEdit
@@ -826,14 +876,15 @@ function Options:RefreshEditorInspectorContext()
     local native = selectedContext == "blizzardName"
     if self.editorComponentDescription then
         self.editorComponentDescription:SetText(group and L["A group of parts."]
-            or plate and L["The whole plate, for this plate type: its scale, and a quick layout to place parts by position."]
+            or plate and L["The whole plate: its scale, a quick layout and how your target is highlighted, for this "
+                .. "plate type and design."]
             or native and L["Blizzard draws friendly plates in dungeons and raids. It allows names only, class "
                 .. "colours and the name's font; the font changes Blizzard's shared nameplate fonts (all text on "
                 .. "Blizzard's plates)."]
             or key and (editorDescriptions[key] or L["A part of the plate."]) or "")
     end
     local movable = key and not native and self:IsEditorComponentRelevant(key)
-        and editorDefinitions[key] and editorDefinitions[key].movable ~= false
+        and editorDefinitions[key] and editorDefinitions[key].movable ~= false and not self:IsEditorPlacedByStyle(key)
     -- What the inspector shows (Inspector's sections read it as they lay out).
     self.editorInspectorSelection = { key = key, group = group and groupKey or nil, plate = plate,
         context = selectedContext, movable = movable and true or false }
@@ -857,23 +908,119 @@ function Options:RefreshEditorInspectorContext()
         self.editorMoveControls:SetShown(movable and self.editorInspectorPage == "components" and true or false)
     end
     if self.valueControlsRefresh then self.valueControlsRefresh() end
+    if self.RefreshEditorMarks then self:RefreshEditorMarks() end
     if self.LayoutEditorInspector then self:LayoutEditorInspector() end
+end
+
+-- A ghost of a part that takes no room in its stack: an idle sample (the cast bar while Test values'
+-- casting is off, a combo row its Show row hides), or a part turned off under a stacking group that
+-- lies over a part on the stage (the hidden power bar under the cast bar; a faint sample, such as the
+-- threat text out of combat, counts, a ghost does not; edges within 2 px do not). Its stack gives its place to what
+-- follows, so drawn faintly it would lie under or over a live part: it draws as a thin dashed outline
+-- only, behind the live parts. The part stays where it is (invisible) for pressing, selecting and its
+-- selection box. A turned-off part clear of the drawn ones keeps its faint look.
+function Options:IsEditorStackGhost(key)
+    local component = self.editorComponents and self.editorComponents[key]
+    if not (component and component:IsShown()) or component.previewNative then return false end
+    if component.previewIdle then return true end
+    local layout = self.editorLayout or {}
+    local position = layout[key]
+    local parent = position and position.parent and layout[position.parent]
+    if not (position ~= nil and Schema.TurnedOff(position) and not position.free and type(parent) == "table"
+        and parent.stack ~= nil) then
+        return false
+    end
+    local x, y = self:EditorDrawnCentre(key)
+    if not (x and y) then return false end
+    local scale = self:EditorDrawnScale(key)
+    local halfW, halfH = (component:GetWidth() or 0) * scale / 2, (component:GetHeight() or 0) * scale / 2
+    local SLACK = 2
+    for other, part in pairs(self.editorComponents) do
+        if other ~= key and part:IsShown() and not part.previewIdle then
+            local ox, oy, ow, oh = self:EditorComponentBounds(other)
+            if ox and math.abs(ox - x) < ow + halfW - SLACK and math.abs(oy - y) < oh + halfH - SLACK then return true end
+        end
+    end
+    return false
+end
+
+-- Four edges, each one texture of 5 px dashes 3 px apart tiled along it (Media/StudioB/ghost-dash-*.png,
+-- 8 px a period), in a soft light colour.
+local GHOST = { period = 8, colour = { 0.85, 0.82, 0.7, 0.6 },
+    h = "Interface\\AddOns\\PlateSmith\\Media\\StudioB\\ghost-dash-h.png",
+    v = "Interface\\AddOns\\PlateSmith\\Media\\StudioB\\ghost-dash-v.png" }
+Options.EDITOR_GHOST = GHOST
+-- The dashed outline round component, its size in its parent's units (the component's drawn scale).
+local function GhostOutline(component, level)
+    local outline = component.ghostOutline
+    if not outline then
+        outline = CreateFrame("Frame", nil, component:GetParent())
+        outline:EnableMouse(false)
+        outline.edges = {}
+        for index, side in ipairs({ "top", "bottom", "left", "right" }) do
+            local edge = outline:CreateTexture(nil, "ARTWORK")
+            edge:SetTexture(index <= 2 and GHOST.h or GHOST.v, "REPEAT", "REPEAT")
+            edge:SetVertexColor(GHOST.colour[1], GHOST.colour[2], GHOST.colour[3], GHOST.colour[4])
+            outline.edges[side] = edge
+        end
+        component.ghostOutline = outline
+    end
+    local scale = component.GetScale and component:GetScale() or 1
+    local width = math.max(2, (component:GetWidth() or 0) * scale)
+    local height = math.max(2, (component:GetHeight() or 0) * scale)
+    outline:ClearAllPoints()
+    outline:SetPoint("TOPLEFT", component, "TOPLEFT", 0, 0)
+    outline:SetSize(width, height)
+    outline:SetFrameLevel(level)
+    local edges = outline.edges
+    for side, point in pairs({ top = "TOPLEFT", bottom = "BOTTOMLEFT", left = "TOPLEFT", right = "TOPRIGHT" }) do
+        local edge = edges[side]
+        local along = (side == "top" or side == "bottom") and width or height
+        edge:ClearAllPoints()
+        edge:SetPoint(point, outline, point, 0, 0)
+        if side == "top" or side == "bottom" then
+            edge:SetSize(width, 1)
+            edge:SetTexCoord(0, along / GHOST.period, 0, 1)
+        else
+            edge:SetSize(1, height)
+            edge:SetTexCoord(0, 1, 0, along / GHOST.period)
+        end
+    end
+    outline:Show()
+    return outline
 end
 
 function Options:RefreshEditorComponentLayers()
     if not self.editorPreviewStage or not self.editorComponents then return end
-    local profile = type(PS.GetPlateProfileSettings) == "function"
-        and PS.GetPlateProfileSettings(self.editorProfile) or nil
+    local profile = self:EditorProfileSettings()
     -- The same drawing order as the plates (Schema's DrawOrder); the selection outline and its
     -- handles draw above it all.
     local base = self.editorPreviewStage:GetFrameLevel()
     local rank, count = Schema.DrawOrder(self.editorLayout or {})
+    local function Level(key) return 2 + count - (rank[key] or count) end
+    -- Combo points on the health bar's edge draw in front of both bars, as on the plates (Styles.LayerLevel).
+    local onEdge = self.editorComponents.health and Schema.ComboOnBarEdge(profile, self.editorLayout)
     for key, component in pairs(self.editorComponents) do
         local slot = key:match("^value%d+$") and profile and profile.valueSlots[key] or nil
-        local level = slot and slot.layer ~= "front" and 1 or 2 + count - (rank[key] or count)
+        local level = slot and slot.layer ~= "front" and 1 or Level(key)
+        if key == "combo" and onEdge then level = math.max(level, Level("health") + 1, Level("cast") + 1) end
         -- A faint ghost (turned off, hidden by a rule, an unlit sample) sits under every drawn
         -- part, so a press over a drawn part never picks the ghost.
         if component:IsShown() and not self:IsEditorPartDrawn(key) then level = 0 end
+        -- A ghost that takes no room in its stack: only its dashed outline shows, behind every part
+        -- (its alpha before is kept, for when it is a part again without a refresh in between).
+        if self:IsEditorStackGhost(key) then
+            if not component.ghostApplied then component.ghostAlpha, component.ghostApplied = component:GetAlpha(), true end
+            component:SetAlpha(0)
+            level = 0
+            GhostOutline(component, base)
+        else
+            if component.ghostApplied then
+                component:SetAlpha(component.ghostAlpha or 1)
+                component.ghostApplied, component.ghostAlpha = nil, nil
+            end
+            if component.ghostOutline then component.ghostOutline:Hide() end
+        end
         component:SetFrameLevel(base + level)
     end
 end
@@ -899,6 +1046,7 @@ function Options:SelectEditorComponent(key, plate)
     if key ~= self.selectedComponent and ColorPickerFrame and ColorPickerFrame.IsShown and ColorPickerFrame:IsShown() then
         ColorPickerFrame:Hide()
     end
+    local wasPlate = self.editorInspectingPlate
     self.editorInspectingPlate = plate and key == nil or false
     if key ~= nil then self.editorSelectedGroup = nil end
     if key and not self:IsEditorComponentRelevant(key) then
@@ -907,6 +1055,10 @@ function Options:SelectEditorComponent(key, plate)
     if key and not editorDefinitions[key] then return end
     local changed = self.selectedComponent ~= key
     self.selectedComponent = key
+    -- The Plate row shows the target highlight whatever Test values say (Preview's RefreshTargetHighlightPreview).
+    if wasPlate ~= self.editorInspectingPlate and self.RefreshTargetHighlightPreview then
+        self:RefreshTargetHighlightPreview(PS.GetSettings())
+    end
     -- The tree rebuild also sets the rows' eyes and labels.
     self:RefreshEditorComponentList(PS.GetSettings(), key)
     if changed and self.editorComponentScroll then self.editorComponentScroll:SetVerticalScroll(0) end
@@ -947,7 +1099,7 @@ local HANDLE_POINTS = {
 }
 local HANDLE_SIZE, HANDLE_HIT = 12, 22 -- drawn size, clickable size (screen pixels)
 local HANDLE_COLOURS = { normal = { 1, 0.80, 0.16 }, hover = { 1, 0.96, 0.70 }, pressed = { 1, 0.50, 0.08 } }
-local OUTLINE_WIDTH = 2 -- the selection outline, screen pixels
+local OUTLINE_WIDTH = 2 -- the selection outline, physical pixels (EditorOutlineWidth)
 -- Which profile size each bar's handles change: horizontal handles, then vertical ones, with
 -- Schema's range and the step. (The health bar's width is the plate's; the power and cast bars
 -- have their own, or follow it.)
@@ -994,7 +1146,10 @@ function Options:EditorMeasure(key)
     if gridWidth then return gridWidth, gridHeight, nil, 0, offset end
     local textWidth, textHeight = self:EditorTextSize(key)
     if textWidth then return textWidth, textHeight end
-    return component:GetWidth() or 0, component:GetHeight() or 0
+    -- An idle sample (the cast bar while Test values' casting is off) is placed but takes no room; nor do
+    -- combo points on the health bar (their style places them, outside their stack's flow), as on the plates.
+    local idle = component.previewIdle or (key == "combo" and self:EditorComboOnBar() ~= nil) or nil
+    return component:GetWidth() or 0, component:GetHeight() or 0, idle
 end
 
 -- A text part's drawn text size (name, level, guild, threat, tagged, values); nil otherwise.
@@ -1002,7 +1157,7 @@ local TEXT_PARTS = { name = true, level = true, guild = true, threat = true, tag
 function Options:EditorTextSize(key)
     if not (TEXT_PARTS[key] or (type(key) == "string" and key:match("^value%d+$"))) then return nil end
     if key:match("^value%d+$") then
-        local profile = PS.GetPlateProfileSettings(self.editorProfile)
+        local profile = self:EditorProfileSettings()
         local slot = profile and profile.valueSlots and profile.valueSlots[key]
         if slot and slot.kind then return nil end
     end
@@ -1034,7 +1189,7 @@ end
 -- grid centre's offset from the row frame (its first line). nil for other parts.
 function Options:EditorAuraGrid(key)
     if not AURA_ROWS[key] then return nil end
-    local profile = PS.GetPlateProfileSettings(self.editorProfile)
+    local profile = self:EditorProfileSettings()
     local aura = profile and profile.auraLayouts and profile.auraLayouts[key]
     if not aura then return nil end
     return Schema.AuraGridBox(aura)
@@ -1071,7 +1226,7 @@ end
 function Options:IsEditorPartDrawn(key)
     local component = self.editorComponents and self.editorComponents[key]
     if not (component and component.previewFitVisible and not component.previewRuleHidden) then return false end
-    if not Showing(component) then return false end
+    if not Showing(component) or component.previewIdle then return false end
     if component.previewBar or component.previewTexture or component.auraIcons then return true end
     if Showing(component.previewIcon) then return true end
     local text = component.previewText
@@ -1093,7 +1248,7 @@ end
 -- A fresh working copy of the edited layout (after Settings changed it).
 function Options:ReloadEditorLayoutCopy()
     self.editorLayout = CopyEditorLayout(type(PS.GetLayout) == "function"
-        and PS.GetLayout(self.editorProfile, self:CurrentEditorVariant()) or nil)
+        and PS.GetLayout(self:EditorTarget(), self:CurrentEditorVariant()) or nil)
     self.editorTransforms = nil
     return self.editorLayout
 end
@@ -1180,7 +1335,7 @@ function Options:KeepEditorResizeEdge()
     x = Schema.Bounded(Schema.layoutRanges.x, math.floor(x + 0.5))
     y = Schema.Bounded(Schema.layoutRanges.y, math.floor(y + 0.5))
     if x == position.x and y == position.y then return end
-    PS.SetComponentPosition(key, x, y, self.editorProfile, self:CurrentEditorVariant())
+    PS.SetComponentPosition(key, x, y, self:EditorTarget(), self:CurrentEditorVariant())
     -- The part and everything laid out from it; the inspector follows when the handle is let go.
     self:ReloadEditorLayoutCopy()
     self:RefreshEditorLayout()
@@ -1226,7 +1381,7 @@ function Options:SetEditorGroupScale(groupKey, scale, pivotX, pivotY, start, lig
     local newX, newY = pivotX - ratio * (pivotX - drawnX), pivotY - ratio * (pivotY - drawnY)
     local x = math.floor((newX - originX) / parentScale + 0.5)
     local y = math.floor((newY - originY) / parentScale + 0.5)
-    if not PS.SetComponentGroupScale(groupKey, scale, x, y, self.editorProfile, self:CurrentEditorVariant()) then
+    if not PS.SetComponentGroupScale(groupKey, scale, x, y, self:EditorTarget(), self:CurrentEditorVariant()) then
         return false
     end
     if light then
@@ -1242,7 +1397,7 @@ end
 
 -- Writes one aura-row field when it changed; true if it did.
 local function WriteAuraField(self, key, current, field, value)
-    return value ~= nil and current[field] ~= value and PS.SetPlateAuraLayout(self.editorProfile, key, field, value) and true
+    return value ~= nil and current[field] ~= value and PS.SetPlateAuraLayout(self:EditorTarget(), key, field, value) and true
         or false
 end
 
@@ -1266,7 +1421,7 @@ function Options:UpdateEditorResize()
         end
         return
     end
-    local profile = PS.GetPlateProfileSettings(self.editorProfile)
+    local profile = PS.GetPlateProfileSettings(self:EditorTarget())
     local changed = false
     -- Each step writes only what changed and redraws the preview; the rest follows on letting go.
     local bar = BAR_SIZES[key]
@@ -1279,7 +1434,7 @@ function Options:UpdateEditorResize()
             if delta then
                 local value = Stepped(size, start[size.key] + delta / unit)
                 if profile and profile[size.key] ~= value then
-                    PS.SetPlateProfileOption(self.editorProfile, size.key, value)
+                    PS.SetPlateProfileOption(self:EditorTarget(), size.key, value)
                     changed = true
                 end
             end
@@ -1311,7 +1466,7 @@ function Options:UpdateEditorResize()
             resize.sy ~= 0 and (resize.hh * 2 + dy) / (resize.hh * 2) or 0)
         local target = Schema.ComponentScale(math.floor(start.ownScale * grow * 20 + 0.5) / 20)
         if target ~= (self.editorLayout[key].scale or 1)
-            and PS.SetComponentScale(key, target, self.editorProfile, self:CurrentEditorVariant()) then
+            and PS.SetComponentScale(key, target, self:EditorTarget(), self:CurrentEditorVariant()) then
             self:ReloadEditorLayoutCopy()
             self:RefreshEditorLayout()
             changed = true
@@ -1342,7 +1497,7 @@ function Options:StartEditorResize(handle)
     if not position then return end
     local cx, cy, hw, hh = self:EditorComponentBounds(key)
     if not cx then return end
-    local profile = PS.GetPlateProfileSettings(self.editorProfile) or {}
+    local profile = PS.GetPlateProfileSettings(self:EditorTarget()) or {}
     local aura = AURA_ROWS[key] and profile.auraLayouts and profile.auraLayouts[key]
     local start = BarSizes(profile)
     start.scale, start.ownScale = self:EditorDrawnScale(key), position.scale or 1
@@ -1446,6 +1601,57 @@ function Options:EditorFamilyBounds(key)
     return (left + right) / 2, (bottom + top) / 2, (right - left) / 2, (top - bottom) / 2
 end
 
+-- An outline's edge width in frame's units: pixels whole physical pixels at its effective scale (the
+-- zoom, Studio's scale and the UI's), so every edge draws at any zoom and on any part. Where the
+-- client cannot say, pixels at the zoom alone.
+function Options:EditorOutlineWidth(frame, pixels)
+    local pixel = PS.UI.Controls.PhysicalPixel(frame)
+    if pixel then return pixels * pixel end
+    return pixels / (self.editorPreviewZoom or 1)
+end
+
+-- A box's outline (edges: top, bottom, left, right, made off the pixel grid) in whole physical pixels:
+-- each edge `pixels` thick with its outer side on the pixel boundary nearest the frame's own edge, so the
+-- outline draws sharp and even at any UI scale, Studio scale and zoom (an edge across a boundary drew as
+-- two faint pixels). Where the client cannot place the frame yet, the edges follow its sides as they are.
+function Options:PlaceEditorOutline(frame, edges, pixels)
+    frame.outlinePixels = pixels
+    local width = self:EditorOutlineWidth(frame, pixels)
+    local pixel = PS.UI.Controls.PhysicalPixel(frame)
+    local left, right = frame.GetLeft and frame:GetLeft(), frame.GetRight and frame:GetRight()
+    local top, bottom = frame.GetTop and frame:GetTop(), frame.GetBottom and frame:GetBottom()
+    local l, r, t, b = 0, 0, 0, 0
+    if pixel and type(left) == "number" and type(right) == "number" and type(top) == "number" and type(bottom) == "number" then
+        local function Snap(value) return math.floor(value / pixel + 0.5) * pixel - value end
+        l, r, t, b = Snap(left), Snap(right), Snap(top), Snap(bottom)
+    end
+    local spots = { { "TOPLEFT", l, t, "TOPRIGHT", r, t }, { "BOTTOMLEFT", l, b, "BOTTOMRIGHT", r, b },
+        { "TOPLEFT", l, t, "BOTTOMLEFT", l, b }, { "TOPRIGHT", r, t, "BOTTOMRIGHT", r, b } }
+    for index, edge in ipairs(edges) do
+        local spot = spots[index]
+        edge:ClearAllPoints()
+        edge:SetPoint(spot[1], frame, spot[1], spot[2], spot[3])
+        edge:SetPoint(spot[4], frame, spot[4], spot[5], spot[6])
+        if index <= 2 then edge:SetHeight(width) else edge:SetWidth(width) end
+    end
+    return width
+end
+
+-- A snap guide across the stage at offset (stage units from its centre, along x or y): `pixels` physical
+-- pixels thick, its near side on a pixel boundary. Returns the guide's centre offset and thickness.
+function Options:EditorPixelLine(stage, offset, pixels, vertical)
+    local pixel = PS.UI.Controls.PhysicalPixel(stage)
+    if not pixel then return offset, pixels / (self.editorPreviewZoom or 1) end
+    local width, origin = pixels * pixel, nil
+    if stage.GetCenter then
+        local x, y = stage:GetCenter()
+        origin = vertical and x or y
+    end
+    if type(origin) ~= "number" then return offset, width end
+    local start = origin + offset - width / 2
+    return math.floor(start / pixel + 0.5) * pixel - origin + width / 2, width
+end
+
 function Options:UpdateEditorFamilyOutline(key)
     local stage = self.editorPreviewStage
     if not stage then return end
@@ -1462,6 +1668,7 @@ function Options:UpdateEditorFamilyOutline(key)
         for index, side in ipairs({ { "TOPLEFT", "TOPRIGHT" }, { "BOTTOMLEFT", "BOTTOMRIGHT" },
             { "TOPLEFT", "BOTTOMLEFT" }, { "TOPRIGHT", "BOTTOMRIGHT" } }) do
             local edge = outline:CreateTexture(nil, "OVERLAY")
+            PS.UI.Controls.KeepOffPixelGrid(edge)
             edge:SetPoint(side[1], outline, side[1], 0, 0)
             edge:SetPoint(side[2], outline, side[2], 0, 0)
             edge.horizontal = index <= 2
@@ -1469,15 +1676,12 @@ function Options:UpdateEditorFamilyOutline(key)
         end
         self.editorFamilyOutline = outline
     end
-    local width = 1 / (self.editorPreviewZoom or 1)
-    for _, edge in ipairs(outline.edges) do
-        if edge.horizontal then edge:SetHeight(width) else edge:SetWidth(width) end
-        edge:SetColorTexture(1, 0.8, 0.16, 0.35)
-    end
+    for _, edge in ipairs(outline.edges) do edge:SetColorTexture(1, 0.8, 0.16, 0.35) end
     outline:ClearAllPoints()
     outline:SetPoint("CENTER", stage, "CENTER", cx, cy)
     outline:SetSize(hw * 2 + 4, hh * 2 + 4)
     outline:SetFrameLevel(stage:GetFrameLevel() + 59)
+    self:PlaceEditorOutline(outline, outline.edges, 1)
     outline:Show()
 end
 
@@ -1496,6 +1700,7 @@ function Options:UpdateEditorSelectionHandles()
         for index, side in ipairs({ { "TOPLEFT", "TOPRIGHT" }, { "BOTTOMLEFT", "BOTTOMRIGHT" },
             { "TOPLEFT", "BOTTOMLEFT" }, { "TOPRIGHT", "BOTTOMRIGHT" } }) do
             local edge = handles:CreateTexture(nil, "OVERLAY", nil, 0)
+            PS.UI.Controls.KeepOffPixelGrid(edge)
             edge:SetColorTexture(1, 0.80, 0.16, 0.95)
             edge:SetPoint(side[1], handles, side[1], 0, 0)
             edge:SetPoint(side[2], handles, side[2], 0, 0)
@@ -1586,9 +1791,8 @@ function Options:UpdateEditorSelectionHandles()
     -- The handles belong to the stage (not the part), so only the zoom is undone.
     local size = HANDLE_SIZE / zoom
     local highContrast = self:StudioAccess().highContrast
-    local outline = (highContrast and 3 or OUTLINE_WIDTH) / zoom
+    self:PlaceEditorOutline(handles, handles.edges, highContrast and 3 or OUTLINE_WIDTH)
     for _, edge in ipairs(handles.edges) do
-        if edge.horizontal then edge:SetHeight(outline) else edge:SetWidth(outline) end
         edge:SetColorTexture(1, highContrast and 0.92 or 0.80, highContrast and 0 or 0.16, highContrast and 1 or 0.95)
     end
     local bar = BAR_SIZES[key]
@@ -1629,6 +1833,25 @@ function Options:SetEditorComponentVisibility(key, visible)
     return true
 end
 
+-- The health bar anchor the combo points' style puts them at (ComboPoints.BAR_ANCHORS), or nil: none,
+-- or the bar is turned off or not drawn in this view.
+function Options:EditorComboOnBar()
+    local profile = self:EditorProfileSettings()
+    local style = profile and profile.styles and profile.styles.combo
+    local anchor = style and PS.ComboPoints.BAR_ANCHORS[style.pipAnchor]
+    local health = self.editorLayout and self.editorLayout.health
+    if not anchor or not health or Schema.TurnedOff(health) or not (self.editorComponents and self.editorComponents.health) then
+        return nil
+    end
+    return anchor
+end
+
+-- Whether key's style places it instead of its layout (combo points on the health bar): then its
+-- Placement rows, drag and nudges would do nothing, so they are unavailable.
+function Options:IsEditorPlacedByStyle(key)
+    return key == "combo" and self:EditorComboOnBar() ~= nil
+end
+
 function Options:PositionEditorComponent(key)
     local component = self.editorComponents and self.editorComponents[key]
     local position = self.editorLayout and self.editorLayout[key]
@@ -1639,6 +1862,11 @@ function Options:PositionEditorComponent(key)
     -- one tab's sample smaller than the other's at the same font size).
     if self:IsEditorBlizzardNames() then scale = 1 end
     component:SetScale(scale)
+    -- Combo points on the health bar (their style's pipAnchor), as Placement puts them on the plates.
+    local onBar = key == "combo" and self:EditorComboOnBar()
+    if onBar and pcall(component.SetPoint, component, onBar[1], self.editorComponents.health, onBar[2], 0, onBar[3]) then
+        return
+    end
     -- Pinned to a parent's edge: anchored to the parent's drawn text or frame, as on the plates,
     -- so it meets the name exactly however wide it renders.
     local edge = position.attach and Schema.ATTACH_EDGES[position.attach]
@@ -1699,7 +1927,7 @@ function Options:EditorTreeIndex(settings)
     local groups = not self:IsEditorBlizzardNames(settings)
     for key, position in pairs(layout) do
         if type(position) == "table" and ((groups and key:match("^group%.%d+$"))
-            or (buttons and buttons[key] ~= nil and self:IsEditorComponentRelevant(key, settings))) then
+            or (buttons and editorDefinitions[key] ~= nil and self:IsEditorComponentRelevant(key, settings))) then
             shown[key] = true
         end
     end
@@ -1757,7 +1985,7 @@ function Options:ReloadEditorLayout()
 end
 
 function Options:AddEditorGroup()
-    local key = PS.CreateComponentGroup(nil, self.editorProfile, Variant(self))
+    local key = PS.CreateComponentGroup(nil, self:EditorTarget(), Variant(self))
     if not key then return false end
     self:ReloadEditorLayout()
     self:SelectEditorGroup(key)
@@ -1787,27 +2015,27 @@ end
 
 -- The layout reloads below refresh the tree and the inspector with the preview.
 function Options:SetEditorComponentGroup(key, groupKey)
-    if not PS.SetComponentGroup(key, groupKey, self.editorProfile, Variant(self)) then return false end
+    if not PS.SetComponentGroup(key, groupKey, self:EditorTarget(), Variant(self)) then return false end
     self:ReloadEditorLayout()
     self:RefreshEditorGroupOutlines()
     return true
 end
 
 function Options:SetEditorGroupOffset(groupKey, x, y)
-    if not PS.SetComponentGroupOffset(groupKey, x, y, self.editorProfile, Variant(self)) then return false end
+    if not PS.SetComponentGroupOffset(groupKey, x, y, self:EditorTarget(), Variant(self)) then return false end
     self:ReloadEditorLayout()
     return true
 end
 
 function Options:RenameEditorGroup(groupKey, name)
-    if not PS.RenameComponentGroup(groupKey, name, self.editorProfile, Variant(self)) then return false end
+    if not PS.RenameComponentGroup(groupKey, name, self:EditorTarget(), Variant(self)) then return false end
     self:ReloadEditorLayout()
     return true
 end
 
 -- Moves groupKey to targetKey's place in the tree (after it when after is true).
 function Options:MoveEditorGroupTo(groupKey, targetKey, after)
-    if not PS.MoveComponentGroupTo(groupKey, targetKey, after, self.editorProfile, Variant(self)) then return false end
+    if not PS.MoveComponentGroupTo(groupKey, targetKey, after, self:EditorTarget(), Variant(self)) then return false end
     self:ReloadEditorLayout()
     return true
 end
@@ -1815,7 +2043,7 @@ end
 -- Moves a node under parentKey (nil: the top level), before beforeKey (nil: last).
 function Options:MoveEditorNode(key, parentKey, beforeKey)
     self:SupplyEditorMeasure()
-    if not PS.SetComponentParent(key, parentKey, beforeKey, self.editorProfile, Variant(self)) then return false end
+    if not PS.SetComponentParent(key, parentKey, beforeKey, self:EditorTarget(), Variant(self)) then return false end
     self:ReloadEditorLayout()
     self:RefreshEditorGroupOutlines()
     self:UpdateEditorSelectionHandles()
@@ -1823,7 +2051,7 @@ function Options:MoveEditorNode(key, parentKey, beforeKey)
 end
 
 function Options:DeleteEditorGroup(groupKey)
-    if not PS.DeleteComponentGroup(groupKey, self.editorProfile, Variant(self)) then return false end
+    if not PS.DeleteComponentGroup(groupKey, self:EditorTarget(), Variant(self)) then return false end
     self.editorSelectedGroup = nil
     self:ReloadEditorLayout()
     self:SelectEditorComponent("health")
@@ -1960,22 +2188,111 @@ function Options:StopEditorTreeDrag()
     return self:MoveEditorNode(drag.key, place.parent, place.before)
 end
 
+-- The preview grid: a line every STEP stage units through the stage's centre, across the whole visible
+-- preview (the canvas less INSET: the plate-type tabs above, the panel's rail round it) at every zoom and
+-- pan. Lines closer than MIN_SPACING canvas units, or more than MAX_LINES in all, skip to every 2nd,
+-- 4th... line, so the pooled textures stay few.
+Options.EDITOR_GRID = { step = 30, minSpacing = 6, maxLines = 120, inset = { left = 8, right = 8, top = 48, bottom = 8 } }
+
+local function GridFill(list, centre, spacing, low, high)
+    local count, centreIndex = 0, nil
+    for k = math.ceil((low - centre) / spacing), math.floor((high - centre) / spacing) do
+        count = count + 1
+        list[count] = centre + k * spacing
+        if k == 0 then centreIndex = count end
+    end
+    return count, centreIndex
+end
+
+-- Pure: the grid lines over area (canvas units from its centre, y up; the stage's centre is pan * zoom).
+-- Fills out: x[1..xCount] and y[1..yCount] (positions), xCentre and yCentre (the line through the stage's
+-- centre, nil when it is off the area), spacing and every (1 for every line, 2 for every 2nd...).
+function Options.EditorGridLines(zoom, panX, panY, area, out)
+    local spec = Options.EDITOR_GRID
+    local spacing, every = spec.step * zoom, 1
+    local width, height = math.max(0, area.right - area.left), math.max(0, area.top - area.bottom)
+    while spacing * every < spec.minSpacing
+        or math.floor(width / (spacing * every)) + math.floor(height / (spacing * every)) + 2 > spec.maxLines do
+        every = every * 2
+    end
+    spacing = spacing * every
+    out.x, out.y = out.x or {}, out.y or {}
+    out.xCount, out.xCentre = GridFill(out.x, panX * zoom, spacing, area.left, area.right)
+    out.yCount, out.yCentre = GridFill(out.y, panY * zoom, spacing, area.bottom, area.top)
+    out.spacing, out.every = spacing, every
+    return out
+end
+
+local function GridLine(grid, index, centre)
+    local line = grid.textures[index]
+    if not line then
+        line = grid.frame:CreateTexture(nil, "BACKGROUND")
+        PS.UI.Controls.KeepOffPixelGrid(line)
+        grid.textures[index] = line
+    end
+    if line.gridCentre ~= centre then
+        line.gridCentre = centre
+        line:SetColorTexture(0.73, 0.60, 0.37, centre and 0.24 or 0.10)
+    end
+    line:ClearAllPoints()
+    line:Show()
+    return line
+end
+
+-- Grid lines in whole physical pixels: a line's near edge on a pixel boundary (the canvas centre's
+-- place on screen, originX/originY in canvas units, decides where those are) and its width a whole
+-- number of pixels, so every line, the centre ones included, draws as thick on every tab and zoom.
+Options.EDITOR_GRID_PIXELS = { line = 1, centre = 2 }
+local function PixelEdge(position, origin, pixel, pixels)
+    local start = position - pixels * pixel / 2
+    return math.floor((origin + start) / pixel + 0.5) * pixel - origin
+end
+
+-- Runs on zoom, pan and preview layout; returns at once when none of them changed.
 function Options:UpdateEditorGrid()
-    local grid, canvas, stage = self.editorGrid, self.editorCanvas, self.editorPreviewStage
-    if not grid or not canvas or not stage then return end
-    local zoom = self.editorPreviewZoom or 1
-    for _, entry in ipairs(grid.vertical) do
-        local line = entry.texture
-        line:ClearAllPoints()
-        line:SetPoint("CENTER", stage, "CENTER", entry.offset, 0)
-        line:SetSize((entry.offset == 0 and 2 or 1) / zoom, (canvas:GetHeight() - 92) / zoom)
+    local grid, canvas = self.editorGrid, self.editorCanvas
+    if not grid or not canvas then return end
+    local width, height = canvas:GetWidth(), canvas:GetHeight()
+    local zoom, panX, panY = self.editorPreviewZoom or 1, self.editorPreviewPanX or 0, self.editorPreviewPanY or 0
+    -- One physical pixel in canvas units, and where the canvas centre falls (whole pixels from it).
+    local pixel = PS.UI.Controls.PhysicalPixel(grid.frame) or 1
+    local originX, originY = 0, 0
+    if canvas.GetCenter then
+        local x, y = canvas:GetCenter()
+        if type(x) == "number" and type(y) == "number" then originX, originY = x, y end
     end
-    for _, entry in ipairs(grid.horizontal) do
-        local line = entry.texture
-        line:ClearAllPoints()
-        line:SetPoint("CENTER", stage, "CENTER", 0, entry.offset)
-        line:SetSize((canvas:GetWidth() - 22) / zoom, (entry.offset == 0 and 2 or 1) / zoom)
+    if grid.zoom == zoom and grid.panX == panX and grid.panY == panY and grid.width == width and grid.height == height
+        and grid.pixel == pixel and grid.originX == originX and grid.originY == originY then
+        return
     end
+    grid.zoom, grid.panX, grid.panY, grid.width, grid.height = zoom, panX, panY, width, height
+    grid.pixel, grid.originX, grid.originY = pixel, originX, originY
+    local thin, thick = Options.EDITOR_GRID_PIXELS.line, Options.EDITOR_GRID_PIXELS.centre
+    local inset, area = Options.EDITOR_GRID.inset, grid.area
+    area.left, area.right = -width / 2 + inset.left, width / 2 - inset.right
+    area.top, area.bottom = height / 2 - inset.top, -height / 2 + inset.bottom
+    Options.EditorGridLines(zoom, panX, panY, area, grid)
+    local tall, wide = math.max(0, area.top - area.bottom), math.max(0, area.right - area.left)
+    local midX, midY = (area.left + area.right) / 2, (area.top + area.bottom) / 2
+    local used = 0
+    for index = 1, grid.xCount do
+        used = used + 1
+        local centre = index == grid.xCentre
+        local line = GridLine(grid, used, centre)
+        local pixels = centre and thick or thin
+        line:SetSize(pixels * pixel, tall)
+        line:SetPoint("LEFT", grid.frame, "CENTER", PixelEdge(grid.x[index], originX, pixel, pixels), midY)
+    end
+    for index = 1, grid.yCount do
+        used = used + 1
+        local centre = index == grid.yCentre
+        local line = GridLine(grid, used, centre)
+        local pixels = centre and thick or thin
+        line:SetSize(wide, pixels * pixel)
+        line:SetPoint("BOTTOM", grid.frame, "CENTER", midX, PixelEdge(grid.y[index], originY, pixel, pixels))
+    end
+    for index = used + 1, #grid.textures do grid.textures[index]:Hide() end
+    grid.used = used
 end
 
 -- The stage is scaled by the zoom, so its anchor offset is in stage units: the canvas point
@@ -1985,6 +2302,13 @@ function Options:SetEditorPreviewPan(x, y)
     if not self.editorPreviewStage then return end
     self.editorPreviewStage:ClearAllPoints()
     self.editorPreviewStage:SetPoint("CENTER", self.editorCanvas, "CENTER", x, y)
+    -- Neither the grid nor the model behind the plate (PreviewModel.lua) is on the stage: they follow here.
+    self:UpdateEditorGrid()
+    -- The outlines move with the stage: back on whole pixels.
+    for _, frame in ipairs({ self.editorSelectionHandles, self.editorFamilyOutline }) do
+        if frame:IsShown() and frame.outlinePixels then self:PlaceEditorOutline(frame, frame.edges, frame.outlinePixels) end
+    end
+    if self.PlaceEditorModel then self:PlaceEditorModel(true) end
 end
 
 function Options:SetEditorPreviewZoom(zoom, fitted)
@@ -1997,6 +2321,7 @@ function Options:SetEditorPreviewZoom(zoom, fitted)
     if not fitted then self:SetEditorPreviewPan(self.editorPreviewPanX or 0, self.editorPreviewPanY or 0) end
     self:UpdateEditorGrid()
     self:UpdateEditorSelectionHandles()
+    if self.PlaceEditorModel then self:PlaceEditorModel(true) end
     if self.editorZoomText then self.editorZoomText:SetText(PS.UI.Controls.PercentText(self.editorPreviewZoom)) end
     -- - and + are off at 100% and 300%.
     if self.editorZoomOutButton then self.editorZoomOutButton:SetEnabled(self.editorPreviewZoom > PREVIEW_ZOOM_MIN + 0.001) end
@@ -2090,7 +2415,7 @@ local SNAP_DISTANCE = 6
 -- stay put while one is dragged, so a drag collects them once.
 function Options:EditorSnapLines(key)
     local profile = type(PS.GetPlateProfileSettings) == "function"
-        and PS.GetPlateProfileSettings(self.editorProfile) or PS.GetSettings()
+        and PS.GetPlateProfileSettings(self:EditorTarget()) or PS.GetSettings()
     local plate = ((profile and profile.width or 112) * (profile and profile.scale or 1)) / 2
     local linesX, linesY = { 0, -plate, plate }, { 0, 16, -13 }
     for other in pairs(self.editorComponents or {}) do
@@ -2136,7 +2461,7 @@ end
 
 function Options:SetEditorComponentPosition(key, x, y, snap)
     if not self:IsEditorComponentRelevant(key) or editorDefinitions[key].movable == false then return false end
-    if self:IsEditorBlizzardNames() then return false end
+    if self:IsEditorBlizzardNames() or self:IsEditorPlacedByStyle(key) or self:IsEditorPlayersLocked() then return false end
     x, y = tonumber(x), tonumber(y)
     if not x or not y or x ~= x or y ~= y then return false end
     if snap then
@@ -2146,7 +2471,7 @@ function Options:SetEditorComponentPosition(key, x, y, snap)
     end
     x = Schema.Bounded(Schema.layoutRanges.x, x)
     y = Schema.Bounded(Schema.layoutRanges.y, y)
-    PS.SetComponentPosition(key, x, y, self.editorProfile, self:CurrentEditorVariant())
+    if PS.SetComponentPosition(key, x, y, self:EditorTarget(), self:CurrentEditorVariant()) == false then return false end
     self:ReloadEditorLayoutCopy()
     -- The part and everything laid out from it: its children, a stack's next parts, pinned parts.
     self:RefreshEditorLayout()
@@ -2160,7 +2485,7 @@ function Options:SetEditorComponentScale(key, scale, light)
     scale = tonumber(scale)
     if not scale or scale ~= scale then return false end
     scale = Schema.ComponentScale(scale)
-    if not PS.SetComponentScale(key, scale, self.editorProfile, self:CurrentEditorVariant()) then return false end
+    if not PS.SetComponentScale(key, scale, self:EditorTarget(), self:CurrentEditorVariant()) then return false end
     self:ReloadEditorLayoutCopy()
     self:RefreshEditorLayout()
     if not light then self:RefreshEditorInspectorContext() end
@@ -2178,7 +2503,7 @@ end
 -- its X and Y are then an offset from that spot.
 function Options:SetEditorAttach(key, edge)
     self:SupplyEditorMeasure()
-    if not PS.SetComponentAttach(key, edge, self.editorProfile, self:CurrentEditorVariant()) then return false end
+    if not PS.SetComponentAttach(key, edge, self:EditorTarget(), self:CurrentEditorVariant()) then return false end
     self:ReloadEditorLayout()
     self:UpdateEditorSelectionHandles()
     return true
@@ -2261,15 +2586,29 @@ function Options:UpdateEditorDrag()
             self.editorCoordinateY:SetText(tostring(storedY))
         end
     end
+    -- The guides cross the grid's whole area (stage units: the stage is scaled by the zoom).
+    local area, zoom = self.editorGrid and self.editorGrid.area, self.editorPreviewZoom or 1
+    local spans = area and area.left ~= nil
+    local midX = spans and ((area.left + area.right) / 2 / zoom - (self.editorPreviewPanX or 0)) or 0
+    local midY = spans and ((area.top + area.bottom) / 2 / zoom - (self.editorPreviewPanY or 0)) or 0
+    -- In whole physical pixels (one, two with high contrast or colour-blind), on pixel boundaries.
+    local access = self:StudioAccess()
+    local pixels = (access.highContrast or access.colourBlind) and 2 or 1
     if self.editorSnapGuideX then
+        local at, thickness = self:EditorPixelLine(stage, lineX or x, pixels, true)
         self.editorSnapGuideX:SetShown(lineX ~= nil)
         self.editorSnapGuideX:ClearAllPoints()
-        self.editorSnapGuideX:SetPoint("CENTER", stage, "CENTER", lineX or x, 0)
+        self.editorSnapGuideX:SetPoint("CENTER", stage, "CENTER", at, midY)
+        self.editorSnapGuideX:SetWidth(thickness)
+        if spans then self.editorSnapGuideX:SetHeight(math.max(1, area.top - area.bottom) / zoom) end
     end
     if self.editorSnapGuideY then
+        local at, thickness = self:EditorPixelLine(stage, lineY or y, pixels, false)
         self.editorSnapGuideY:SetShown(lineY ~= nil)
         self.editorSnapGuideY:ClearAllPoints()
-        self.editorSnapGuideY:SetPoint("CENTER", stage, "CENTER", 0, lineY or y)
+        self.editorSnapGuideY:SetPoint("CENTER", stage, "CENTER", midX, at)
+        self.editorSnapGuideY:SetHeight(thickness)
+        if spans then self.editorSnapGuideY:SetWidth(math.max(1, area.right - area.left) / zoom) end
     end
 end
 
@@ -2284,7 +2623,7 @@ end
 
 function Options:StartEditorDrag(key, component)
     if editorDefinitions[key].movable == false then return end
-    if self:IsEditorBlizzardNames() then
+    if self:IsEditorBlizzardNames() or self:IsEditorPlacedByStyle(key) or self:IsEditorPlayersLocked() then
         if self.selectedComponent ~= key then self:SelectEditorComponent(key) end
         return
     end
@@ -2314,7 +2653,7 @@ end
 
 function Options:StopEditorDrag(key, component)
     if editorDefinitions[key].movable == false then return end
-    if self:IsEditorBlizzardNames() and not self.editorDrag then return end
+    if (self:IsEditorBlizzardNames() or self:IsEditorPlacedByStyle(key)) and not self.editorDrag then return end
     if self.editorDrag and self.editorDrag.key == key then self:UpdateEditorDrag() end
     component:SetScript("OnUpdate", nil)
     if self.editorSnapGuideX then self.editorSnapGuideX:Hide() end
@@ -2329,7 +2668,7 @@ function Options:StopEditorDrag(key, component)
     if drag and drag.key == key then
         -- Put somewhere by hand, a stacked part (other than the stack's first) leaves the stack.
         if self:IsEditorStacked(key) and not self:IsEditorStackFirst(key) then
-            PS.SetComponentFree(key, true, self.editorProfile, self:CurrentEditorVariant())
+            PS.SetComponentFree(key, true, self:EditorTarget(), self:CurrentEditorVariant())
             self:ReloadEditorLayoutCopy()
         end
         local x, y = self:EditorStoredOffset(key, drag.x, drag.y)
@@ -2380,7 +2719,7 @@ end
 
 function Options:ResetEditorLayout()
     local defaults = type(PS.GetDefaultLayout) == "function"
-        and PS.GetDefaultLayout(self.editorProfile, self:CurrentEditorVariant()) or editorDefaults
+        and PS.GetDefaultLayout(self:EditorTarget(), self:CurrentEditorVariant()) or editorDefaults
     self:ApplyEditorLayout(defaults)
     self:SelectEditorComponent((self:CurrentEditorVariant() == "names"
         or self:CurrentEditorVariant() == "dungeon") and "name" or "health")
@@ -2393,6 +2732,8 @@ Options.studioModel = {
     friendlyPvpChoices = friendlyPvpChoices,
     classificationStyleChoices = classificationStyleChoices,
     targetHighlightChoices = targetHighlightChoices,
+    targetGlowColourChoices = targetGlowColourChoices,
+    namesOnlyCastTextChoices = namesOnlyCastTextChoices,
     auraSourceChoices = auraSourceChoices,
     AddLabel = AddLabel,
     WidgetName = WidgetName,
@@ -2410,7 +2751,9 @@ Options.settingsPanelModel = {
 function Options:Refresh(light)
     local settings = PS.GetSettings()
     if not settings then return end
+    if self.CheckEditorDesign then self:CheckEditorDesign(settings) end
     if type(PS.GetLayout) == "function" then self:ReloadEditorLayoutCopy() end
+    if self.RefreshEditorDesignRow then self:RefreshEditorDesignRow(settings) end
     -- One failing control must not leave the guard set, or every slider would
     -- silently stop saving until /reload.
     self.refreshing = true
@@ -2421,7 +2764,7 @@ function Options:Refresh(light)
     end
     self.refreshing = false
     if failure then PS.Chat.ReportError("options refresh", failure) end
-    -- Dungeon Players and Friendly NPCs switch between Blizzard's name and the overlay's parts with a
+    -- Players and Friendly NPCs › Dungeons & raids switch between Blizzard's name and the overlay's parts with a
     -- setting (the overlay test, a Revert or an import), not only with the plate type.
     local native = self:IsEditorBlizzardNames(settings)
     if self.editorComponents and self.editorBlizzardNamesShown ~= nil and native ~= self.editorBlizzardNamesShown then

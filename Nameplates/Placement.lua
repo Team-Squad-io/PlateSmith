@@ -96,6 +96,16 @@ PS._CreatePlatePlacement = function(context)
         return known
     end
 
+    -- Combo points may sit on the health bar instead of their placed spot (their style's pipAnchor):
+    -- the anchor (ComboPoints.BAR_ANCHORS), or nil. With the bar turned off they keep their place.
+    local function ComboOnBar(data, key)
+        if key ~= "combo" then return nil end
+        local styles = data.profile and data.profile.styles
+        local anchor = styles and styles.combo and PS.ComboPoints.BAR_ANCHORS[styles.combo.pipAnchor]
+        if anchor and not S.TurnedOff(data.layout.health) then return anchor end
+        return nil
+    end
+
     local function MeasurePart(data, key)
         local region = PartRegion(data, key)
         if not region or not region.GetHeight then return nil end
@@ -103,8 +113,9 @@ PS._CreatePlatePlacement = function(context)
         if not width then return nil end
         if IsText(region) then data.measuredWidths[key] = width end
         -- Only what the plate shows right now takes space: a hidden power bar, an idle cast bar or
-        -- a missing guild line closes up (it is still placed).
-        local hidden = region.IsShown and not region:IsShown() or nil
+        -- a missing guild line closes up (it is still placed). Combo points on the health bar are not
+        -- in their stack's flow, so they take none either.
+        local hidden = (region.IsShown and not region:IsShown() or ComboOnBar(data, key)) and true or nil
         -- An aura row stacks as its whole grid (every line it can fill).
         local aura = (key == "buffs" or key == "debuffs") and data.profile.auraLayouts
             and data.profile.auraLayouts[key]
@@ -245,10 +256,22 @@ PS._CreatePlatePlacement = function(context)
         if region.SetScale then region:SetScale(scale) end
     end
 
+    -- Combo points on the health bar (ComboOnBar) are anchored there at their placed scale.
     local function AnchorPart(data, region, key)
         if not data.layout[key] then return end
         region:ClearAllPoints()
         region.plateSmithOverlay = data.overlay
+        local onBar = ComboOnBar(data, key)
+        if onBar then
+            local transform = Transforms(data.layout, data)[key]
+            local scale = transform and transform.scale > 0 and transform.scale or 1
+            -- A layout pinning the bar to the combo points makes the client refuse: they keep their place.
+            if pcall(region.SetPoint, region, onBar[1], data.health, onBar[2], 0, onBar[3] / scale) then
+                if region.SetScale then region:SetScale(scale) end
+                return
+            end
+            region:ClearAllPoints()
+        end
         PlaceRegion(region, data.layout, key, data)
     end
 
@@ -388,22 +411,79 @@ PS._CreatePlatePlacement = function(context)
         MarkVisibility(data)
     end
 
+    -- The cast icon, square, level with the bar beside it (or hidden), and which texts show.
+    local function CastIcon(data, size)
+        local profile, cast, icon = data.profile, data.cast, data.castIcon
+        icon:SetSize(size, size)
+        icon:ClearAllPoints()
+        if profile.castIcon == "right" then
+            icon:SetPoint("LEFT", cast, "RIGHT", 2, 0)
+        else
+            icon:SetPoint("RIGHT", cast, "LEFT", -2, 0)
+        end
+        if profile.castIcon == "off" then icon:Hide() end
+    end
+    local function CastTextShown(data)
+        local profile, name = data.profile, data.castName
+        if name.SetWordWrap then name:SetWordWrap(false) end
+        name:SetShown(profile.castName ~= false)
+        data.castTimeWanted = profile.castTime ~= false
+        if not data.castTimeWanted then data.castTime:Hide() end
+    end
+
+    -- The cast bar's icon (square, the bar's height, beside it), time (inside the right end) and name:
+    -- with the time shown the name runs from the left end to the time and is cut short before it.
+    -- Both the layout's bar (Lifecycle's CastGeometry) and the names-only one (NameCast) draw this way.
+    local function CastLayout(data, height, fontSize)
+        local profile, cast, time, name = data.profile, data.cast, data.castTime, data.castName
+        CastIcon(data, height)
+        -- The spell's name and time in the cast part's Display choices (font, size, outline, shadow).
+        Styles.StyledFont(data, "cast", time, fontSize)
+        Styles.StyledFont(data, "cast", name, fontSize)
+        time:ClearAllPoints()
+        time:SetPoint("RIGHT", cast, "RIGHT", -3, 0)
+        time:SetJustifyH("RIGHT")
+        name:ClearAllPoints()
+        name:SetPoint("LEFT", cast, "LEFT", 3, 0)
+        if profile.castTime ~= false then
+            name:SetPoint("RIGHT", time, "LEFT", -2, 0)
+            name:SetJustifyH("LEFT")
+        else
+            name:SetPoint("RIGHT", cast, "RIGHT", -3, 0)
+            name:SetJustifyH("CENTER")
+        end
+        CastTextShown(data)
+    end
+
     -- A cast on a names-only plate (settings namesOnlyCastFriendly, namesOnlyCastEnemy): the plate's own
-    -- cast bar, slim and a fixed width (never measured: a restricted plate's regions can refuse), under
-    -- the name or the guild line pinned below it, its spell name and time small under the bar.
+    -- cast bar drawn small, a fixed width (never measured: a restricted plate's regions can refuse) under
+    -- the name or the guild line pinned below it. namesOnlyCastText: "under", a slim bar with the
+    -- spell's name and time small under it, cut at the bar's width; "inside", a small bar laid out as
+    -- the layout's (CastLayout), its height fitting the cast part's text (Auto Font size: height - 2).
     -- data.nameCast: the bar is drawn this way; Lifecycle's rounds.SetNameCast switches it back.
-    local NAME_CAST_HEIGHT, NAME_CAST_ICON, NAME_CAST_FONT, NAME_CAST_GAP = 6, 12, 8, 2
+    local UNDER_HEIGHT, UNDER_ICON, UNDER_FONT = 6, 12, 8
+    local INSIDE_HEIGHT, INSIDE_MAX_HEIGHT, NAME_CAST_GAP = 10, 18, 2
     local NameCast = {}
 
     -- Whether this plate shows its cast that way: owned, never a restricted friendly plate, and a
     -- names-only friendly plate, or an enemy plate whose layout hides both its health and cast bars.
+    -- A design for this place may turn it off (castOnNames = false, the Cities & inns Light starter).
     function NameCast.Wanted(data)
         if not data.own or data.restrictedFriendly then return false end
+        if data.profile and data.profile.castOnNames == false then return false end
         local settings = GetSettings()
         if data.namesOnly then return settings.namesOnlyCastFriendly == true end
         if data.friendly ~= false or settings.namesOnlyCastEnemy ~= true then return false end
         local layout = data.layout
         return layout ~= nil and S.TurnedOff(layout.health) and S.TurnedOff(layout.cast)
+    end
+
+    -- The inside bar's height for the text it holds: 10, or the drawn Font size plus 2, at most 18.
+    function NameCast.InsideHeight(data)
+        local styles = data.profile and data.profile.styles
+        local points = S.StyledFontSize(INSIDE_HEIGHT - 2, styles and styles.cast)
+        local drawn = S.ScaledFontSize(points, GetSettings().textScale)
+        return math.min(INSIDE_MAX_HEIGHT, math.max(INSIDE_HEIGHT, math.floor(drawn + 2.5)))
     end
 
     function NameCast.Place(data)
@@ -422,22 +502,18 @@ PS._CreatePlatePlacement = function(context)
         end
     end
 
-    function NameCast.Apply(data)
-        data.nameCast = true
-        local profile, cast, icon, time, name = data.profile, data.cast, data.castIcon, data.castTime, data.castName
-        cast:SetSize(GetSettings().namesOnlyCastWidth or 90, NAME_CAST_HEIGHT)
-        icon:SetSize(NAME_CAST_ICON, NAME_CAST_ICON)
-        icon:ClearAllPoints()
-        if profile.castIcon == "right" then
-            icon:SetPoint("TOPLEFT", cast, "TOPRIGHT", 2, 0)
-        else
-            icon:SetPoint("TOPRIGHT", cast, "TOPLEFT", -2, 0)
-        end
+    -- Under the bar: the icon level with the bar beside it, the time under its right end and the
+    -- name from its left end to the time (centred across it with no time), cut short at the bar.
+    local function UnderLayout(data, width)
+        local profile, cast, time, name = data.profile, data.cast, data.castTime, data.castName
+        cast:SetSize(width, UNDER_HEIGHT)
+        CastIcon(data, UNDER_ICON)
         -- In the cast part's Display choices, as on the full bar.
-        Styles.StyledFont(data, "cast", time, NAME_CAST_FONT)
-        Styles.StyledFont(data, "cast", name, NAME_CAST_FONT)
+        Styles.StyledFont(data, "cast", time, UNDER_FONT)
+        Styles.StyledFont(data, "cast", name, UNDER_FONT)
         time:ClearAllPoints()
         time:SetPoint("TOPRIGHT", cast, "BOTTOMRIGHT", 0, -1)
+        time:SetJustifyH("RIGHT")
         name:ClearAllPoints()
         name:SetPoint("TOPLEFT", cast, "BOTTOMLEFT", 0, -1)
         if profile.castTime ~= false then
@@ -446,6 +522,20 @@ PS._CreatePlatePlacement = function(context)
         else
             name:SetPoint("TOPRIGHT", cast, "BOTTOMRIGHT", 0, -1)
             name:SetJustifyH("CENTER")
+        end
+        CastTextShown(data)
+    end
+
+    function NameCast.Apply(data)
+        data.nameCast = true
+        local settings = GetSettings()
+        local width = settings.namesOnlyCastWidth or 90
+        if settings.namesOnlyCastText == "inside" then
+            local height = NameCast.InsideHeight(data)
+            data.cast:SetSize(width, height)
+            CastLayout(data, height, INSIDE_HEIGHT - 2)
+        else
+            UnderLayout(data, width)
         end
         NameCast.Place(data)
     end
@@ -578,6 +668,6 @@ PS._CreatePlatePlacement = function(context)
         HasStacks = HasStacks, Transforms = Transforms, RestoreParentFaded = RestoreParentFaded, RegionAlpha = RegionAlpha,
         ApplyParentVisibility = ApplyParentVisibility, UpdateValueAnchors = UpdateValueAnchors,
         ApplyComponentLayout = ApplyComponentLayout, StackStateChanged = StackStateChanged, ReflowStacks = ReflowStacks,
-        NameCast = NameCast,
+        NameCast = NameCast, CastLayout = CastLayout,
     }
 end

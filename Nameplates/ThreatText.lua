@@ -350,10 +350,20 @@ PS.Ticker.SetEnabled(KEPT_TICKER, false)
 -- threat or more (or more raw threat than you, status 2), pulling from 90% of the pull threshold
 -- (or status 1). Rules read them (TemplateReaders) and the threat text is coloured by them.
 local LOSING_SHARE, PULLING_PERCENT = 0.9, 90
+-- Whether you hold it: isTanking; without it the threat status (2 or 3 is tanking), else the
+-- scaled percent (100 while you tank it, below 100 otherwise), else the mob's own target as the
+-- threat service matched it to the group (targetUnit: you, or someone else). Outdoors a mob you do
+-- not target has protected threat but a readable target, which is what the threat text and windows
+-- show for it (YOU, TANK). The record keeps only readable values (the threat service's kept read
+-- included, for its hold), so nil means none of them is readable.
 local function Holding(info)
     if info.playerThreatNoEntry == true then return false end
     local tanking = info.tanking
     if tanking == true or tanking == false then return tanking end
+    local status, percent, holder = info.status, info.percent, info.targetUnit
+    if type(status) == "number" then return status >= 2 end
+    if type(percent) == "number" then return percent >= 100 end
+    if type(holder) == "string" then return holder == "player" end
 end
 local THREAT_FACTS = {
     holding = Holding,
@@ -462,8 +472,8 @@ end
 
 -- The plate's threat text colour (StateColour) set on region. When nothing readable says who holds
 -- it, the group's protected "holding it" answers (the threat service's holdFlags; yours first when
--- holdFlagsHaveSelf) are folded in the client: yours gives the hold colour, anyone else's the
--- colour for someone else holding it, none of them neutral. A kept gap fading with age takes its
+-- holdFlagsHaveSelf) are folded in the client: yours gives the hold colour, anyone else's (or, with
+-- yours, none) the colour for someone else holding it, none of others' neutral. A kept gap fading with age takes its
 -- alpha in the colour, so a rule's or the plate's own alpha on the text is left alone.
 function ThreatText.ApplyStateColour(region, info, colourBlind)
     local palette = ThreatText.Palette(colourBlind)
@@ -473,7 +483,9 @@ function ThreatText.ApplyStateColour(region, info, colourBlind)
     local count = type(info) == "table" and info.holdFlagCount or 0
     if colour == palette.neutral and type(count) == "number" and count > 0 then
         local flags, own = info.holdFlags, info.holdFlagsHaveSelf == true
-        local ok, r, g, b = true, colour[1], colour[2], colour[3]
+        -- With your own answer, not holding it means someone else does (as Threat colours fold it).
+        local base = own and palette.losing or colour
+        local ok, r, g, b = true, base[1], base[2], base[3]
         for index = own and 2 or 1, count do
             ok, r, g, b = FoldColour(flags[index], palette.losing, r, g, b)
             if not ok then break end

@@ -2,7 +2,7 @@
 ## Title: PlateSmith Nameplates
 ## Notes: Design your own nameplates in a live editor, with threat on every plate, cast bars, auras, quest markers and threat windows.
 ## Author: TeamSquadIO
-## Version: 1.1.1
+## Version: 1.2.0
 ## Category: Unit Frames
 ## SavedVariables: PlateSmithDB, PlateSmithDiagnosticsDB
 ## SavedVariablesPerCharacter: PlateSmithCharacterDB
@@ -40,6 +40,7 @@ Diagnostics\Window.lua
 Diagnostics\Probes.lua
 Core\Media.lua
 Core\Schema.lua
+Core\Designs.lua
 Core\Profiles.lua
 Core\AutoProfile.lua
 Core\Settings.lua
@@ -47,7 +48,10 @@ Nameplates\Auras.lua
 Nameplates\Factory.lua
 Nameplates\Identity.lua
 Nameplates\ThreatText.lua
+Nameplates\ThreatColours.lua
 Nameplates\NamePolicy.lua
+Nameplates\Context.lua
+Nameplates\Visibility.lua
 Nameplates\NativeFonts.lua
 Nameplates\Stacking.lua
 Nameplates\RaidMarker.lua
@@ -59,17 +63,21 @@ Nameplates\Values.lua
 Nameplates\Conflicts.lua
 Nameplates\Range.lua
 Nameplates\QuestProgress.lua
+Nameplates\TargetGlow.lua
 Nameplates\ComboPoints.lua
 Nameplates\TargetedBy.lua
 Nameplates\Lifecycle.lua
 Core\Blueprint.lua
 Core\ShareCode.lua
+Core\BlueprintLink.lua
 Core\ProfilePresets.lua
 Studio\Components.lua
 Studio\Layout.lua
 Studio\Editor.lua
 Studio\BlueprintWindow.lua
 Studio\Preview.lua
+Studio\PreviewModel.lua
+Studio\ImportPreview.lua
 Settings\SaveBar.lua
 Settings\Panel.lua
 Settings\ProfilesPage.lua
@@ -79,9 +87,14 @@ Studio\KitAtlas.lua
 Studio\Theme.lua
 Studio\Chrome.lua
 Studio\Search.lua
+Studio\ThreatColours.lua
+Studio\Visibility.lua
+Studio\Marks.lua
 Studio\Inspector.lua
 Studio\QuickLayout.lua
+Studio\DesignRow.lua
 Studio\Frame.lua
+Studio\FirstRun.lua
 Threat\Kit.lua
 Threat\KitAtlas.lua
 Threat\Geometry.lua

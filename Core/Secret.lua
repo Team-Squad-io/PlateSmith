@@ -151,6 +151,22 @@ end
 
 function Secret.SetClassTextColour(region, classFile) return Secret.SetClassColour(region, classFile) end
 
+-- The class colour (r, g, b) for a readable class file, else nil.
+function Secret.ClassColour(classFile)
+    if not IsReadable(classFile) or type(classFile) ~= "string" then return nil end
+    local classColour = rawget(_G, "C_ClassColor")
+    if type(classColour) == "table" and type(classColour.GetClassColor) == "function" then
+        local ok, colour = pcall(classColour.GetClassColor, classFile)
+        if ok and IsReadable(colour) and type(colour) == "table" and IsReadable(colour.r) and type(colour.r) == "number" then
+            return colour.r, colour.g, colour.b
+        end
+    end
+    local colours = rawget(_G, "RAID_CLASS_COLORS")
+    local colour = type(colours) == "table" and colours[classFile]
+    if type(colour) == "table" and type(colour.r) == "number" then return colour.r, colour.g, colour.b end
+    return nil
+end
+
 function Secret.InCombat()
     return type(InCombatLockdown) == "function" and InCombatLockdown() and true or false
 end

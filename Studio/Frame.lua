@@ -68,7 +68,7 @@ local function HeaderLabel(parent, text)
     return label
 end
 
--- A Studio checkbox with the kit's art and a light label (the preview's Snap and Plain dark).
+-- A Studio checkbox with the kit's art and a light label (the preview's Snap).
 local function KitCheckbox(parent, text, onClick)
     local checkbox = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
     PS.UI.Controls.StyleCheckbox(checkbox, 18)
@@ -146,7 +146,7 @@ function Options:CreateEditorGroupHeader(content, groupKey)
     return header
 end
 
--- The tree's top row: the plate itself (its size and scale for this plate type).
+-- The tree's top row, Plate settings: the plate itself (its scale for this plate type, the target highlight).
 local function CreatePlateRow(content)
     local row = CreateFrame("Button", nil, content)
     row:SetSize(254, 30)
@@ -154,7 +154,7 @@ local function CreatePlateRow(content)
     local text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     text:SetPoint("LEFT", row, "LEFT", 12, 0)
     text:SetFont(LABEL_FONT, 16)
-    text:SetText(L["Plate"])
+    text:SetText(L["Plate settings"])
     text:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
     row.label = text
     local function Paint(instance, state)
@@ -170,41 +170,146 @@ local function CreatePlateRow(content)
     row:SetScript("OnEnter", function(instance) Paint(instance, "hover") end)
     row:SetScript("OnLeave", function(instance) Paint(instance, "normal") end)
     row:SetScript("OnClick", function() Options:SelectEditorPlate() end)
-    PS.UI.Controls.AttachTooltip(row, L["Plate"], { L["The whole plate's scale, for this plate type."],
+    PS.UI.Controls.AttachTooltip(row, L["Plate settings"], { L["The whole plate's scale, for this plate type."],
+        L["Target highlight: how your target's plate of this type is lit (Gold edge or Soft glow)."],
         L["Quick layout: place parts by position (top, bottom, left, right, centre)."] })
     Paint(row, "normal")
     return row
 end
 
--- The breadcrumb under the plate tabs: context, plate type and the selected part.
-function Options:RefreshEditorBreadcrumb()
-    local crumb = self.editorBreadcrumb
-    if not crumb then return end
-    local profileLabels = { enemy = L["Enemies"], enemyDungeon = L["Enemies"], friendlyPlayer = L["Players"],
-        friendlyNPC = L["Friendly NPCs"] }
-    local parts = { self.editorContext == "dungeon" and L["Dungeon"] or L["World"],
-        profileLabels[self.editorProfile] or L["Enemies"],
-        self.selectedComponent and self:EditorComponentLabel(self.selectedComponent) or "" }
-    local x = 0
-    for index, text in ipairs(crumb.texts) do
-        text:SetText(parts[index])
-        text:ClearAllPoints()
-        text:SetPoint("LEFT", crumb, "LEFT", x, 0)
-        local hit = crumb.hits and crumb.hits[index]
-        if hit then
-            hit:ClearAllPoints()
-            hit:SetPoint("LEFT", crumb, "LEFT", x, 0)
-            hit:SetWidth(math.max(1, text:GetStringWidth()))
-        end
-        x = x + text:GetStringWidth() + 8
-        local separator = crumb.separators[index]
-        if separator then
-            -- Centred on the text's line (the crumb is 20 tall, the chevron 17).
-            Theme.Place(separator, "breadcrumb-separator-normal", crumb, x, 2)
-            separator:SetShown(parts[index + 1] ~= "")
-            x = x + 12 + 8
-        end
+-- Test values' panel, made the first time it is opened (Options:EditorTestPanel): health % and the
+-- flags the preview's templates and rules read (the samples). It opens upwards from its button on the
+-- preview's foot (Chrome's LayoutEditorPreviewPanel); the sample name and the model are in View.
+local function BuildTestPanel(canvas)
+    -- It takes the pointer only over its own rectangle; drags elsewhere reach the preview.
+    local testPanel = CreateFrame("Frame", nil, canvas)
+    testPanel:SetSize(300, 378)
+    testPanel:SetFrameLevel(canvas:GetFrameLevel() + 30)
+    testPanel:EnableMouse(true)
+    local testArt = chrome.CreatePanelArt(testPanel, "dark")
+    testPanel:SetScript("OnSizeChanged", function() testArt:Layout() end)
+    testArt:Layout()
+    testPanel:Hide()
+    Options.editorTestPanel = testPanel
+    local samples = Options.templateSamples or {}
+    local defaults = Options.editorTestDefaults or {}
+    local testControls = {}
+    local function Changed()
+        Options:RefreshEditorAppearance(PS.GetSettings())
     end
+    -- Health % and the combo points, side by side.
+    local healthText = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    healthText:SetPoint("TOPRIGHT", testPanel, "TOPLEFT", 140, -14)
+    local healthLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    healthLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 16, -14)
+    healthLabel:SetText(L["Health %"])
+    local function SetSampleHealth(value)
+        samples["health.percent"] = value
+        samples["health"] = math.floor((samples["health.max"] or 1170) * value / 100 + 0.5)
+    end
+    -- While dragged only the preview follows, once a frame; letting go refreshes the rest.
+    local healthSlider = PS.UI.Controls.Slider(testPanel, {
+        min = 0, max = 100, step = 1, x = 14, y = -32, width = 126, valueText = healthText,
+        format = PS.Format.Percent,
+        get = function() return samples["health.percent"] or 72 end,
+        drag = function(value)
+            SetSampleHealth(value)
+            Options:QueueRefresh()
+        end,
+        set = function(value)
+            SetSampleHealth(value)
+            Changed()
+        end,
+    })
+    testControls[#testControls + 1] = healthSlider
+    local comboText = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    comboText:SetPoint("TOPRIGHT", testPanel, "TOPRIGHT", -16, -14)
+    local comboLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    comboLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 160, -14)
+    comboLabel:SetText(L["Combo points"])
+    local comboSlider = PS.UI.Controls.Slider(testPanel, {
+        min = 0, max = 5, step = 1, x = 158, y = -32, width = 126, valueText = comboText,
+        get = function() return tonumber(samples.combo) or 3 end,
+        drag = function(value)
+            samples.combo = value
+            Options:QueueRefresh()
+        end,
+        set = function(value)
+            samples.combo = value
+            Changed()
+        end,
+    })
+    Options.editorTestComboSlider = comboSlider
+    testControls[#testControls + 1] = comboSlider
+    -- Each flag shows in the preview (and in rules and custom text): tagged the indicator, elite,
+    -- rare and boss the mark, casting and interruptible the cast bar, combat and tanking the
+    -- threat text, targeted the glow, quest the marker, friendly, hostile and player the name.
+    -- interruptReady colours the cast bar with Colour by interrupt. The role and threat-state flags
+    -- show Threat colours (with combat) and are for rules, hastarget and inrange for the fades.
+    -- Each box says what it is in plain words; its tooltip names the flag rules and custom text read.
+    local flags = {
+        { "tagged", L["Tagged"] }, { "elite", L["Elite"] }, { "rare", L["Rare"] }, { "boss", L["Boss"] },
+        { "casting", L["Casting"] }, { "interruptible", L["Interruptible"] }, { "interruptReady", L["Interrupt ready"] },
+        { "combat", L["In combat"] }, { "tanking", L["Tanking"] }, { "targeted", L["Your target"] },
+        { "quest", L["Quest unit"] }, { "friendly", L["Friendly"] }, { "hostile", L["Hostile"] }, { "player", L["Player"] },
+        { "role.tank", L["You tank"] }, { "threat.holding", L["Holding threat"] }, { "threat.losing", L["Losing threat"] },
+        { "threat.pulling", L["Pulling threat"] }, { "threat.other", L["Someone else has it"] },
+        { "threat.offtank", L["Other tank has it"] }, { "hastarget", L["Has a target"] }, { "inrange", L["In range"] },
+    }
+    for index, entry in ipairs(flags) do
+        local flag = entry[1]
+        local column, row = (index - 1) % 2, math.floor((index - 1) / 2)
+        local checkbox = PS.UI.Controls.Checkbox(testPanel, {
+            label = entry[2], x = 12 + column * 144, y = -70 - row * 24, labelTemplate = "GameFontHighlightSmall",
+            tooltip = { title = entry[2], lines = { string.format(L["Rules and custom text read this as %s."], flag) } },
+            get = function() return samples[flag] == true end,
+            set = function(on)
+                samples[flag] = on and true or false
+                Changed()
+            end,
+        })
+        checkbox.sampleFlag = flag
+        testControls[#testControls + 1] = checkbox
+    end
+    -- Reset also puts back View's sample name (Preview's ResetEditorSamples); it leaves the model.
+    local reset = CreateStudioButton(testPanel, L["Reset"], 90, 24)
+    reset:SetPoint("BOTTOMLEFT", testPanel, "BOTTOMLEFT", 14, 12)
+    reset:SetScript("OnClick", function()
+        Options:ResetEditorSamples(defaults)
+        for _, control in ipairs(testControls) do control:Refresh() end
+        Changed()
+    end)
+    Options.editorTestControls = testControls
+    return testPanel
+end
+
+function Options:EditorTestPanel()
+    if self.editorTestPanel or not self.editorCanvas then return self.editorTestPanel end
+    self._BuildEditorLater("studio test values", BuildTestPanel, self.editorCanvas)
+    if self.LayoutEditorPreviewPanel then self:LayoutEditorPreviewPanel() end
+    if self.RefreshEditorModelNote then self:RefreshEditorModelNote() end
+    return self.editorTestPanel
+end
+
+-- Settings' categories panel (its search box over a row per category), made when Settings first opens.
+function Options:EditorSettingsCategories()
+    if self.editorSettingsCategoriesPanel or not self.editor then return self.editorSettingsCategoriesPanel end
+    self._BuildEditorLater("studio settings categories", function()
+        local categories = Panel(self.editor, "dark", self.editor:GetFrameLevel() + 3)
+        categories:Hide()
+        self.editorSettingsCategoriesPanel = categories
+        self.editorSettingsCategoryRows = {}
+        for index = 1, 8 do
+            local row = CreateStudioButton(categories, "", 282, 44, "category")
+            row:SetScript("OnClick", function(instance)
+                if instance.categoryKey then self:SetSettingsCategory(instance.categoryKey) end
+            end)
+            self.editorSettingsCategoryRows[index] = row
+        end
+        self:BuildSettingsSearch(categories)
+    end)
+    self:ReflowVisualEditor()
+    return self.editorSettingsCategoriesPanel
 end
 
 function PS.CreateVisualEditor()
@@ -239,11 +344,18 @@ function PS.CreateVisualEditor()
         -- Tree moves keep a stacked part where its stack draws it (the preview's sizes).
         Options:SupplyEditorMeasure()
         Options:FitVisualEditorToScreen()
-        -- Just built, Studio is already refreshed; reopened, settings may have changed meanwhile.
-        if Options.editorJustBuilt then Options.editorJustBuilt = nil else Options:Refresh() end
-        Options:SelectEditorComponent(Options.selectedComponent or "health")
+        -- Just built, it is already refreshed and its part selected; reopened, settings may have
+        -- changed meanwhile.
+        if Options.editorJustBuilt then
+            Options.editorJustBuilt = nil
+        else
+            Options:Refresh()
+            Options:SelectEditorComponent(Options.selectedComponent or "health")
+        end
         Options:UpdateEditorPulse()
         Options:FitEditorPreview() -- opens fitted: as large as fits, up to 200%, centred
+        -- Off (the default) makes nothing; a model chosen before is shown again (you, or the new target).
+        Options:ApplyEditorModel()
     end
     -- The client reports an error in a script handler itself, so OnShow catches its own and closes.
     editor:SetScript("OnShow", function()
@@ -253,6 +365,9 @@ function PS.CreateVisualEditor()
     -- The kit's controls take Studio's look as they are made inside it.
     editor.skinControl = chrome.SkinControl
     Options.editor = editor
+    -- While it is built, layouts leave the tree and the inspector's column to the one full refresh
+    -- at the end (Chrome's ReflowVisualEditor).
+    Options.editorBuilding = true
     PS.UI.Window.CloseOnEscape("PlateSmithBlueprintEditor")
 
     -- The painted frame (Chrome's LayoutEditorShell places it).
@@ -301,7 +416,7 @@ function PS.CreateVisualEditor()
     workbench:SetFrameLevel(base + 1)
     Options.editorWorkbench = workbench
 
-    -- Header band: Layout, the Studio / Settings toggle and Profile; the subtitle under the logo.
+    -- Header band: the Studio / Settings toggle and Profile; the subtitle under the logo.
     local header = CreateFrame("Frame", nil, editor)
     header:SetPoint("TOPLEFT", editor, "TOPLEFT", 36, -84)
     header:SetPoint("TOPRIGHT", editor, "TOPRIGHT", -36, -84)
@@ -314,25 +429,6 @@ function PS.CreateVisualEditor()
     subtitle:SetShadowColor(0, 0, 0, 1)
     subtitle:SetShadowOffset(1, -1)
     Options.editorSubtitle = subtitle
-
-    Options.editorContextLabel = HeaderLabel(header, L["Layout:"])
-    local contextChoices = { { key = "world", label = L["World"] }, { key = "dungeon", label = L["Dungeon"] } }
-    local contextDropdown = PS.UI.Controls.MenuField(header, { name = "PlateSmithEditorContextDropdown", width = 200,
-        height = 34, items = function()
-            local items = {}
-            for _, choice in ipairs(contextChoices) do
-                local selected = choice
-                items[#items + 1] = { text = selected.label, checked = Options.editorContext == selected.key,
-                    func = function() Options:SetEditorContext(selected.key) end }
-            end
-            return items
-        end })
-    contextDropdown:SetText(L["World"])
-    chrome.SkinDropdown(contextDropdown)
-    PS.UI.Controls.AttachTooltip(contextDropdown, L["Layout"], { L["World or Dungeon: each keeps its own positions. Pick which one "
-        .. "you are editing."] })
-    contextDropdown.studioLabel = Options.editorContextLabel
-    Options.editorContextDropdown = contextDropdown
 
     local studioToggle = CreateStudioButton(header, L["Studio"], 92, 32, "toggle")
     studioToggle:SetScript("OnClick", function() Options:SetEditorInspectorPage("components") end)
@@ -415,6 +511,13 @@ function PS.CreateVisualEditor()
         -- The active profile cannot be deleted, so with only one there is nothing to delete.
         items[#items + 1] = { text = L["Delete a profile"], children = deletable, disabled = #deletable == 0,
             tooltip = #deletable == 0 and L["There is no other profile to delete. The one in use cannot be deleted."] or nil }
+        -- Settings › Profiles › Automatic switching (Blizzard's Settings panel, closed to addons in combat).
+        local inCombat = PS.Secret.InCombat()
+        items[#items + 1] = { separator = true }
+        items[#items + 1] = { text = L["Switch automatically..."], disabled = inCombat,
+            tooltip = inCombat and L["Blizzard's Settings panel opens only out of combat."]
+                or L["Choose a profile this character switches to by itself, by content or specialization."],
+            func = function() Options:OpenAutoProfileSettings() end }
         return items
     end
     profileDropdown = PS.UI.Controls.MenuField(header, { name = "PlateSmithEditorNamedProfileDropdown", width = 126,
@@ -489,7 +592,11 @@ function PS.CreateVisualEditor()
     Options.editorListScroll, Options.editorListContent = listScroll, listContent
     Options.editorListScrollBar = chrome.CreateStudioScrollBar(listScroll, list)
     Options.editorPlateRow = CreatePlateRow(listContent)
-    Options.editorComponentButtons = {}
+    -- A part's tree row is made the first time anything asks for it (the tree, when it shows the
+    -- part): most parts are not on the plate type Studio opens on, or wait in a folded group.
+    Options.editorComponentButtons = setmetatable({}, { __index = function(_, key)
+        return Options:CreateEditorComponentButton(key)
+    end })
 
     -- Studio: the preview, its plate-type tabs above the stage.
     local canvas, stageArt = Panel(editor, "preview", base + 3)
@@ -514,121 +621,36 @@ function PS.CreateVisualEditor()
         Options.editorProfileButtons[definition.key] = tab
         Options.editorPlateTabs[#Options.editorPlateTabs + 1] = tab
     end
-    local crumb = CreateFrame("Frame", nil, canvas)
-    crumb:SetSize(420, 20)
-    crumb:SetFrameLevel(canvas:GetFrameLevel() + 6)
-    crumb.texts, crumb.separators = {}, {}
-    for index = 1, 3 do
-        local text = crumb:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        text:SetFont(LABEL_FONT, 15)
-        text:SetTextColor(index == 3 and 0.95 or 0.72, index == 3 and 0.92 or 0.70, index == 3 and 0.86 or 0.66)
-        crumb.texts[index] = text
-        if index < 3 then crumb.separators[index] = crumb:CreateTexture(nil, "OVERLAY") end
-    end
-    -- World / Dungeon opens the Layout menu; the plate type inspects the plate itself.
-    crumb.hits = {}
-    for index = 1, 2 do
-        local hit = CreateFrame("Button", nil, crumb)
-        hit:SetHeight(20)
-        hit:SetScript("OnEnter", function() crumb.texts[index]:SetTextColor(1, 0.86, 0.45) end)
-        hit:SetScript("OnLeave", function() crumb.texts[index]:SetTextColor(0.72, 0.70, 0.66) end)
-        crumb.hits[index] = hit
-    end
-    crumb.hits[1]:SetScript("OnClick", function() Options.editorContextDropdown:ToggleMenu() end)
-    crumb.hits[2]:SetScript("OnClick", function() Options:SelectEditorPlate() end)
-    PS.UI.Controls.AttachTooltip(crumb.hits[1], L["Layout"], { L["Choose World or Dungeon."] })
-    PS.UI.Controls.AttachTooltip(crumb.hits[2], L["Plate"], { L["Edit this plate type's size and scale."] })
-    Options.editorBreadcrumb = crumb
-    local plainStage = KitCheckbox(canvas, L["Plain dark background"], function(instance)
-        Options.editorPlainStage = instance:GetChecked() and true or false
-        Options:ApplyEditorTheme()
-    end)
-    plainStage:SetFrameLevel(canvas:GetFrameLevel() + 6)
-    Options.editorStageBackgroundButton = plainStage
-    -- Test values: what the preview's templates and rules read (the samples). Set
-    -- health % and the flags to see a rule or template as it would be on such a unit.
+    -- Under the tabs: which design of the plate type is edited, what it follows, Where plates show and
+    -- View (DesignRow.lua). Nothing else sits over the preview.
+    Options:BuildEditorDesignRow(canvas)
+    -- The model's note (PreviewModel.lua), under View: empty unless it shows you instead or cannot show.
+    local modelNote = canvas:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    modelNote:SetJustifyH("RIGHT")
+    if modelNote.SetWordWrap then modelNote:SetWordWrap(false) end
+    Options.editorModelNote = modelNote
+    -- Test values (on the preview's foot, after Snap): what the preview's templates and rules read (the
+    -- samples). Set health % and the flags to see a rule or template as it would be on such a unit.
     local testButton = CreateStudioButton(canvas, L["Test values"], 110, 26)
-    testButton:SetFrameLevel(canvas:GetFrameLevel() + 6)
+    testButton:SetFrameLevel(canvas:GetFrameLevel() + 9)
     PS.UI.Controls.AttachTooltip(testButton, L["Test values"], {
         L["Set the preview's health % and conditions (tagged, elite, casting, threat...) to see your rules and "
             .. "custom text as they would be on such a unit. Your real plates always read the real unit."],
     })
     Options.editorTestButton = testButton
-    -- It takes the pointer only over its own rectangle; drags elsewhere reach the preview.
-    local testPanel = CreateFrame("Frame", nil, canvas)
-    testPanel:SetSize(300, 386)
-    testPanel:SetFrameLevel(canvas:GetFrameLevel() + 30)
-    testPanel:EnableMouse(true)
-    local testArt = chrome.CreatePanelArt(testPanel, "dark")
-    testPanel:SetScript("OnSizeChanged", function() testArt:Layout() end)
-    testArt:Layout()
-    testPanel:Hide()
-    Options.editorTestPanel = testPanel
-    local samples = Options.templateSamples or {}
+    -- Test values' Reset goes back to the samples as Studio made them; its panel is made when first opened.
     local defaults = {}
-    for token, value in pairs(samples) do defaults[token] = value end
+    for token, value in pairs(Options.templateSamples or {}) do defaults[token] = value end
     Options.editorTestDefaults = defaults
-    local testControls = {}
-    local function Changed()
-        Options:RefreshEditorAppearance(PS.GetSettings())
-    end
-    local healthText = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    healthText:SetPoint("TOPRIGHT", testPanel, "TOPRIGHT", -16, -14)
-    local healthLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    healthLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 16, -14)
-    healthLabel:SetText(L["Health %"])
-    local function SetSampleHealth(value)
-        samples["health.percent"] = value
-        samples["health"] = math.floor((samples["health.max"] or 1170) * value / 100 + 0.5)
-    end
-    -- While dragged only the preview follows, once a frame; letting go refreshes the rest.
-    local healthSlider = PS.UI.Controls.Slider(testPanel, {
-        min = 0, max = 100, step = 1, x = 14, y = -32, width = 270, valueText = healthText,
-        format = PS.Format.Percent,
-        get = function() return samples["health.percent"] or 72 end,
-        drag = function(value)
-            SetSampleHealth(value)
-            Options:QueueRefresh()
-        end,
-        set = function(value)
-            SetSampleHealth(value)
-            Changed()
-        end,
-    })
-    testControls[#testControls + 1] = healthSlider
-    -- Each flag shows in the preview (and in rules and custom text): tagged the indicator, elite,
-    -- rare and boss the mark, casting and interruptible the cast bar, combat and tanking the
-    -- threat text, targeted the glow, quest the marker, friendly, hostile and player the name.
-    -- interruptReady colours the cast bar with Colour by interrupt. The role and threat-state flags
-    -- are for rules (the threat colour presets), hastarget and inrange for the fades.
-    local flags = { "tagged", "elite", "rare", "boss", "casting", "interruptible", "interruptReady", "combat", "tanking",
-        "targeted", "quest", "friendly", "hostile", "player", "role.tank", "threat.holding", "threat.losing",
-        "threat.pulling", "threat.other", "threat.offtank", "hastarget", "inrange" }
-    for index, flag in ipairs(flags) do
-        local column, row = (index - 1) % 2, math.floor((index - 1) / 2)
-        local checkbox = PS.UI.Controls.Checkbox(testPanel, {
-            label = flag, x = 12 + column * 144, y = -64 - row * 24, labelTemplate = "GameFontHighlightSmall",
-            get = function() return samples[flag] == true end,
-            set = function(on)
-                samples[flag] = on and true or false
-                Changed()
-            end,
-        })
-        testControls[#testControls + 1] = checkbox
-    end
-    local reset = CreateStudioButton(testPanel, L["Reset"], 90, 24)
-    reset:SetPoint("BOTTOMLEFT", testPanel, "BOTTOMLEFT", 14, 12)
-    reset:SetScript("OnClick", function()
-        Options:ResetEditorSamples(defaults)
-        for _, control in ipairs(testControls) do control:Refresh() end
-        Changed()
-    end)
-    Options.editorTestControls = testControls
     testButton:SetScript("OnClick", function()
+        local testPanel = Options:EditorTestPanel()
+        if not testPanel then return end
         testPanel:SetShown(not testPanel:IsShown())
         SetStudioButtonState(testButton, testPanel:IsShown())
+        -- The model keeps clear of the open panel.
+        Options:PlaceEditorModel(true)
         if testPanel:IsShown() then
-            for _, control in ipairs(testControls) do control:Refresh() end
+            for _, control in ipairs(Options.editorTestControls or {}) do control:Refresh() end
         end
     end)
 
@@ -655,18 +677,12 @@ function PS.CreateVisualEditor()
     stage:SetFrameLevel(canvas:GetFrameLevel() + 2)
     Options.editorPreviewStage = stage
 
-    local grid = { vertical = {}, horizontal = {} }
-    for offset = -270, 270, 30 do
-        local line = stage:CreateTexture(nil, "BACKGROUND")
-        line:SetColorTexture(0.73, 0.60, 0.37, offset == 0 and 0.24 or 0.10)
-        grid.vertical[#grid.vertical + 1] = { texture = line, offset = offset }
-    end
-    for offset = -180, 180, 30 do
-        local line = stage:CreateTexture(nil, "BACKGROUND")
-        line:SetColorTexture(0.73, 0.60, 0.37, offset == 0 and 0.24 or 0.10)
-        grid.horizontal[#grid.horizontal + 1] = { texture = line, offset = offset }
-    end
-    Options.editorGrid = grid
+    -- The grid is not on the stage: its lines are placed in canvas units over the visible preview from the
+    -- zoom and pan (UpdateEditorGrid), under the stage and the model.
+    local gridFrame = CreateFrame("Frame", nil, canvas)
+    gridFrame:SetAllPoints(canvas)
+    gridFrame:SetFrameLevel(canvas:GetFrameLevel() + 1)
+    Options.editorGrid = { frame = gridFrame, textures = {}, area = {} }
     Options:UpdateEditorGrid()
 
     local guideX = stage:CreateTexture(nil, "ARTWORK")
@@ -679,15 +695,17 @@ function PS.CreateVisualEditor()
     guideY:SetColorTexture(1, 0.77, 0.23, 0.74)
     guideY:Hide()
     Options.editorSnapGuideY = guideY
+    -- Placed in whole physical pixels as they show (Options:EditorPixelLine), not by the client.
+    PS.UI.Controls.KeepOffPixelGrid(guideX)
+    PS.UI.Controls.KeepOffPixelGrid(guideY)
 
     Options.editorComponents = {}
     for _, key in ipairs(editorOrder) do Options:CreateEditorComponent(key, editorDefinitions[key]) end
-    for _, key in ipairs(editorOrder) do Options:CreateEditorComponentButton(key) end
-    Options:RefreshEditorComponentList(PS.GetSettings())
 
     local previewControls = CreateFrame("Frame", nil, canvas)
     previewControls:SetAllPoints()
     previewControls:SetFrameLevel(canvas:GetFrameLevel() + 8)
+    Options.editorPreviewControls = previewControls
     local zoomOut = CreateStudioButton(previewControls, "-", 34, 32)
     zoomOut:SetScript("OnClick", function() Options:SetEditorPreviewZoom(Options.editorPreviewZoom - 0.25) end)
     local zoomText = previewControls:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -703,14 +721,9 @@ function PS.CreateVisualEditor()
         Options.editorSnap = instance:GetChecked() and true or false
     end)
     snap:SetChecked(Options.editorSnap)
+    -- (Test values follows it on the foot, so Shift's hint is in the tooltip only.)
     PS.UI.Controls.AttachTooltip(snap, L["Snap"],
         { L["Lines parts up with the plate and each other. Hold Shift while dragging to place freely."] })
-    local snapHint = previewControls:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    snapHint:SetFont(LABEL_FONT, 12)
-    snapHint:SetTextColor(0.62, 0.60, 0.56)
-    snapHint:SetPoint("LEFT", snap.label, "RIGHT", 8, 0)
-    snapHint:SetText(L["Shift: no snap"])
-    Options.editorSnapHint = snapHint
     Options.editorSnapCheckbox = snap
 
     -- Nudge buttons in a row: up, down, left, right (Shift for 10 px).
@@ -739,19 +752,8 @@ function PS.CreateVisualEditor()
     Options.editorMoveControls = movement
 
     -- Studio: the inspector; Settings: the categories and the page (Inspector.lua builds them).
+    -- (The categories are made when Settings first opens: Options:EditorSettingsCategories.)
     Options:BuildStudioInspector(workbench)
-    local categories = Panel(editor, "dark", base + 3)
-    Options.editorSettingsCategoriesPanel = categories
-    Options.editorSettingsCategoryRows = {}
-    for index = 1, 8 do
-        local row = CreateStudioButton(categories, "", 282, 44, "category")
-        row:SetScript("OnClick", function(instance)
-            if instance.categoryKey then Options:SetSettingsCategory(instance.categoryKey) end
-        end)
-        Options.editorSettingsCategoryRows[index] = row
-    end
-    Options:BuildSettingsSearch(categories)
-    categories:Hide()
 
     -- Footer: Studio's Reset layout, Import and Export, or Settings' Reset settings; Revert and Save.
     local footerLayout = {}
@@ -762,9 +764,16 @@ function PS.CreateVisualEditor()
         return button
     end
     local resetLayout = FooterButton(L["Reset layout"], 130, 96)
+    -- World's parts go back to their default places; a context's design takes World's places again, and
+    -- the Enemy players layer the Enemies'.
     resetLayout:SetScript("OnClick", function()
-        Options:ConfirmStudioAction(L["Put this plate type's parts back in their default positions? Revert undoes it until you save."],
-            L["Reset layout"], function() Options:ResetEditorLayout() end)
+        local text = L["Put this design's parts back where World has them? Revert undoes it until you save."]
+        if Options.editorProfile == "enemyPlayer" then
+            text = L["Put Enemy players' parts back where the Enemies have them? Revert undoes it until you save."]
+        elseif Options.editorDesign == "world" then
+            text = L["Put this plate type's parts back in their default positions? Revert undoes it until you save."]
+        end
+        Options:ConfirmStudioAction(text, L["Reset layout"], function() Options:ResetEditorLayout() end)
     end)
     PS.UI.Controls.AttachTooltip(resetLayout, L["Reset layout"], { L["Only the positions of the plate type you are editing."] })
     local import = FooterButton(L["Import"], 116, 247)
@@ -775,19 +784,11 @@ function PS.CreateVisualEditor()
     local resetAll = FooterButton(L["Reset settings"], 150, 96)
     -- Both resets ask first; either can still be undone with Revert until you save.
     resetAll:SetScript("OnClick", function()
-        local dungeon = Options.editorProfile == "enemyDungeon"
-        Options:ConfirmStudioAction(dungeon
-            and L["Stop using separate dungeon enemy plates? Dungeon enemies go back to the World design."]
-            or L["Reset every setting and position in this profile to the defaults? Revert undoes it until you save."],
-            dungeon and L["Use World"] or L["Reset settings"], function()
-                if dungeon then
-                    PS.SetDungeonEnemyProfile(nil)
-                    Options:SetEditorProfile("enemy")
-                else
-                    PS.ResetSettings()
-                end
-                Options:Refresh(true)
-            end)
+        Options:ConfirmStudioAction(L["Reset every setting and position in this profile to the defaults? Revert undoes it "
+            .. "until you save."], L["Reset settings"], function()
+            PS.ResetSettings()
+            Options:Refresh(true)
+        end)
     end)
     PS.UI.Controls.AttachTooltip(resetAll, L["Reset settings"], { L["Every setting and position in this profile, for all plate types."] })
 
@@ -812,7 +813,8 @@ function PS.CreateVisualEditor()
     Options.importBlueprintButton = import
     Options.editorPreloadedArt = chrome.PreloadStudioArt(editor)
     Options:ReflowVisualEditor()
-    -- One full refresh (the plate type's layout, controls and preview), then the kit's look.
+    -- One full refresh (the plate type's layout, the tree, controls and preview), then the kit's look.
+    Options.editorBuilding = nil
     Options.selectedComponent = Options.selectedComponent or "health"
     Options:SetEditorProfile("enemy")
     Options:ApplyEditorTheme()
@@ -829,7 +831,7 @@ end
 -- reported, and one chat line says what to do. A half-built Studio is not shown again until /reload.
 function Options:FailEditorOpen(failure, broken)
     if broken then self.editorBroken = true end
-    self.editorJustBuilt = nil
+    self.editorJustBuilt, self.editorBuilding = nil, nil
     if self.editor and self.editor:IsShown() then self.editor:Hide() end
     PS.Chat.ReportError("studio open", failure)
     PS.Chat.Print(L["Blueprint Studio could not open. Type /reload, then /ps to try again."])
@@ -848,5 +850,7 @@ function PS.OpenVisualEditor()
     end
     Options.editorJustBuilt = built or nil
     editor:Show()
+    -- A fresh install's first open: the first-run picker over Studio (Studio/FirstRun.lua).
+    if Options.ShowFirstRunIfPending then Options:ShowFirstRunIfPending() end
     return editor:IsShown() and true or false
 end

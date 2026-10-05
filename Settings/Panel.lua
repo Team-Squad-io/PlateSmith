@@ -16,6 +16,11 @@ local function Register(control)
 end
 Options.RegisterControl = Register
 
+-- A kit slider's drag holds back the live plates' refresh until it ends (Settings' SetSettingsDrag).
+Controls.DragListener = function(active)
+    if PS.SetSettingsDrag then PS.SetSettingsDrag(active) end
+end
+
 -- A value change: the controls and Studio's preview follow; Studio's look is left as it is.
 local function SetAndRefresh(write)
     return function(value)

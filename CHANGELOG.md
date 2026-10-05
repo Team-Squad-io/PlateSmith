@@ -2,6 +2,126 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.2.0
+
+A big feature update: a design for each kind of place, an Enemy players tab, Where plates show, a soft target
+glow, combo point styles, threat colours without rules and Blueprint chat links. Your profiles carry over and
+look the same as before; the Enemies' old **Dungeon** layout is now their **Dungeons & raids** design, unchanged.
+
+Going back to 1.1.1 keeps your designs, Enemy players, Where plates show and threat colour settings for when you
+update again, but 1.1.1 draws every place with your World look. A few new looks are lost for good there: the soft
+glow becomes the gold edge, the new combo point and text box styles and the Blizzard modern bar texture go back
+to 1.1.1's, and Studio's colour-blind **Off** goes back to following your plates.
+
+Blueprints that use nothing new start `!PSB3!` and still import into 1.1.1; ones that use a 1.2.0 feature start
+`!PSB4!` and need 1.2.0.
+
+### New
+
+- **A design for each kind of place.** Studio's **Design:** menu, under the plate tabs, starts at **World**; **+ Add
+  separate design** gives a plate type its own look for **Dungeons & raids** (Enemies), **Battlegrounds & arenas**
+  or **Cities & inns** (Cities & inns can start **Light**: no buffs, debuffs or casts under names). Plates switch
+  design as you enter and leave each place.
+- **Designs follow World.** A design keeps World's look except what you change in it. A gold diamond marks each
+  setting and part a design changes; point at it for World's value or **Reset to World**. The chip beside the
+  menu says what the design follows (**Follows World · 3 changes**). Your old Dungeon layout arrives as a **Full
+  copy**; its chip offers **Follow World where they match...**.
+- **Enemy players.** Studio has a fourth tab. Hostile players use your Enemies plates until you press **Customise
+  for enemy players**; from then on they follow the Enemies everywhere except what you change on that tab. Where
+  the game hides whether a unit is a player, its plate is drawn as an NPC.
+- **Where plates show.** Studio › Settings › Behaviour & display › **Where plates show** has a box for each plate
+  type in each kind of place: untick Enemies in Cities & inns and enemy plates hide in town. It uses Blizzard's
+  own show/hide switches (so in dungeons it covers Blizzard's friendly plates too), waits for combat to end, and
+  puts the switches back when you log out. Blueprints leave it out.
+- **Soft glow behind.** Your target can have a soft cyan cloud of light behind its plate: Studio › **Plate
+  settings** › Target highlight › **Highlight** › **Soft glow behind**. It wraps the health bar and any name,
+  power bar or cast bar within 12 px of it, is as wide as a long name, and on names-only plates sits behind the
+  name line and guild. Choose its colour (custom, class, reaction or **Threat**: your threat colour on that target
+  in combat), size, opacity, offset and **Pulse slowly**.
+- **A target highlight for each plate type.** Enemies, Players, Friendly NPCs and Enemy players (and each of
+  their designs) can each have their own highlight; **Copy to all plate types** shares one. Until you change one,
+  every type keeps the look you have now.
+- **Combo point styles.** The Combo points part's **Style** has a **Shape** (blocks, round coins, squares,
+  diamonds, bar segments or Blizzard's art), a **Position** (where placed, on the health bar's bottom edge, or
+  above or below the bar), **Class colour**, a **Glow**, **Fit to bar width** and **Show row** (Always, In combat
+  or with points, Only with points). Existing profiles keep their blocks.
+- **Combo points on new profiles.** Gold round coins sit under your target's cast bar and move up under the health
+  bar while nothing is cast; each look preset has its own style. Studio's Test values have a Combo points slider.
+- **Colour by threat.** Studio › Settings › Behaviour & display › **Threat colours** colours an engaged enemy's
+  health bar and name (and, if you like, its edge) by who holds it, in tank colours (Holding, Losing it, Other
+  tank has it, Someone else has it) or DPS and healer colours (Safe, Pulling, Aggro), with no rules needed. It is
+  on for new profiles and off for existing ones; a colour rule on a part still wins.
+- **Blueprint chat links.** Export's **Link in chat** puts `[PlateSmith: <profile> #<id>]` in your chat box.
+  Other PlateSmith 1.2.0 players click it to open their Import with your Blueprint filled in; nothing applies by
+  itself. A link lasts an hour while you're online, and links pause while the game restricts addon messages
+  (instance combat, encounters, keystones, PvP matches). `/ps fetch <Name-Realm> <id>` asks for one by hand.
+- **Review a Blueprint before importing.** Import has **Paste** and **Review** tabs. Review shows the sections
+  beside a small Studio stage with each design the import would change and what changes; **Yours now** compares
+  with your plates. Nothing changes until **Import selected** (then Save).
+- **Blueprints from newer versions import.** Settings a later PlateSmith adds are skipped instead of refusing the
+  whole Blueprint, and chat names them.
+- **First-run setup.** On a new install, Studio first asks how you play this character (**Tank**, **Healer**,
+  **DPS** or **Hybrid**), which sets This character tanks and turns Colour by threat on, then offers the nine
+  looks with a sketch of each. Skip or Escape at either step; it shows once.
+- **A Blizzard look.** **New from preset** has **Blizzard**: Blizzard's modern plates, drawn by PlateSmith so you
+  can change anything. It brings two choices for any design: the **Blizzard modern** bar texture and a **Rounded**
+  box behind text.
+- **Studio extras.** View › **Sample name** shows the preview's name in Chinese, Korean or Russian, and View ›
+  **Model** puts you, your target or a creature behind the preview plate. `/ps testname <text>` shows text as your
+  target's name. Names-only casts can show their text **Inside the bar** (Settings › Behaviour & display › Names ›
+  **Name cast text**).
+
+### Changed
+
+- **Plate settings.** The parts tree's top row is now **Plate settings**. Its **Target highlight** section holds
+  what was Settings › Behaviour & display › Target: "Selected target" is now **Highlight**, with **Off**, **Gold
+  edge** (steady or pulsing) and **Soft glow behind**. Your choice is kept.
+- **PvP-flagged allies in Blizzard's green.** New profiles show a flagged ally's name in Blizzard's green as well
+  as the faction icon. Studio › Players › **PvP icon** has a **Name colour** and a **Blizzard green** button;
+  existing profiles keep their colour.
+- **Export is share-code only**, with **Link in chat**. Import still reads Blueprint JSON.
+- **Studio's Layout switch is gone.** The Design menu replaces it; Blizzard's dungeon names are Players' and
+  Friendly NPCs' **Dungeons & raids (Blizzard)** design.
+- **Smoother sliders.** Dragging a Studio slider no longer redraws every plate at each step: your plates catch up
+  a few times a second and in full when you let go, while the preview follows at once.
+- **More room for the preview.** One row holds the design, its chip, the eye and **View**; **Plain dark
+  background** is in View and **Test values** sits on the preview's foot, in plain words (**Tagged**, **You
+  tank**...).
+- **Placeholders for hidden parts.** Studio's faint placeholders for hidden parts (a cast bar while Casting is
+  off, a hidden combo row) are now dashed outlines behind the plate instead of overlapping it.
+- **Clearer names.** **Who draws the plates** (Automatic, PlateSmith, or Blizzard, with PlateSmith extras),
+  Placement's **Stick to**, **+ Add › Custom part**, and the **Dungeon** look is now **Compact**.
+- **One tank choice.** Threat colours use **This character tanks** (Settings › Threat). The two threat rule
+  presets moved under Rules › Presets › **Advanced**.
+- **Studio's colour-blind friendly** follows your plates' colour-blind palette unless you pick On or Off.
+
+### Fixed
+
+- **Adaptive tank role in group-finder groups.** A bear tank given a DPS or Healer role by the group finder saw
+  the mobs it held as LOOSE. What you're doing now (bear form, a tanking stance, Righteous Fury) now counts before
+  that role, and shifting in or out of bear in combat changes it at once; a group **Tank** role still counts first.
+- **Threat colours on every plate.** A mob you held but weren't targeting could lose its threat colour while its
+  text showed 100%. Plates now read the game's own threat state for each mob, as the threat text does.
+- **Enemy buffs in combat.** When the game hides an enemy's buffs from addons, the Buffs row now shows them through
+  the game's own aura display, as Debuffs already did.
+- **Aura countdowns** count like the game's own aura timers (28, not 29) and switch to minutes at 60 seconds.
+- **Combo points after Cat Form.** Combo points stay on your target when a druid leaves cat form; only the filled
+  points show out of cat form.
+- **Combo points on the bar's edge** no longer hide under the cast bar.
+- **Studio's scroll bars** follow the pointer when dragged on every game build, and a click on the track moves a
+  page.
+- **Busy cities.** New plates are built over two frames, spare plates are made ahead in quiet moments, and
+  entering a city restyles only the plates whose design changes, so flying into a capital hitches far less.
+  Blizzard's own plate no longer flashes up first with a large name.
+- **Studio in busy places.** Studio's first open after logging in could stop with "script ran too long"; it now
+  builds less up front.
+- **Lua errors on target changes** when the game hides a plate's size from addons.
+- **Chinese, Korean and Russian names** show properly with a chosen font.
+- **Hostile players who aren't PvP-flagged** get PlateSmith plates when the game hides whether they're friendly.
+- **Smaller fixes:** the preview's grid, outlines and snap guides are sharp at any zoom; Targeted by's Initials
+  can be turned back on; the names-only cast icon sits level with its bar; Where plates show's headers no longer
+  break inside a word; and a failed Blueprint import can no longer put colours or links into chat.
+
 ## 1.1.1
 
 Your profiles and Blueprints carry over and look the same as before.
