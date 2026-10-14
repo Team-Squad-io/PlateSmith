@@ -2,6 +2,17 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.3.1
+
+### Fixed
+
+- **Herbs say what they need without Herbalism.** A character without Herbalism saw no Status text on a herb the
+  original game's data doesn't list, such as a Wilted Peacebloom, although the game's tooltip says "Requires
+  Herbalism". It now says **Requires Herbalism** in red. Mining works the same for a character without it.
+- **A vein's level after hovering it.** WoW Forever's tooltip says "Requires Mining" without a level; after you
+  hovered a vein, its Status text showed that line instead of the level the original game's data gives, such as
+  **Mining 75** on a Silver Vein. The level now stays.
+
 ## 1.3.0
 
 ### New

@@ -169,9 +169,11 @@ function ObjectStatus.IsHerb(id, kind)
     return nil
 end
 
--- What object id needs, from its kept lines and the player's skill names: { skill, level (nil when the line has no
--- number), line } or nil (never hovered, or no line names one of your skills), else from the game's data
--- (DataRequirement). Worked out once per revision.
+-- What object id needs, from its kept lines and the player's skill names (and Herbalism's and Mining's, which a
+-- player without them still meets on herbs and veins): { skill, level (nil when the line has no number), line } or nil
+-- (never hovered, or no line names one of those skills). The game's data (DataRequirement) gives it where no line
+-- does, and its level where the line has none (WoW Forever's tooltip says "Requires Herbalism" without one). Worked
+-- out once per revision.
 local memo = {}
 function ObjectStatus.Requirement(id)
     if type(id) ~= "number" then return nil end
@@ -180,8 +182,11 @@ function ObjectStatus.Requirement(id)
     local result = false
     local lines = ObjectStatus.Lines(id)
     if lines then
-        local names = {}
-        for name in pairs(ObjectStatus.Skills()) do names[#names + 1] = name end
+        local names, seen = {}, {}
+        for name in pairs(ObjectStatus.Skills()) do names[#names + 1], seen[name] = name, true end
+        for _, name in pairs(DATA_SKILLS) do
+            if not seen[name] then names[#names + 1], seen[name] = name, true end
+        end
         -- The longest name first, so a skill whose name holds another's is found as itself.
         table.sort(names, function(a, b) return #a > #b or (#a == #b and a < b) end)
         for _, line in ipairs(lines) do
@@ -194,7 +199,7 @@ function ObjectStatus.Requirement(id)
             if result then break end
         end
     end
-    result = result or DataRequirement(id) or false
+    if not (result and result.level) then result = DataRequirement(id) or result end
     memo[id] = { revision = ObjectStatus.revision, result = result }
     return result or nil
 end
