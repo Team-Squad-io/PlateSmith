@@ -5,10 +5,25 @@ local Table = assert(PS.Table, "PlateSmith Table missing")
 local Media = assert(PS.Media, "PlateSmith Media missing")
 
 local defaults = {
-    schemaVersion = 29,
+    schemaVersion = 35,
     enabled = true,
     mode = "auto",       -- auto, own, overlay
-    friendly = "names",  -- names, full, off
+    -- Extras on Blizzard's plates (Schema's EXTRAS, Nameplates/Extras.lua), drawn while mode is overlay: quest markers,
+    -- threat (text, edge, both, off), the target's glow, the Loose mark. A saved profile keeps what that choice drew
+    -- before 1.3.0, quest markers and threat text (migration 33).
+    extrasQuest = true, extrasThreat = "both", extrasTarget = true, extrasLoose = true,
+    -- Who draws a game object's plate (a book, a chest: the Objects plate type): platesmith (the Objects design) or
+    -- blizzard (the client's own plate, untouched).
+    objectPlates = "platesmith",
+    -- Objects plates fade while the game's icon says you can't use the object yet (object.unable: a skill too low).
+    objectFadeUnable = false,
+    -- Hovering an Objects plate's name (Nameplates/ObjectHover.lua): the game's interaction cursor, and a small tooltip.
+    -- The player's own, changing no look: kept by the profile, not shared in Blueprints (HOVER).
+    objectHoverCursor = true,
+    objectHoverTooltip = true,
+    -- names, full, off (Blizzard's plates): Show as for both friendly plate types, unless one has its own
+    -- (friendlyPlayers, friendlyNPCs: no default, absent while it follows this; read through FRIENDLY.Mode).
+    friendly = "names",
     hideUnstyledFriendlyNames = true,
     friendlyRelationshipColours = true,
     -- off, colour, icon, both. New profiles colour the name too (Blizzard's green, relationshipColours.pvp):
@@ -24,7 +39,12 @@ local defaults = {
     namesOnlyCastFriendly = false, namesOnlyCastEnemy = false, namesOnlyCastWidth = 90, namesOnlyCastText = "under",
     showGroupIcon = true,
     showGuildIcon = true,
-    classificationStyle = "icon", -- icon (Blizzard's nameplate icons), words, letters
+    -- The Elite / rare mark (Nameplates/Identity.lua's ClassificationMark): icon (Blizzard's nameplate icons), dragon
+    -- (the classic dragon round the level at the bar's right end), beforeName (the icon before the name), suffix (on
+    -- the level: 60+, 60R), frame (a ring round the health bar), words, letters. The two that place parts do it
+    -- through MARK.Layout, never in the saved layout. classificationIconSize: auto, standard (18 px), text (the
+    -- name's text height); auto is standard beside the bar and text before the name.
+    classificationStyle = "icon", classificationIconSize = "auto",
     -- Whose quest icons show: auto (Questie's when Questie shows nameplate icons, else
     -- PlateSmith's), platesmith, or questie (PlateSmith's step aside while Questie is loaded).
     questIcons = "auto",
@@ -37,6 +57,10 @@ local defaults = {
     -- start with it off (migration 27).
     colourByThreat = true, threatColourRole = "auto", threatColourSafeKeep = false,
     threatColourHealth = true, threatColourName = true, threatColourBorder = false,
+    -- Grey when tagged by others (ThreatColours.GreyWhenTagged): an enemy's health bar turns grey while another
+    -- player or group has tagged the mob, as Blizzard's plates draw it. New profiles have it on, with the TAGGED
+    -- word off (defaultLayout); saved profiles keep their TAGGED word and colours (migration 30: off).
+    greyWhenTagged = true,
     -- The target-of-target name hides while that unit targets you (it would say your name).
     targetNameHideSelf = true,
     buffSource = "all",       -- all, mine
@@ -57,6 +81,8 @@ local defaults = {
     textScale = 1,
     threatSpotlightStyle = "glow", -- glow, arrow, sides, box, both
     targetHighlightStyle = "border", -- off, border, halo, glow
+    -- Highlight Off once kept the health bar's gold target edge; profiles saved before 1.2.1 still do.
+    targetOffKeepsEdge = false,
     -- The glow style (Nameplates/TargetGlow.lua): a soft cloud of light behind the target's whole plate
     -- in the unit's class or reaction colour, or targetGlowColour; how far it reaches past the plate (px),
     -- its opacity, and an optional slow pulse. A changed glow default needs no migration: every profile
@@ -66,6 +92,11 @@ local defaults = {
     targetGlowSpread = 56, targetGlowOpacity = 0.6, targetGlowPulse = false,
     -- How far the whole glow is moved from the plate (px, right and up); 0 keeps it centred.
     targetGlowOffsetX = 0, targetGlowOffsetY = 0,
+    -- Its wrap (targetGlowWrap): "parts" wraps the shown parts of targetGlowParts (Glow.Bounds) and reaches
+    -- targetGlowSpread past them across, and up and down too while targetGlowEven, else targetGlowSpreadY; "fixed"
+    -- is a box targetGlowWidth by targetGlowHeight (targetGlowEven: by its width) centred on the health bar.
+    targetGlowWrap = "parts", targetGlowParts = "name,health,power,cast", targetGlowEven = true, targetGlowSpreadY = 56,
+    targetGlowWidth = 140, targetGlowHeight = 40,
     threatSpotlightOthersAlpha = 0.55,
     threatSpotlightDuration = 3,
     threatPalette = "auto", -- auto (follows the colorblindMode CVar), standard, colourblind
@@ -99,6 +130,30 @@ do
         VISIBILITY.KEYS[#VISIBILITY.KEYS + 1] = key
     end
 end
+
+-- Clicking (Nameplates/ClickThrough.lua): per kind of plate, whether a click selects its unit or passes through.
+-- clickFriendlyPlayer: clickable (the default) or through, friendly players' plates while PlateSmith draws them
+-- (NamePolicy's names-only switch). clickFriendlyNPC, clickEnemy and clickSelf: game (Clickable: the game's own
+-- left as it is, the default) or through, set while PlateSmith runs. Like Where plates show, it drives account-wide
+-- client state, so Blueprints leave it out. Kept on VISIBILITY's table (the main chunk is at Lua 5.1's 200-local
+-- limit) and exported as CLICK.
+VISIBILITY.CLICK = { CHOICES = { "game", "clickable", "through" },
+    KEYS = { "clickFriendlyPlayer", "clickFriendlyNPC", "clickEnemy", "clickSelf" } }
+for _, key in ipairs(VISIBILITY.CLICK.KEYS) do defaults[key] = "game" end
+defaults.clickFriendlyPlayer = "clickable"
+-- The game's interact key settings (Nameplates/Interaction.lua; Settings › Objects & interacting): game leaves each
+-- as the game has it; any other choice sets it while PlateSmith runs. CHOICES are a switch's (on, off) unless OWN
+-- gives the key its own: Range in yards, Direction (ahead, front, around), Out of reach (within, beyond). Like
+-- Clicking: account-wide client state, kept out of Blueprints, exported as INTERACT.
+VISIBILITY.INTERACT = { CHOICES = { "game", "on", "off" },
+    KEYS = { "interactTargeting", "interactRange", "interactArc", "interactReach", "interactNameplate", "interactIcons",
+        "interactObjectIcons", "interactMinorIcons" },
+    OWN = { interactRange = { "game", "10", "15", "20", "30", "45", "60" },
+        interactArc = { "game", "ahead", "front", "around" }, interactReach = { "game", "within", "beyond" } } }
+for _, key in ipairs(VISIBILITY.INTERACT.KEYS) do defaults[key] = "game" end
+-- The Objects' hover cursor and tooltip (on or off): the player's own behaviour, no look, so Blueprints leave them
+-- out too. Exported as HOVER.
+VISIBILITY.HOVER = { KEYS = { "objectHoverCursor", "objectHoverTooltip" } }
 
 -- Custom parts: up to 24 per plate type. Each is a text value (a live value or a template), a
 -- bar filled by a percentage, a box (a coloured rectangle) or an icon.
@@ -291,7 +346,8 @@ local function NormalizeAuraLayouts(layouts, fallback)
     return normalized
 end
 
-local profileOrder = { "enemy", "friendlyPlayer", "friendlyNPC" }
+-- object: a game object's plate (a book, a chest), drawn names only (Lifecycle's rounds.Kind); new in 1.3.0.
+local profileOrder = { "enemy", "friendlyPlayer", "friendlyNPC", "object" }
 -- The default template (docs/DEFAULT_LAYOUTS.md). Every plate type starts from the same grid, so
 -- Studio shows each one in the same place: a full plate's health bar sits on the centre line, a
 -- names-only plate's name does. Types differ only in what is shown (shown: the keys visible by
@@ -350,8 +406,9 @@ end
 local function FullLayout(shown) return BuildLayout(FULL_POSITIONS, shown) end
 local function NamesLayout(shown, overrides) return BuildLayout(NAMES_POSITIONS, shown, overrides) end
 
--- The enemy template, and the fallback for any layout entry that is missing.
-local defaultLayout = FullLayout({ name = true, health = true, cast = true, threat = true, tagged = true, quest = true,
+-- The enemy template, and the fallback for any layout entry that is missing. TAGGED is off: the health bar greys
+-- instead (greyWhenTagged); its eye brings the word back.
+local defaultLayout = FullLayout({ name = true, health = true, cast = true, threat = true, quest = true,
     raidIcon = true, classification = true, level = true, buffs = true, debuffs = true, combo = true })
 
 -- The entries every layout has beyond the grid: the power bar (hidden) and the custom parts,
@@ -396,21 +453,48 @@ local profileDefaults = {
         namesLayout = NamesLayout({ name = true, quest = true, raidIcon = true, level = true },
             { raidIcon = { 3, 0 } }),
     },
+    -- Objects: one names-only layout (no names/full switch, no Blizzard dungeon design) showing the name and the
+    -- quest mark, in a tooltip-like box (the Backdrop part: dark fill, a thin grey-gold edge) with the quest mark just
+    -- outside it. The name's gold is the plate's own (Identity's ObjectPlate.COLOUR), as a creature's reaction
+    -- colour is; rules change it. The Action icon, the Status text and the Backdrop follow below.
+    object = {
+        scale = 1, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 14,
+        healthTexture = "blizzard", healthColourMode = "automatic",
+        healthColour = { r = 1, g = 0.82, b = 0 },
+        layout = NamesLayout({ name = true, quest = true }),
+        styles = { backdrop = { boxColour = { r = 0.03, g = 0.03, b = 0.05, a = 0.85 },
+            boxBorder = { r = 0.6, g = 0.53, b = 0.36, a = 1 }, padding = 5 } },
+    },
 }
+-- The quest mark pinned to the name, clear of the Backdrop (Padding 5 and 2 px).
+profileDefaults.object.layout.quest.parent, profileDefaults.object.layout.quest.x = "name", -7
+-- The Action icon (Nameplates/ActionIcon.lua): the game's own cursor icon for what you can do with the unit. Objects
+-- show it right of the name, inside the Backdrop; Friendly NPCs have it off, right of the name (of the raid mark on
+-- names-only plates, taking its place while there is none). Other plate types have no entry.
+profileDefaults.object.layout.actionIcon = { x = 4, y = 0, visible = true, parent = "name", attach = "right" }
+-- The Status text (Nameplates/ObjectStatus.lua): what the object needs and your skill ("Mining 65" in its skill-up colour), centred
+-- under the name, inside the Backdrop. Off on All objects; an object type (Designs.TYPES) or a look may turn it on.
+profileDefaults.object.layout.statusText = { x = 0, y = -3, visible = false, parent = "name", attach = "bottom" }
+-- The Backdrop (Nameplates/Backdrop.lua): Objects only, round the name, the Status text and the Action icon.
+profileDefaults.object.layout.backdrop = { x = 0, y = 0, visible = true, parent = "name" }
+profileDefaults.friendlyNPC.layout.actionIcon = { x = 3, y = 0, visible = false, parent = "name", attach = "right" }
+profileDefaults.friendlyNPC.namesLayout.actionIcon = { x = 3, y = 0, visible = false, parent = "raidIcon", attach = "right" }
+-- The Loose mark (Nameplates/LooseMark.lua): a small icon right of the name while the mob is loose (the threat
+-- service's LOOSE). Enemies only, off; a look may turn it on (Tank). Other plate types have no entry.
+profileDefaults.enemy.layout.looseMark = { x = 3, y = 0, visible = false, parent = "name", attach = "right" }
 
--- The cast bar's own parts, on every plate type: the spell's icon (left or right of the bar, or
--- off), the time left inside the bar's right end, and the spell's name.
+-- The cast bar's own parts, on every plate type: the spell's icon (left or right of the bar, inside its
+-- left end, or off), the time left inside the bar's right end, and the spell's name.
 -- castInterruptColours colours the bar by your interrupt (castColours); castOnTop draws a casting
 -- plate over its neighbours (under the target and focus). The quest mark's progress text ("3/8" or
 -- "50%") rides here too: off, beside the mark, or in its place, as a count or a percentage.
-local castOptions = { castIcon = { left = true, right = true, off = true }, castTime = "boolean", castName = "boolean",
+local castOptions = { castIcon = { left = true, right = true, inside = true, off = true }, castTime = "boolean", castName = "boolean",
     castInterruptColours = "boolean", castOnTop = "boolean",
     questProgress = { off = true, beside = true, instead = true }, questProgressFormat = { count = true, percent = true } }
 local castDefaults = { castIcon = "left", castTime = true, castName = true, castInterruptColours = false, castOnTop = false,
     questProgress = "off", questProgressFormat = "count" }
--- The cast bar's own colour, and Colour by interrupt's: ready (it can be interrupted and your
--- interrupt is ready), cooldown (it can, but yours is on cooldown or you have none), locked (it cannot).
-local CAST_COLOUR = { r = 0.95, g = 0.68, b = 0.16 }
+-- Colour by interrupt's colours: ready (it can be interrupted and your interrupt is ready), cooldown (it can, but yours
+-- is on cooldown or you have none), locked (it cannot). (The cast bar's own colour is the export's CAST_COLOUR.)
 local CAST_COLOUR_KEYS = { "ready", "cooldown", "locked" }
 local castColourDefaults = { ready = { r = 0.25, g = 0.85, b = 0.35 }, cooldown = { r = 0.9, g = 0.3, b = 0.2 },
     locked = { r = 0.55, g = 0.55, b = 0.55 } }
@@ -432,6 +516,8 @@ for profileKey, profile in pairs(profileDefaults) do
     profile.valueSlots = DefaultValueSlots()
     profile.auraLayouts = NormalizeAuraLayouts(nil)
 end
+-- Blizzard draws friendly names in dungeons: no Action icon there.
+profileDefaults.friendlyNPC.dungeonNamesLayout.actionIcon = nil
 
 local defaultRelationshipColours = {
     group = { r = 0.25, g = 1, b = 0.45 },
@@ -444,13 +530,16 @@ local defaultRelationshipColours = {
 
 -- Threat colours' states (a tank's four, then a DPS or healer's three), their default colours, and
 -- the parts they can colour. A part's own colours (threatPartColours[part]) are kept only while
--- its Own colours is on; a state it lacks takes the shared colour.
+-- its Own colours is on; a state it lacks takes the shared colour. Other tank has it is teal (1.3.0), apart from
+-- Holding's periwinkle; it was a pale blue (OFFTANK_BEFORE_130) close to it, which saved profiles keep: a saved
+-- profile stores its whole palette, so only new installs and profiles take the teal.
 local THREAT_COLOURS = {
     STATES = { "holding", "losing", "offtank", "other", "safe", "pulling", "aggro" },
     PARTS = { "health", "name", "border" },
+    OFFTANK_BEFORE_130 = { r = 0.73, g = 0.92, b = 1 },
     defaults = {
         holding = { r = 0.5, g = 0.5, b = 1 }, losing = { r = 1, g = 1, b = 0 },
-        offtank = { r = 0.73, g = 0.92, b = 1 }, other = { r = 1, g = 0, b = 0 },
+        offtank = { r = 0.2, g = 0.8, b = 0.7 }, other = { r = 1, g = 0, b = 0 },
         safe = { r = 0.3, g = 0.8, b = 0.3 }, pulling = { r = 1, g = 0.6, b = 0 }, aggro = { r = 1, g = 0.1, b = 0.45 },
     },
 }
@@ -458,10 +547,47 @@ THREAT_COLOURS.isPart = {}
 for _, part in ipairs(THREAT_COLOURS.PARTS) do THREAT_COLOURS.isPart[part] = true end
 
 local validModes = { auto = true, own = true, overlay = true }
-local validFriendlyModes = { names = true, full = true, off = true }
+-- Show as (Studio's Friendly plates): names only, full plates or Blizzard's plates, per friendly plate type.
+-- friendly is both types' choice (every profile and Blueprint from before 1.2.1, /ps friendly with no type);
+-- KEYS name a type's own, absent while it follows friendly. Mode is the one reader.
+local FRIENDLY = { MODES = { names = true, full = true, off = true },
+    KEYS = { friendlyPlayer = "friendlyPlayers", friendlyNPC = "friendlyNPCs" }, TYPES = { "friendlyPlayer", "friendlyNPC" } }
+-- plateType's Show as in settings (a friendly plate type; another reads the shared one).
+function FRIENDLY.Mode(settings, plateType)
+    if type(settings) ~= "table" then return defaults.friendly end
+    local key = FRIENDLY.KEYS[plateType]
+    local own = key and settings[key]
+    if own ~= nil and FRIENDLY.MODES[own] then return own end
+    local shared = settings.friendly
+    return FRIENDLY.MODES[shared] and shared or defaults.friendly
+end
+-- Whether either friendly plate type shows as mode.
+function FRIENDLY.Any(settings, mode)
+    return FRIENDLY.Mode(settings, "friendlyPlayer") == mode or FRIENDLY.Mode(settings, "friendlyNPC") == mode
+end
+-- Keeps the stored form minimal, so a profile whose types agree stores (and exports) only friendly, as
+-- before 1.2.1: an own value that is invalid or the same as friendly goes, and two that agree become friendly.
+function FRIENDLY.Normalize(settings)
+    if not FRIENDLY.MODES[settings.friendly] then settings.friendly = defaults.friendly end
+    local players, npcs = settings.friendlyPlayers, settings.friendlyNPCs
+    if players ~= nil and not FRIENDLY.MODES[players] then players = nil end
+    if npcs ~= nil and not FRIENDLY.MODES[npcs] then npcs = nil end
+    if players ~= nil and players == npcs then
+        settings.friendly, players, npcs = players, nil, nil
+    end
+    if players == settings.friendly then players = nil end
+    if npcs == settings.friendly then npcs = nil end
+    settings.friendlyPlayers, settings.friendlyNPCs = players, npcs
+    return settings
+end
+-- The report's and /ps status's word: the one Show as, or each type's when they differ.
+function FRIENDLY.Text(settings)
+    local players, npcs = FRIENDLY.Mode(settings, "friendlyPlayer"), FRIENDLY.Mode(settings, "friendlyNPC")
+    if players == npcs then return players end
+    return string.format("players %s, npcs %s", players, npcs)
+end
 local validFriendlyPvpStyles = { off = true, colour = true, icon = true, both = true }
 local validAuraSources = { all = true, mine = true }
-local validClassificationStyles = { icon = true, words = true, letters = true }
 local validQuestIcons = { auto = true, platesmith = true, questie = true }
 local validThreatPalettes = { auto = true, standard = true, colourblind = true }
 local validThreatTextFormats = { gap = true, percent = true, detailed = true }
@@ -488,13 +614,16 @@ local optionalProfileRanges = {
 local settingRanges = { threatSpotlightOthersAlpha = { 0.3, 1 }, threatSpotlightDuration = { 1, 8, true },
     textScale = { 0.8, 1.5 }, blizzardNameFontSize = { 8, 20, true }, namesOnlyCastWidth = { 50, 160, true },
     targetGlowSpread = { 8, 80, true }, targetGlowOpacity = { 0.1, 1 }, targetGlowOffsetX = { -40, 40, true },
-    targetGlowOffsetY = { -40, 40, true } }
+    targetGlowOffsetY = { -40, 40, true }, targetGlowSpreadY = { 8, 80, true }, targetGlowWidth = { 16, 320, true },
+    targetGlowHeight = { 8, 160, true } }
 -- General settings that are one colour ({ r, g, b }): exported as hex, imported through CheckColour.
 local colourSettings = { targetGlowColour = true }
 -- The soft target glow's own look: a change restyles only the glow on the plate showing it
 -- (TargetGlow.RestyleShown), with no plate laid out again (Settings.SetOption).
 local glowSettings = { targetGlowColourMode = true, targetGlowColour = true, targetGlowSpread = true,
-    targetGlowOpacity = true, targetGlowPulse = true, targetGlowOffsetX = true, targetGlowOffsetY = true }
+    targetGlowOpacity = true, targetGlowPulse = true, targetGlowOffsetX = true, targetGlowOffsetY = true,
+    targetGlowWrap = true, targetGlowParts = true, targetGlowEven = true, targetGlowSpreadY = true, targetGlowWidth = true,
+    targetGlowHeight = true }
 local ENEMY_ALIASES = { scale = true, width = true, healthHeight = true, nameFontSize = true }
 -- Component positions on the preview canvas, and per-component scale.
 local layoutRanges = { x = { -280, 280, true }, y = { -105, 105, true }, scale = { 0.5, 2 } }
@@ -509,11 +638,17 @@ local booleanSettings = {
     "threatKeptAge", "experimentalSoftTargetThreat", "experimentalTargetOfTargetThreat", "experimentalSoloCurveGap",
     "experimentalOutsideHolderRow", "namesOnlyCastFriendly", "namesOnlyCastEnemy",
     "colourByThreat", "threatColourSafeKeep", "threatColourHealth", "threatColourName", "threatColourBorder",
-    "targetGlowPulse",
+    "targetGlowPulse", "targetOffKeepsEdge", "greyWhenTagged", "targetGlowEven", "objectFadeUnable",
+    "objectHoverCursor", "objectHoverTooltip",
+    "extrasQuest", "extrasTarget", "extrasLoose",
 }
 local enumSettings = {
-    mode = validModes, friendly = validFriendlyModes, friendlyPvpStyle = validFriendlyPvpStyles,
-    buffSource = validAuraSources, debuffSource = validAuraSources, classificationStyle = validClassificationStyles,
+    mode = validModes, friendly = FRIENDLY.MODES, friendlyPlayers = FRIENDLY.MODES, friendlyNPCs = FRIENDLY.MODES,
+    friendlyPvpStyle = validFriendlyPvpStyles,
+    buffSource = validAuraSources, debuffSource = validAuraSources,
+    classificationStyle = { icon = true, dragon = true, beforeName = true, suffix = true, frame = true, words = true,
+        letters = true },
+    classificationIconSize = { auto = true, standard = true, text = true },
     questIcons = validQuestIcons, targetHighlightStyle = validTargetHighlightStyles,
     namesOnlyCastText = { under = true, inside = true },
     threatSpotlightStyle = validThreatSpotlightStyles, threatPalette = validThreatPalettes,
@@ -521,6 +656,9 @@ local enumSettings = {
     blizzardNameFontScope = validBlizzardNameFontScopes,
     blizzardNameFontOutline = { none = true, outline = true, thick = true },
     threatColourRole = THREAT_COLOURS.roles, targetGlowColourMode = validTargetGlowColourModes,
+    -- (targetGlowParts' values: HIGHLIGHT.GLOW_PARTS.)
+    targetGlowWrap = { parts = true, fixed = true }, targetGlowParts = { none = true },
+    extrasThreat = { text = true, edge = true, both = true, off = true },
 }
 do
     local combatChoices = {}
@@ -530,6 +668,16 @@ do
         for _, place in ipairs(VISIBILITY.PLACES) do booleanSettings[#booleanSettings + 1] = keys[place] end
         enumSettings[keys.combat] = combatChoices
     end
+    local clickChoices = {}
+    for _, choice in ipairs(VISIBILITY.CLICK.CHOICES) do clickChoices[choice] = true end
+    for _, key in ipairs(VISIBILITY.CLICK.KEYS) do enumSettings[key] = clickChoices end
+    local INTERACT = VISIBILITY.INTERACT
+    for _, key in ipairs(INTERACT.KEYS) do
+        local choices = {}
+        for _, choice in ipairs(INTERACT.OWN[key] or INTERACT.CHOICES) do choices[choice] = true end
+        enumSettings[key] = choices
+    end
+    enumSettings.objectPlates = { platesmith = true, blizzard = true }
 end
 local isBooleanSetting = {}
 for _, key in ipairs(booleanSettings) do isBooleanSetting[key] = true end
@@ -571,7 +719,8 @@ end
 -- at least 8; the tagged mark 3 less; the cast bar's text 4 less, at least 7). Nil for a part whose
 -- size follows something else (a badge, an aura icon). Lifecycle, Studio and the tests agree on it.
 local PART_TEXT_SIZES = { level = { 8, -2 }, guild = { 8, -2 }, targetName = { 8, -2 }, threat = { 8, -2 },
-    classification = { 8, -2 }, quest = { 8, -2 }, combo = { 8, -2 }, tagged = { 8, -3 }, cast = { 7, -4 } }
+    classification = { 8, -2 }, quest = { 8, -2 }, combo = { 8, -2 }, tagged = { 8, -3 }, cast = { 7, -4 },
+    statusText = { 8, -2 } }
 local function PartTextSize(key, nameFontSize)
     local size = tonumber(nameFontSize) or 14
     if key == "name" then return size end
@@ -645,42 +794,176 @@ local function PinTarget(layout, key, absent)
     return target
 end
 
--- Sorts keys (entries of layout) in place into tree order: by each entry's order (unset:
--- fallback, 99 by default), then by key. Returns keys.
-local function SortByTreeOrder(layout, keys, fallback)
-    fallback = fallback or 99
-    table.sort(keys, function(left, right)
-        local a, b = layout[left].order or fallback, layout[right].order or fallback
-        if a ~= b then return a < b end
-        return left < right
-    end)
-    return keys
+-- The Elite / rare mark's styles that place parts (classificationStyle). An enemy plate (Lifecycle's ApplyLayout)
+-- and Studio's preview (Options:EditorDrawnLayout) draw an enemy layout through MARK.Layout: the style's placement
+-- over the player's, which is never written, so another style shows the player's own placement again.
+--   dragon (Classic dragon): the level pinned right of the health bar (Placement and the preview then centre it a
+--     dragon's curl past the bar's end), the mark on the level (its dragon is placed round it) and drawn under it;
+--     what was pinned to the level takes its place, as when the level is turned off (PinTarget).
+--   beforeName (Before the name): the mark pinned left of the name, GAP away; a level pinned left of the name moves
+--     left of the mark (on a mob without one it takes the mark's place, beside the name), and a name pinned right
+--     of the level moves right of the mark; what was pinned to the mark takes its place.
+-- Nothing is placed for a mark turned off or deleted, a Classic dragon whose health bar is turned off, or a
+-- placement that would pin a part round a loop. MARK.Placed(layout): the entries a placement changed.
+local MARK = { GAP = 2 }
+do
+    local placedBy = setmetatable({}, { __mode = "k" })
+    local NONE = {}
+    -- Per style, layout -> its placement (false: none), for the plates, whose layouts are replaced, never changed.
+    local cache = { dragon = setmetatable({}, { __mode = "k" }), beforeName = setmetatable({}, { __mode = "k" }) }
+    MARK.PLACING = { dragon = true, beforeName = true }
+
+    local function Copy(position)
+        local copy = {}
+        for field, value in pairs(position) do copy[field] = value end
+        return copy
+    end
+
+    -- What sat on key takes its place in result: pinned to a part key was pinned to, it meets that part on its own
+    -- edge with its own gap (PinTarget's way); otherwise it takes key's own placement.
+    local function Vacate(result, layout, key, changed)
+        local from = layout[key]
+        for other, position in pairs(layout) do
+            if type(position) == "table" and position.parent == key and not changed[other] then
+                local entry = Copy(position)
+                if entry.attach and from.attach and IsPartKey(layout, from.parent) then
+                    entry.parent = from.parent
+                else
+                    entry.parent, entry.attach, entry.free, entry.x, entry.y = from.parent, from.attach, from.free, from.x, from.y
+                end
+                result[other], changed[other] = entry, true
+            end
+        end
+    end
+
+    local function Loops(layout)
+        for key, position in pairs(layout) do
+            local node = type(position) == "table" and position.parent
+            for _ = 0, MAX_DEPTH do
+                if node == key then return true end
+                local entry = type(node) == "string" and layout[node]
+                if type(entry) ~= "table" then break end
+                node = entry.parent
+            end
+        end
+        return false
+    end
+
+    -- layout with style's placement, a new table (entries it does not change are layout's own), or layout itself.
+    function MARK.Build(layout, style)
+        if not MARK.PLACING[style] or type(layout) ~= "table" then return layout end
+        local mark, level, name, health = layout.classification, layout.level, layout.name, layout.health
+        if type(mark) ~= "table" or TurnedOff(mark) then return layout end
+        local result, changed = {}, { classification = true }
+        for key, position in pairs(layout) do result[key] = position end
+        local placed = Copy(mark)
+        placed.free, placed.y = nil, 0
+        if style == "dragon" then
+            if type(level) ~= "table" or level.removed or type(health) ~= "table" or TurnedOff(health) then return layout end
+            local entry = Copy(level)
+            entry.parent, entry.attach, entry.free, entry.x, entry.y = "health", "right", nil, MARK.GAP, 0
+            placed.parent, placed.attach, placed.x, placed.scale = "level", "right", 0, nil
+            -- Under the level (a child draws over its parent at the same layer), so the dragon never covers it.
+            -- (-10: the lowest layer, LAYER_RANGE.)
+            local layer = tonumber(level.layer) or 0
+            entry.layer, placed.layer = layer, math.max(-10, layer - 1)
+            result.level, changed.level = entry, true
+            Vacate(result, layout, "level", changed)
+        else
+            local nameAfterLevel = type(name) == "table" and name.parent == "level" and name.attach == "right"
+            if nameAfterLevel then
+                placed.parent, placed.attach, placed.x = "level", "right", MARK.GAP
+                local entry = Copy(name)
+                entry.parent = "classification"
+                result.name, changed.name = entry, true
+            else
+                placed.parent, placed.attach, placed.x = "name", "left", -MARK.GAP
+                if type(level) == "table" and level.parent == "name" and level.attach == "left" then
+                    local entry = Copy(level)
+                    entry.parent = "classification"
+                    result.level, changed.level = entry, true
+                end
+            end
+            Vacate(result, layout, "classification", changed)
+        end
+        result.classification = placed
+        if Loops(result) then return layout end
+        placedBy[result] = changed
+        return result
+    end
+
+    -- MARK.Build, kept per layout table and style (a plate's layout is replaced when it changes, never edited).
+    function MARK.Layout(layout, style)
+        local byStyle = cache[style]
+        if not byStyle or type(layout) ~= "table" then return layout end
+        local result = byStyle[layout]
+        if result == nil then
+            result = MARK.Build(layout, style)
+            -- false for none: a value naming its weak key would keep the key alive.
+            byStyle[layout] = result ~= layout and result or false
+        end
+        return result or layout
+    end
+
+    -- key -> true for each entry layout's placement changed (none for a layout MARK.Build did not make).
+    function MARK.Placed(layout)
+        return placedBy[layout] or NONE
+    end
 end
 
--- key -> { x, y, scale } drawn from the plate's centre, for every entry of layout. measure(key),
--- when given, returns a part's width and height in its own units (nil: not stacked); without
--- it stacks are not applied. absent(key), when given, says a part has nothing to show on this
--- plate right now (see PinTarget).
-local function LayoutTransforms(layout, measure, absent)
-    local result, visiting, stacks = {}, {}, {}
-    local function StackOffsets(parentKey)
+local SortByTreeOrder, LayoutTransforms
+do
+    -- One comparator for every sort (no closure per call): the layout and fallback being sorted.
+    local sortLayout, sortFallback
+    local function TreeOrder(left, right)
+        local a, b = sortLayout[left].order or sortFallback, sortLayout[right].order or sortFallback
+        if a ~= b then return a < b end
+        return left < right
+    end
+
+    -- Sorts keys (entries of layout) in place into tree order: by each entry's order (unset:
+    -- fallback, 99 by default), then by key. Returns keys.
+    SortByTreeOrder = function(layout, keys, fallback)
+        sortLayout, sortFallback = layout, fallback or 99
+        table.sort(keys, TreeOrder)
+        sortLayout = nil
+        return keys
+    end
+
+    -- Where a part with no place of its own (or past MAX_DEPTH, or in a cycle) is drawn. Read only.
+    local ORIGIN = { x = 0, y = 0, scale = 1 }
+
+    local function Clear(map) for key in pairs(map) do map[key] = nil end end
+
+    -- One parent's stacked children's offsets (st: the call's working tables, LayoutTransforms).
+    local function StackOffsets(st, parentKey)
+        local stacks, layout = st.stacks, st.layout
         if stacks[parentKey] then return stacks[parentKey] end
-        local offsets, parent = {}, layout[parentKey]
+        local offsets = st.offsetTables[parentKey]
+        if offsets then Clear(offsets) else
+            offsets = {}
+            st.offsetTables[parentKey] = offsets
+        end
         stacks[parentKey] = offsets
-        local keys, children = {}, {}
+        local parent, keys, children = layout[parentKey], st.keys, st.children
+        for index = #keys, 1, -1 do keys[index] = nil end
         for key, position in pairs(layout) do
             if type(position) == "table" and position.parent == parentKey and not position.free
                 and position.visible ~= false and not position.removed then
                 keys[#keys + 1] = key
             end
         end
+        local count = 0
         for _, key in ipairs(SortByTreeOrder(layout, keys)) do
             -- measure(key) -> width, height[, hidden[, boxX, boxY]]: box* is the drawn box's
             -- centre from the part's own centre (an aura grid's further lines), own units.
-            local width, height, hidden, boxX, boxY = measure(key)
+            local width, height, hidden, boxX, boxY = st.measure(key)
             if width and height then
-                children[#children + 1] = { key = key, width = width, height = height, hidden = hidden,
-                    boxX = tonumber(boxX) or 0, boxY = tonumber(boxY) or 0 }
+                count = count + 1
+                local child = children[count] or {}
+                children[count] = child
+                child.key, child.width, child.height, child.hidden = key, width, height, hidden
+                child.boxX, child.boxY = tonumber(boxX) or 0, tonumber(boxY) or 0
             end
         end
         local direction, gap = parent.stack, tonumber(parent.gap) or 0
@@ -690,7 +973,8 @@ local function LayoutTransforms(layout, measure, absent)
         -- shown child follows the last; a hidden one (measure's third result) is placed where
         -- it would go but takes no space, so what follows closes up until it shows.
         local edge
-        for _, child in ipairs(children) do
+        for index = 1, count do
+            local child = children[index]
             local position = layout[child.key]
             local own = tonumber(position.scale) or 1
             local half = (vertical and child.height or child.width) * own / 2
@@ -700,41 +984,45 @@ local function LayoutTransforms(layout, measure, absent)
             local along = edge + sign * half - box
             if vertical then y = along else x = along end
             if not child.hidden then edge = edge + sign * (2 * half + gap) end
-            offsets[child.key] = { x = x, y = y }
+            -- A part has one parent, so its offset table is its own.
+            local point = st.points[child.key] or {}
+            st.points[child.key] = point
+            point.x, point.y = x, y
+            offsets[child.key] = point
         end
         return offsets
     end
-    local function Resolve(key, depth)
+
+    local function Resolve(st, key, depth)
+        local result, layout, measure, visiting = st.result, st.layout, st.measure, st.visiting
         local done = result[key]
         if done then return done end
         local position = layout[key]
-        if type(position) ~= "table" or visiting[key] or depth > MAX_DEPTH then return { x = 0, y = 0, scale = 1 } end
+        if type(position) ~= "table" or visiting[key] or depth > MAX_DEPTH then return ORIGIN end
         visiting[key] = true
         local parentEntry = position.parent and layout[position.parent]
-        local parent = parentEntry and Resolve(position.parent, depth + 1) or { x = 0, y = 0, scale = 1 }
+        local parent = parentEntry and Resolve(st, position.parent, depth + 1) or ORIGIN
         visiting[key] = nil
         local x, y = tonumber(position.x) or 0, tonumber(position.y) or 0
         if measure and parentEntry and STACK_DIRECTIONS[parentEntry.stack] then
-            local stacked = StackOffsets(position.parent)[key]
+            local stacked = StackOffsets(st, position.parent)[key]
             if stacked then x, y = stacked.x, stacked.y end
         end
         local scale = parent.scale * (tonumber(position.scale) or 1)
-        local transform = {
-            x = parent.x + x * parent.scale,
-            y = parent.y + y * parent.scale,
-            scale = scale,
-        }
+        local transform = st.transforms[key] or {}
+        st.transforms[key] = transform
+        transform.x, transform.y, transform.scale = parent.x + x * parent.scale, parent.y + y * parent.scale, scale
         -- Dynamic: pinned to an edge of its parent part. (x, y) is then the gap from the parent's
         -- edge to the part's facing edge, so it follows the parent's size (a longer name moves a
         -- level pinned to its left). Needs sizes; a group parent has none, so it stays static.
         -- A turned-off parent passes its place on (PinTarget); the gap stays in the parent's units.
         local edge = ATTACH_EDGES[position.attach]
-        local target = edge and measure and PinTarget(layout, key, absent)
+        local target = edge and measure and PinTarget(layout, key, st.absent)
         if target then
             local base = parent
             if target ~= position.parent then
                 visiting[key] = true
-                base = Resolve(target, depth + 1)
+                base = Resolve(st, target, depth + 1)
                 visiting[key] = nil
             end
             local targetWidth, targetHeight = measure(target)
@@ -747,8 +1035,26 @@ local function LayoutTransforms(layout, measure, absent)
         result[key] = transform
         return transform
     end
-    for key in pairs(layout) do Resolve(key, 0) end
-    return result
+
+    -- key -> { x, y, scale } drawn from the plate's centre, for every entry of layout. measure(key),
+    -- when given, returns a part's width and height in its own units (nil: not stacked); without
+    -- it stacks are not applied. absent(key), when given, says a part has nothing to show on this
+    -- plate right now (see PinTarget). into: a table the caller keeps (a plate's), whose tables
+    -- are reused: the result is then the same table each call, filled again (a plate's relayout,
+    -- as a cast bar or aura row shows or hides in combat, makes no tables).
+    LayoutTransforms = function(layout, measure, absent, into)
+        local st = into or {}
+        st.result, st.visiting, st.stacks = st.result or {}, st.visiting or {}, st.stacks or {}
+        st.transforms, st.points, st.offsetTables = st.transforms or {}, st.points or {}, st.offsetTables or {}
+        st.keys, st.children = st.keys or {}, st.children or {}
+        Clear(st.result)
+        Clear(st.visiting)
+        Clear(st.stacks)
+        st.layout, st.measure, st.absent = layout, measure, absent
+        for key in pairs(layout) do Resolve(st, key, 0) end
+        st.layout, st.measure, st.absent = nil, nil, nil
+        return st.result
+    end
 end
 
 -- An aura row's whole grid: the row frame is its first line; further lines go up or down.
@@ -777,39 +1083,74 @@ local function NormalizeGroupName(name) return CleanName(name, GROUP_NAME_LENGTH
 -- parts, and their count. Groups draw nothing; their layer carries their contents.
 local LAYER_RANGE = { -10, 10, true }
 
-local function DrawOrder(layout)
-    local children = {}
-    for key, position in pairs(layout) do
-        if type(position) == "table" then
-            local parent = position.parent and layout[position.parent] and position.parent or false
-            children[parent] = children[parent] or {}
-            children[parent][#children[parent] + 1] = key
-        end
-    end
-    for _, list in pairs(children) do SortByTreeOrder(layout, list) end
-    local sequence, effective = {}, {}
+-- into: a table the caller keeps (Studio's preview, which works the order out several times a refresh), whose
+-- tables are reused: rank is then the same table each call, filled again. Without it every table is new (the
+-- plates keep each layout's result: Styles' drawOrderCache).
+local DrawOrder
+do
+    local function Clear(map) for key in pairs(map) do map[key] = nil end end
     -- Front to back: a part's children before the part itself (they draw on it, as a value on
     -- its bar), and higher siblings, with everything under them, before lower ones.
-    local function Walk(parentKey, inherited, depth)
-        for _, key in ipairs(children[parentKey] or {}) do
+    local function Walk(st, parentKey, inherited, depth)
+        local list = st.children[parentKey]
+        if not list then return end
+        local layout, sequence, effective = st.layout, st.sequence, st.effective
+        for index = 1, #list do
+            local key = list[index]
             local layer = tonumber(layout[key].layer) or inherited
-            if depth < MAX_DEPTH then Walk(key, layer, depth + 1) end
+            if depth < MAX_DEPTH then Walk(st, key, layer, depth + 1) end
             if not IsGroupKey(key) then
                 sequence[#sequence + 1] = key
                 effective[key] = layer
             end
         end
     end
-    Walk(false, 0, 0)
-    local treeIndex = {}
-    for index, key in ipairs(sequence) do treeIndex[key] = index end
-    table.sort(sequence, function(left, right)
-        if effective[left] ~= effective[right] then return effective[left] > effective[right] end
-        return treeIndex[left] < treeIndex[right]
-    end)
-    local rank = {}
-    for index, key in ipairs(sequence) do rank[key] = index end
-    return rank, #sequence
+    -- One comparator (no closure per call): the call's effective layers and tree places.
+    local sortEffective, sortTreeIndex
+    local function Front(left, right)
+        if sortEffective[left] ~= sortEffective[right] then return sortEffective[left] > sortEffective[right] end
+        return sortTreeIndex[left] < sortTreeIndex[right]
+    end
+    DrawOrder = function(layout, into)
+        local st = into or {}
+        st.children, st.lists = st.children or {}, st.lists or {}
+        st.sequence, st.effective = st.sequence or {}, st.effective or {}
+        st.treeIndex, st.rank = st.treeIndex or {}, st.rank or {}
+        local children, lists = st.children, st.lists
+        -- Each parent's list of children; the lists are kept for the next call (cleared, not dropped).
+        for parent, list in pairs(children) do
+            for index = #list, 1, -1 do list[index] = nil end
+            lists[#lists + 1] = list
+            children[parent] = nil
+        end
+        for key, position in pairs(layout) do
+            if type(position) == "table" then
+                local parent = position.parent and layout[position.parent] and position.parent or false
+                local list = children[parent]
+                if not list then
+                    list = lists[#lists] or {}
+                    lists[#lists] = nil
+                    children[parent] = list
+                end
+                list[#list + 1] = key
+            end
+        end
+        for _, list in pairs(children) do SortByTreeOrder(layout, list) end
+        local sequence, effective, treeIndex, rank = st.sequence, st.effective, st.treeIndex, st.rank
+        for index = #sequence, 1, -1 do sequence[index] = nil end
+        Clear(effective)
+        Clear(treeIndex)
+        Clear(rank)
+        st.layout = layout
+        Walk(st, false, 0, 0)
+        st.layout = nil
+        for index, key in ipairs(sequence) do treeIndex[key] = index end
+        sortEffective, sortTreeIndex = effective, treeIndex
+        table.sort(sequence, Front)
+        sortEffective, sortTreeIndex = nil, nil
+        for index, key in ipairs(sequence) do rank[key] = index end
+        return rank, #sequence
+    end
 end
 
 -- The default template's groups: Studio's tree starts with these. They are ordinary groups, so
@@ -1022,36 +1363,64 @@ local function UpgradeLayoutToHierarchy(layout, valueSlots)
 end
 
 -- One layout entry made valid (position: any table); nil without a usable x and y.
-local function NormalizeLayoutEntry(key, position)
+-- claimed (NormalizeSettings' own pass over a profile's layouts): position itself is returned when it
+-- is already exactly the valid entry and no other layout of this pass took it (claimed[position]), so
+-- normalising a saved profile again makes no garbage; anything else gets a new table, as always.
+local function NormalizeLayoutEntry(key, position, claimed)
     local x, y = tonumber(position.x), tonumber(position.y)
     if not (x and y) then return nil end
     -- Only layouts from before Dynamic placement carry followName (their upgrade
     -- reads it); it is never added.
     local followName
     if key == "level" and position.followName ~= nil then followName = position.followName ~= false end
-    local entry = {
-        x = Bounded(layoutRanges.x, x),
-        y = Bounded(layoutRanges.y, y),
-        visible = position.visible ~= false,
-        scale = ComponentScale(position.scale),
-        followName = followName,
-        parent = type(position.parent) == "string" and position.parent ~= key and position.parent or nil,
-        order = tonumber(position.order) and math.floor(math.max(0, math.min(99, position.order))) or nil,
-        -- A built-in part the player deleted: off the tree and the plate until added back.
-        removed = position.removed == true or nil,
-        stack = STACK_DIRECTIONS[position.stack] and position.stack or nil,
-        gap = STACK_DIRECTIONS[position.stack] and Bounded(STACK_GAP, position.gap, 0) or nil,
-        free = position.free == true or nil,
-        layer = tonumber(position.layer) and Bounded(LAYER_RANGE, position.layer) or nil,
-        attach = ATTACH_EDGES[position.attach] and position.attach or nil,
-    }
-    if entry.removed then entry.visible = false end
-    if IsGroupKey(key) then
-        entry.name = NormalizeGroupName(position.name) or "Group"
-        entry.order = math.floor(tonumber(position.order) or 0)
+    x, y = Bounded(layoutRanges.x, x), Bounded(layoutRanges.y, y)
+    local scale = ComponentScale(position.scale)
+    local parent = type(position.parent) == "string" and position.parent ~= key and position.parent or nil
+    local order = tonumber(position.order) and math.floor(math.max(0, math.min(99, position.order))) or nil
+    -- A built-in part the player deleted: off the tree and the plate until added back.
+    local removed = position.removed == true or nil
+    local stack = STACK_DIRECTIONS[position.stack] and position.stack or nil
+    local gap = STACK_DIRECTIONS[position.stack] and Bounded(STACK_GAP, position.gap, 0) or nil
+    local free = position.free == true or nil
+    local layer = tonumber(position.layer) and Bounded(LAYER_RANGE, position.layer) or nil
+    local attach = ATTACH_EDGES[position.attach] and position.attach or nil
+    local visible = position.visible ~= false and not removed
+    local group, name = IsGroupKey(key), nil
+    if group then
+        name = NormalizeGroupName(position.name) or "Group"
     elseif type(position.name) == "string" then
         -- A built-in part's own name in Studio's tree (nil: its standard name).
-        entry.name = NormalizeGroupName(position.name)
+        name = NormalizeGroupName(position.name)
+    end
+    local finalOrder = group and math.floor(tonumber(position.order) or 0) or order
+    if claimed and not claimed[position] and position.x == x and position.y == y and position.visible == visible
+        and position.scale == scale and position.followName == followName and position.parent == parent
+        and position.order == finalOrder and position.removed == removed and position.stack == stack
+        and position.gap == gap and position.free == free and position.layer == layer and position.attach == attach
+        and position.name == name then
+        -- Every field matches; no other key: as many keys as the entry would have (x, y, visible, scale and
+        -- each optional field that is set).
+        local fields, count = 4 + (followName ~= nil and 1 or 0) + (parent and 1 or 0) + (finalOrder and 1 or 0)
+            + (removed and 1 or 0) + (stack and 1 or 0) + (gap and 1 or 0) + (free and 1 or 0) + (layer and 1 or 0)
+            + (attach and 1 or 0) + (name and 1 or 0), 0
+        for _ in pairs(position) do count = count + 1 end
+        if count == fields then
+            claimed[position] = true
+            return position
+        end
+    end
+    -- Sized for the eight fields most entries have; the rarer ones are added.
+    local entry = { x = x, y = y, visible = visible, scale = scale, parent = parent, order = order, layer = layer,
+        attach = attach }
+    if followName ~= nil then entry.followName = followName end
+    if removed then entry.removed = removed end
+    if stack then entry.stack, entry.gap = stack, gap end
+    if free then entry.free = free end
+    if group then
+        entry.name = name
+        entry.order = finalOrder
+    elseif type(position.name) == "string" then
+        entry.name = name
     end
     return entry
 end
@@ -1081,25 +1450,30 @@ local function PipFitWidth(profile, layout)
     return width * DrawnScale(layout, "health") / row
 end
 
-local function NormalizeLayout(layout, fallbackLayout)
+-- A new layout table. claimed: see NormalizeLayoutEntry (only NormalizeSettings passes it, for a
+-- profile's own layouts, which the result replaces).
+local function NormalizeLayout(layout, fallbackLayout, claimed)
     fallbackLayout = fallbackLayout or defaultLayout
     local normalized = {}
     if type(layout) == "table" then
         for key, position in pairs(layout) do
             if PartKey(key) and type(position) == "table" then
-                normalized[key] = NormalizeLayoutEntry(key, position)
+                normalized[key] = NormalizeLayoutEntry(key, position, claimed)
             end
         end
     end
     -- Missing parts come from the fallback with their place in its tree; a new layout takes all
     -- its groups (the default template), an existing one only a group a copied part sits in.
     local fresh = next(normalized) == nil
+    -- The fields most entries have in the table made (sized for eight); a group's stack, gap and name added.
     local function Copy(key, position, shown)
-        normalized[key] = { x = position.x, y = position.y, visible = (shown or position).visible ~= false,
-            scale = ComponentScale(position.scale),
-            parent = position.parent, order = position.order, stack = position.stack, gap = position.gap,
+        local entry = { x = position.x, y = position.y, visible = (shown or position).visible ~= false,
+            scale = ComponentScale(position.scale), parent = position.parent, order = position.order,
             layer = position.layer, attach = position.attach }
-        normalized[key].name = position.name
+        if position.stack ~= nil then entry.stack = position.stack end
+        if position.gap ~= nil then entry.gap = position.gap end
+        if position.name ~= nil then entry.name = position.name end
+        normalized[key] = entry
     end
     for key, position in pairs(fallbackLayout) do
         if not normalized[key] and (fresh or not IsGroupKey(key)) then
@@ -1119,16 +1493,16 @@ local function NormalizeLayout(layout, fallbackLayout)
             for parent in pairs(needed) do Copy(parent, fallbackLayout[parent]) end
         until next(needed) == nil
     end
-    -- A parent must exist, and the chain must end: a cycle or a chain past MAX_DEPTH is cut.
+    -- A parent must exist, and the chain must end: a cycle or a chain past MAX_DEPTH is cut. (A chain
+    -- that comes back to a part it passed never ends, so it passes MAX_DEPTH too: no table of parts seen.)
     for _, position in pairs(normalized) do
         if position.parent and not normalized[position.parent] then position.parent = nil end
     end
-    for key, position in pairs(normalized) do
-        local seen, current, depth = { [key] = true }, position.parent, 0
+    for _, position in pairs(normalized) do
+        local current, depth = position.parent, 0
         while current do
             depth = depth + 1
-            if seen[current] or depth > MAX_DEPTH then position.parent = nil break end
-            seen[current] = true
+            if depth > MAX_DEPTH then position.parent = nil break end
             current = normalized[current] and normalized[current].parent
         end
     end
@@ -1137,11 +1511,7 @@ end
 
 local function NormalizeColour(colour, fallback)
     colour = type(colour) == "table" and colour or fallback
-    local normalized = {}
-    for _, channel in ipairs({ "r", "g", "b" }) do
-        normalized[channel] = Format.Unit(colour[channel], fallback[channel])
-    end
-    return normalized
+    return { r = Format.Unit(colour.r, fallback.r), g = Format.Unit(colour.g, fallback.g), b = Format.Unit(colour.b, fallback.b) }
 end
 
 -- The shared threat colours with every state.
@@ -1218,7 +1588,57 @@ local STYLE_DEFAULTS = {
     pipEmpty = { r = 0.12, g = 0.12, b = 0.12, a = 0.8 },
     pipWidth = 10, pipHeight = 4, pipSpacing = 2,
     badgeSize = 10, badgeSpacing = 2, badgeOrientation = "horizontal", badgeInitial = true,
+    backdropWidth = 120, backdropHeight = 40, backdropEdge = 1,
 }
+
+-- A multi-part choice (the soft glow's Glow parts, a Backdrop's Parts): the ticked parts of PARTS stored as one value,
+-- their names joined by commas in PARTS' order ("name,health"), or "none". VALUES holds every such value. Set reads a
+-- value as a set (shared, never written; nil for DEFAULT or a value not in VALUES), Ticked as a set always (DEFAULT's
+-- for those), and Value names a set again (nil: every part). PartChoices.New makes one; the Backdrop's is kept here.
+local PartChoices = {}
+function PartChoices.New(parts, default)
+    local choice = { PARTS = parts, DEFAULT = default, VALUES = { none = true }, sets = {} }
+    for mask = 1, 2 ^ #parts - 1 do
+        local names = {}
+        for index, part in ipairs(parts) do
+            if math.floor(mask / 2 ^ (index - 1)) % 2 == 1 then names[#names + 1] = part end
+        end
+        choice.VALUES[table.concat(names, ",")] = true
+    end
+    local function Read(value)
+        local set = choice.sets[value]
+        if not set then
+            set = {}
+            if value ~= "none" then
+                for part in string.gmatch(value, "[^,]+") do set[part] = true end
+            end
+            choice.sets[value] = set
+        end
+        return set
+    end
+    function choice.Set(value)
+        if value == choice.DEFAULT or not choice.VALUES[value] then return nil end
+        return Read(value)
+    end
+    function choice.Ticked(value)
+        return choice.Set(value) or Read(choice.DEFAULT)
+    end
+    function choice.Value(set)
+        local names = {}
+        for _, part in ipairs(parts) do
+            if set == nil or set[part] then names[#names + 1] = part end
+        end
+        return #names > 0 and table.concat(names, ",") or "none"
+    end
+    return choice
+end
+
+-- The Backdrop part (Objects; Nameplates/Backdrop.lua): a box drawn behind other parts, styled like a text's box
+-- (boxShape, boxColour, boxBorder, padding) with an edge of style border px (nil: backdropEdge). backdropWrap: nil fits
+-- round the shown parts of backdropParts (PartChoice over PARTS; nil: DEFAULT), "fixed" is backdropWidth by
+-- backdropHeight (SIZE) centred on its own place.
+PartChoices.backdrop = PartChoices.New({ "name", "statusText", "actionIcon", "quest" }, "name,statusText,actionIcon")
+PartChoices.backdrop.SIZE, PartChoices.backdrop.WRAPS = { 8, 400, true }, { parts = true, fixed = true }
 
 -- A row of count pips in style, as ComboPoints.StylePips draws it (tests measure it the same way):
 -- each pip's width and height, the gap, and the row's width. A shape other than blocks or segments is
@@ -1277,11 +1697,25 @@ local function NormalizeStyles(styles)
             entry.badgeOrientation = STYLE_BADGE_ORIENTATIONS[style.badgeOrientation] and style.badgeOrientation or nil
             entry.pipShape = STYLE_PIP_SHAPES[style.pipShape] and style.pipShape or nil
             entry.boxShape = style.boxShape == "rounded" and "rounded" or nil
+            entry.boxHeight = style.boxHeight == "parent" and "parent" or nil
             entry.pipAnchor = STYLE_PIP_ANCHORS[style.pipAnchor] and style.pipAnchor or nil
             entry.pipClassColour = style.pipClassColour == true or nil
             entry.pipGlow = style.pipGlow == true or nil
             entry.pipFit = style.pipFit == true or nil
             entry.pipShowRow = STYLE_PIP_SHOW_ROWS[style.pipShowRow] and style.pipShowRow or nil
+            -- The Action icon's "can't" icons (Unable*): nil as the game gives them, greyed, or hidden.
+            entry.iconUnable = (style.iconUnable == "grey" or style.iconUnable == "hide") and style.iconUnable or nil
+            -- The Loose mark's (Nameplates/LooseMark.lua): who it shows for (nil tanks, all everyone), its icon (nil
+            -- the game's alert, window the Tank window's LOOSE icon), and its pulse (nil on, false off).
+            entry.looseFor = style.looseFor == "all" and "all" or nil
+            entry.looseIcon = style.looseIcon == "window" and "window" or nil
+            if style.loosePulse == false then entry.loosePulse = false end
+            -- The Backdrop's wrap, the parts it fits round (the default stored as nil) and its fixed size.
+            entry.backdropWrap = style.backdropWrap == "fixed" and "fixed" or nil
+            local backdrop = PartChoices.backdrop
+            entry.backdropParts = backdrop.Set(style.backdropParts) and style.backdropParts or nil
+            entry.backdropWidth = tonumber(style.backdropWidth) and Bounded(backdrop.SIZE, style.backdropWidth) or nil
+            entry.backdropHeight = tonumber(style.backdropHeight) and Bounded(backdrop.SIZE, style.backdropHeight) or nil
             -- On, off, or nil for the plates' own shadow (false must survive, so not an and/or).
             if type(style.shadow) == "boolean" then entry.shadow = style.shadow end
             if type(style.badgeInitial) == "boolean" then entry.badgeInitial = style.badgeInitial end
@@ -1320,7 +1754,8 @@ end
 
 -- Saved styles: at most 40, named (at most 24 characters), for text, bar or pip parts. A preset
 -- holds a style (NormalizeStyles) and optionally rules (NormalizeRules).
-local PRESET_KINDS, MAX_PRESETS, PRESET_NAME_LENGTH = { text = true, bar = true, pips = true, badges = true }, 40, 24
+local PRESET_KINDS, MAX_PRESETS, PRESET_NAME_LENGTH = { text = true, bar = true, pips = true, badges = true, backdrop = true },
+    40, 24
 local function PresetName(name) return CleanName(name, PRESET_NAME_LENGTH) end
 local function NormalizeStylePresets(presets)
     local result, count = {}, 0
@@ -1349,11 +1784,19 @@ end
 -- Value: the design's own value made valid by the general setting's validator, or nil (none, or not
 -- valid). Resolve fills out with what a design draws.
 local HIGHLIGHT = { KEYS = { "targetHighlightStyle", "targetGlowColourMode", "targetGlowColour", "targetGlowSpread",
-    "targetGlowOpacity", "targetGlowOffsetX", "targetGlowOffsetY", "targetGlowPulse" }, SET = {} }
+    "targetGlowOpacity", "targetGlowOffsetX", "targetGlowOffsetY", "targetGlowPulse", "targetGlowWrap", "targetGlowParts",
+    "targetGlowEven", "targetGlowSpreadY", "targetGlowWidth", "targetGlowHeight" }, SET = {},
+    BOOLEAN = { targetGlowPulse = true, targetGlowEven = true }, GLOW_PARTS = { "name", "health", "power", "cast" } }
 for _, key in ipairs(HIGHLIGHT.KEYS) do HIGHLIGHT.SET[key] = true end
+-- The parts a "parts" glow may wrap (GLOW_PARTS; PartChoice): targetGlowParts is the ticked ones ("name,health"), or
+-- "none". PartsSet reads a value as a set, or nil for every part (the default, or not a valid value); PartsValue names
+-- a set again.
+HIGHLIGHT.GLOW = PartChoices.New(HIGHLIGHT.GLOW_PARTS, defaults.targetGlowParts)
+for value in pairs(HIGHLIGHT.GLOW.VALUES) do enumSettings.targetGlowParts[value] = true end
+HIGHLIGHT.PartsSet, HIGHLIGHT.PartsValue = HIGHLIGHT.GLOW.Set, HIGHLIGHT.GLOW.Value
 function HIGHLIGHT.Value(key, value)
     if value == nil or not HIGHLIGHT.SET[key] then return nil end
-    if key == "targetGlowPulse" then
+    if HIGHLIGHT.BOOLEAN[key] then
         if type(value) == "boolean" then return value end
         return nil
     end
@@ -1389,15 +1832,19 @@ function HIGHLIGHT.Has(profile)
     return false
 end
 
+-- plateHidden: an object type's own (Designs.TYPES; Settings refuses it elsewhere): true draws none of those plates,
+-- absent draws them.
 local function IsProfileOption(key)
     return profileRanges[key] ~= nil or optionalProfileRanges[key] ~= nil or key == "healthTexture"
         or key == "healthColourMode" or key == "castColours" or castOptions[key] ~= nil or HIGHLIGHT.SET[key] == true
+        or key == "plateHidden"
 end
 
 -- One profile option made valid for profile (fallback: its defaults). NormalizeProfile checks
 -- every option this way; Settings writes a single one.
 local function ProfileOptionValue(profile, key, value, fallback)
     if HIGHLIGHT.SET[key] then return HIGHLIGHT.Value(key, value) end
+    if key == "plateHidden" then return value == true or nil end
     local range = profileRanges[key]
     if range then return Bounded(range, value, fallback[key]) end
     range = optionalProfileRanges[key]
@@ -1421,29 +1868,58 @@ local function ProfileOptionValue(profile, key, value, fallback)
     return nil
 end
 
--- One custom part's record made valid (slot: anything; a missing one is an unused slot).
-local function NormalizeValueSlot(slot)
+-- One custom part's record made valid (slot: anything; a missing one is an unused slot). claimed: as
+-- NormalizeLayoutEntry's, the slot itself when it is already exactly valid (its colour too).
+local function NormalizeValueSlot(slot, claimed)
     slot = type(slot) == "table" and slot or {}
     local base = DEFAULT_VALUE_SLOT
-    return {
+    local colour = slot.colour
+    if claimed and not claimed[slot] and slot ~= base and type(colour) == "table" and colour ~= base.colour
+        and not claimed[colour] and slot.source == (valueSources[slot.source] and slot.source or base.source)
+        and slot.anchor == (valueAnchors[slot.anchor] and slot.anchor or base.anchor)
+        and slot.layer == (valueLayers[slot.layer] and slot.layer or base.layer)
+        and slot.whenMissing == (missingAnchorModes[slot.whenMissing] and slot.whenMissing or base.whenMissing)
+        and slot.fontSize == Bounded(valueFontRange, slot.fontSize, base.fontSize)
+        and slot.kind == (valueKinds[slot.kind] and slot.kind ~= "text" and slot.kind or nil)
+        and slot.width == (tonumber(slot.width) and Bounded(VALUE_WIDTH, slot.width) or nil)
+        and slot.height == (tonumber(slot.height) and Bounded(VALUE_HEIGHT, slot.height) or nil)
+        and slot.icon == (valueIcons[slot.icon] and slot.icon or nil)
+        and colour.r == Format.Unit(colour.r, base.colour.r) and colour.g == Format.Unit(colour.g, base.colour.g)
+        and colour.b == Format.Unit(colour.b, base.colour.b)
+        and slot.name == NormalizeValueName(slot.name) and slot.template == NormalizeValueTemplate(slot.template) then
+        -- No other key: source, anchor, layer, whenMissing, fontSize, colour and each optional one set.
+        local fields, count, channels = 6 + (slot.kind and 1 or 0) + (slot.width and 1 or 0) + (slot.height and 1 or 0)
+            + (slot.icon and 1 or 0) + (slot.name and 1 or 0) + (slot.template and 1 or 0), 0, 0
+        for _ in pairs(slot) do count = count + 1 end
+        for _ in pairs(colour) do channels = channels + 1 end
+        if count == fields and channels == 3 then
+            claimed[slot], claimed[colour] = true, true
+            return slot
+        end
+    end
+    -- Sized for the six fields every slot has and two more; a slot with more grows.
+    local result = {
         source = valueSources[slot.source] and slot.source or base.source,
         anchor = valueAnchors[slot.anchor] and slot.anchor or base.anchor,
         layer = valueLayers[slot.layer] and slot.layer or base.layer,
         whenMissing = missingAnchorModes[slot.whenMissing] and slot.whenMissing or base.whenMissing,
         fontSize = Bounded(valueFontRange, slot.fontSize, base.fontSize),
-        kind = valueKinds[slot.kind] and slot.kind ~= "text" and slot.kind or nil,
-        width = tonumber(slot.width) and Bounded(VALUE_WIDTH, slot.width) or nil,
-        height = tonumber(slot.height) and Bounded(VALUE_HEIGHT, slot.height) or nil,
-        icon = valueIcons[slot.icon] and slot.icon or nil,
         colour = NormalizeColour(slot.colour, base.colour),
         name = NormalizeValueName(slot.name),
         template = NormalizeValueTemplate(slot.template),
     }
+    result.kind = valueKinds[slot.kind] and slot.kind ~= "text" and slot.kind or nil
+    if tonumber(slot.width) then result.width = Bounded(VALUE_WIDTH, slot.width) end
+    if tonumber(slot.height) then result.height = Bounded(VALUE_HEIGHT, slot.height) end
+    result.icon = valueIcons[slot.icon] and slot.icon or nil
+    return result
 end
 
 -- fresh: a new profile (NormalizeSettings' new table), which starts with the template's own part
--- styles (fallback.styles) unless it brings its own.
-local function NormalizeProfile(profile, fallback, legacy, fresh)
+-- styles (fallback.styles) unless it brings its own. claimed: NormalizeSettings' (see
+-- NormalizeLayoutEntry): the profile's own layout entries and custom parts that are already valid are
+-- kept, never one taken from legacy or the fallback.
+local function NormalizeProfile(profile, fallback, legacy, fresh, claimed)
     profile = type(profile) == "table" and profile or {}
     legacy = type(legacy) == "table" and legacy or {}
     if fresh and profile.styles == nil and fallback.styles then profile.styles = Table.DeepCopy(fallback.styles) end
@@ -1452,19 +1928,19 @@ local function NormalizeProfile(profile, fallback, legacy, fresh)
         profile[key] = Bounded(range, profile[key], legacy[key], fallback[key])
     end
     for key in pairs(optionalProfileRanges) do profile[key] = ProfileOptionValue(profile, key, profile[key], fallback) end
-    for _, key in ipairs({ "healthTexture", "healthColourMode" }) do
-        profile[key] = ProfileOptionValue(profile, key, profile[key], fallback)
-    end
+    profile.healthTexture = ProfileOptionValue(profile, "healthTexture", profile.healthTexture, fallback)
+    profile.healthColourMode = ProfileOptionValue(profile, "healthColourMode", profile.healthColourMode, fallback)
     for key in pairs(castOptions) do profile[key] = ProfileOptionValue(profile, key, profile[key], fallback) end
     for _, key in ipairs(HIGHLIGHT.KEYS) do profile[key] = HIGHLIGHT.Value(key, profile[key]) end
+    profile.plateHidden = profile.plateHidden == true or nil
     profile.healthColour = NormalizeColour(profile.healthColour, fallback.healthColour)
     profile.castColours = NormalizeCastColours(profile.castColours, fallback.castColours)
     profile.valueSlots = type(profile.valueSlots) == "table" and profile.valueSlots or {}
     for index = 1, VALUE_SLOT_COUNT do
         local key = "value" .. index
-        profile.valueSlots[key] = NormalizeValueSlot(profile.valueSlots[key])
+        profile.valueSlots[key] = NormalizeValueSlot(profile.valueSlots[key], claimed)
     end
-    profile.layout = NormalizeLayout(profile.layout or legacy.layout, fallback.layout)
+    profile.layout = NormalizeLayout(profile.layout or legacy.layout, fallback.layout, profile.layout and claimed or nil)
     profile.auraLayouts = NormalizeAuraLayouts(profile.auraLayouts, fallback.auraLayouts)
     profile.rules = NormalizeRules(GradientRules(profile.rules, profile.styles))
     profile.styles = NormalizeStyles(profile.styles)
@@ -1482,9 +1958,9 @@ local function NormalizeProfile(profile, fallback, legacy, fresh)
                 end
             end
         else
-            profile.namesLayout = NormalizeLayout(profile.namesLayout, fallback.namesLayout)
+            profile.namesLayout = NormalizeLayout(profile.namesLayout, fallback.namesLayout, claimed)
         end
-        profile.dungeonNamesLayout = NormalizeLayout(profile.dungeonNamesLayout, fallback.dungeonNamesLayout)
+        profile.dungeonNamesLayout = NormalizeLayout(profile.dungeonNamesLayout, fallback.dungeonNamesLayout, claimed)
     end
     return profile
 end
@@ -1518,7 +1994,7 @@ end
 local DESIGN = {
     ORDER = { "dungeon", "pvp", "city" },
     STORED = { enemy = { dungeon = true, pvp = true, city = true }, friendlyPlayer = { pvp = true, city = true },
-        friendlyNPC = { pvp = true, city = true } },
+        friendlyNPC = { pvp = true, city = true }, object = { dungeon = true, pvp = true, city = true } },
     KNOWN = { world = true, dungeon = true, pvp = true, city = true },
     LAYOUT_FIELDS = { "layout", "namesLayout" },
     -- A layout entry's placement is one unit: offsets only make sense with their parent and pin.
@@ -1527,13 +2003,20 @@ local DESIGN = {
         boxBorder = true, padding = true, texture = true, background = true, border = true, borderColour = true,
         pipFill = true, pipEmpty = true, pipWidth = true, pipHeight = true, pipSpacing = true,
         pipShape = true, pipAnchor = true, pipClassColour = true, pipGlow = true, pipFit = true, pipShowRow = true,
-        boxShape = true,
-        badgeSize = true, badgeSpacing = true, badgeOrientation = true, badgeInitial = true },
+        boxShape = true, boxHeight = true,
+        badgeSize = true, badgeSpacing = true, badgeOrientation = true, badgeInitial = true, iconUnable = true,
+        looseFor = true, looseIcon = true, loosePulse = true, backdropWrap = true, backdropParts = true,
+        backdropWidth = true, backdropHeight = true },
     -- Entries per layout and style parts a sparse design may hold.
     MAX_ENTRIES = 64,
     -- "-" lists keys cleared (nil) here; PartKey's leading letter keeps it apart from every name.
     CLEAR = "-",
+    -- Object types (plateProfiles.object.types.<type>, Core/Designs.lua): a sparse layer each over whichever design
+    -- objects draw with, picked per plate from the game's cursor icon (ActionIcon.TYPE_OF). In Studio's Type order.
+    TYPES = { "herb", "ore", "loot", "quest", "book", "service", "other" },
 }
+DESIGN.TYPE_SET = {}
+for _, key in ipairs(DESIGN.TYPES) do DESIGN.TYPE_SET[key] = true end
 
 -- The keys of map that keep(key) accepts, sorted, at most limit of them: a bound that cuts the
 -- same keys every time.
@@ -1550,6 +2033,7 @@ end
 -- A design's own value for a profile option, made valid; nil drops it (World's then applies).
 function DESIGN.OptionValue(key, value, fallback)
     if HIGHLIGHT.SET[key] then return HIGHLIGHT.Value(key, value) end
+    if key == "plateHidden" then return value == true or nil end
     local range = profileRanges[key] or optionalProfileRanges[key]
     if range then
         local number = tonumber(value)
@@ -1703,7 +2187,7 @@ end
 -- the dungeon override always was), a sparse one by NormalizeDesign. A known context this type may
 -- not store, or anything that is not a table, goes; a table under an unknown key (a newer
 -- version's context) is kept as it is. No designs: no contexts.
-local function NormalizeContexts(profile, plateType)
+local function NormalizeContexts(profile, plateType, claimed)
     local contexts = profile.contexts
     if type(contexts) ~= "table" then profile.contexts = nil return end
     local stored = DESIGN.STORED[plateType] or {}
@@ -1714,7 +2198,7 @@ local function NormalizeContexts(profile, plateType)
             elseif record.full == true then
                 if type(record.design) == "table" then
                     for field in pairs(record) do if field ~= "full" and field ~= "design" then record[field] = nil end end
-                    record.design = NormalizeProfile(record.design, profile)
+                    record.design = NormalizeProfile(record.design, profile, nil, nil, claimed)
                 else
                     contexts[key] = nil
                 end
@@ -1728,19 +2212,39 @@ local function NormalizeContexts(profile, plateType)
     if next(contexts) == nil then profile.contexts = nil end
 end
 
-local function NormalizeProfiles(profiles, legacy, fresh)
+local function NormalizeProfiles(profiles, legacy, fresh, claimed)
     profiles = type(profiles) == "table" and profiles or {}
     for _, key in ipairs(profileOrder) do
-        profiles[key] = NormalizeProfile(profiles[key], profileDefaults[key], legacy, fresh)
-        NormalizeContexts(profiles[key], key)
+        -- Objects never had the old top-level settings (legacy: the Enemies' sizes and layout), and a profile
+        -- without them starts with their whole default, its box included (as migration 32 gives them).
+        local object = key == "object"
+        profiles[key] = NormalizeProfile(profiles[key], profileDefaults[key], not object and legacy or nil,
+            fresh or (object and type(profiles[key]) ~= "table"), claimed)
+        NormalizeContexts(profiles[key], key, claimed)
     end
     -- The Enemy players layer (Designs.lua): a sparse design over the Enemies'; an empty one stays
     -- (made in Studio, it changes nothing yet).
     profiles.enemy.players = NormalizeDesign(profiles.enemy.players, "enemy")
+    -- Object types (Designs.TYPES): sparse layers over the Objects' designs; an empty one goes (no type has a
+    -- record until it changes something). A table under an unknown key (a newer version's type) is kept as it is.
+    local types = profiles.object.types
+    if type(types) == "table" then
+        for key, record in pairs(types) do
+            if DESIGN.TYPE_SET[key] then
+                local design = NormalizeDesign(record, "object")
+                types[key] = design and next(design) ~= nil and design or nil
+            elseif type(key) ~= "string" or type(record) ~= "table" then
+                types[key] = nil
+            end
+        end
+        if next(types) == nil then profiles.object.types = nil end
+    else
+        profiles.object.types = nil
+    end
     -- Saved data from before schema 29 still holds the dungeon override here until migration 28
     -- moves it into the Enemies' contexts; older migrations normalise it where it is.
     if type(profiles.enemyDungeon) == "table" then
-        profiles.enemyDungeon = NormalizeProfile(profiles.enemyDungeon, profiles.enemy)
+        profiles.enemyDungeon = NormalizeProfile(profiles.enemyDungeon, profiles.enemy, nil, nil, claimed)
     else
         profiles.enemyDungeon = nil
     end
@@ -1773,13 +2277,15 @@ local PLATE_LAYOUT_FIELDS = {
     enemyPlayer = { "layout" },
     friendlyPlayer = { "layout", "namesLayout", "dungeonNamesLayout" },
     friendlyNPC = { "layout", "namesLayout", "dungeonNamesLayout" },
+    object = { "layout" },
 }
 -- Enemy players draw with the Enemies' designs plus their own layer (Designs.EachDesign visits it).
 local ENEMY_PLATES = { enemy = true, enemyPlayer = true }
 local THREAT_SOURCES = { threatPercent = true, leadPercent = true, rawThreat = true, differential = true }
 -- sources: custom parts showing one of these values were kept off by the switch too.
 local PART_SWITCHES = {
-    { key = "quest", parts = { "quest", "questLoot" }, plates = { enemy = true, enemyPlayer = true, friendlyNPC = true } },
+    { key = "quest", parts = { "quest", "questLoot" },
+        plates = { enemy = true, enemyPlayer = true, friendlyNPC = true, object = true } },
     { key = "showTagged", parts = { "tagged" }, plates = ENEMY_PLATES },
     { key = "threat", parts = { "threat" }, plates = ENEMY_PLATES, sources = THREAT_SOURCES },
     { key = "showClassification", parts = { "classification" }, plates = ENEMY_PLATES },
@@ -1805,18 +2311,22 @@ local function EachPlateLayout(settings, plates, visit)
 end
 
 -- The layouts a switch's plate types draw with now, as Lifecycle's ApplyLayout picks them: every
--- enemy design's; a friendly design's full or names-only layout by the friendly setting (none
--- while friendly plates are off), and World's dungeon layout while the dungeon overlay is on.
+-- enemy design's; a friendly design's full or names-only layout by its type's Show as (FRIENDLY.Mode;
+-- none while that type shows Blizzard's plates), and World's dungeon layout while the dungeon overlay is on.
 -- visit(layout, profile, field, plateType, context, record) (record: a context design's, as EachDesign).
 local function EachLiveLayout(settings, switch, visit)
     PS.Designs.EachDesign(settings, switch.plates, function(profile, plateType, context, record)
         local fields
-        if ENEMY_PLATES[plateType] then
+        -- Objects have one layout, drawn while PlateSmith draws them (objectPlates).
+        if plateType == "object" then
+            fields = { settings.objectPlates ~= "blizzard" and "layout" or nil }
+        elseif ENEMY_PLATES[plateType] then
             fields = { "layout" }
         else
             fields = {}
-            if settings.friendly == "full" then fields[1] = "layout"
-            elseif settings.friendly == "names" and not switch.fullOnly then fields[1] = "namesLayout" end
+            local mode = FRIENDLY.Mode(settings, plateType)
+            if mode == "full" then fields[1] = "layout"
+            elseif mode == "names" and not switch.fullOnly then fields[1] = "namesLayout" end
             if settings.experimentalDungeonFriendlyText == true and not switch.fullOnly and context == "world" then
                 fields[#fields + 1] = "dungeonNamesLayout"
             end
@@ -1998,6 +2508,12 @@ local function ThreatNeeded(settings)
         end)
         if bar then return true end
     end
+    -- The Loose mark on an enemy layout, or the extras on Blizzard's plates that show threat (Nameplates/Extras.lua).
+    local loose = false
+    EachPlateLayout(settings, ENEMY_PLATES, function(layout)
+        loose = loose or (type(layout.looseMark) == "table" and not TurnedOff(layout.looseMark))
+    end)
+    if loose or PS.ProfileSchema.EXTRAS.ReadsThreat(settings) then return true end
     return PlatesRead(settings, ENEMY_PLATES, { "threat", "tank" }, THREAT_SOURCES)
 end
 local function QuestNeeded(settings)
@@ -2245,6 +2761,69 @@ local settingsMigrations = {
         MoveDungeonOverride(settings)
         settings.schemaVersion = 29
     end,
+    [29] = function(settings)
+        -- Target highlight Off now draws no gold edge either; a saved profile keeps the edge it had.
+        if settings.targetOffKeepsEdge == nil then settings.targetOffKeepsEdge = true end
+        settings.schemaVersion = 30
+    end,
+    [30] = function(settings)
+        -- Grey when tagged by others is new and on for new profiles; a saved profile keeps its TAGGED word and its
+        -- health bar's colours (off). A rule of its own (the old Grey when tagged preset) stays as it is.
+        if settings.greyWhenTagged == nil then settings.greyWhenTagged = false end
+        settings.schemaVersion = 31
+    end,
+    [31] = function(settings)
+        -- Stacking & distance lost its Manage switch: every value a profile keeps is now applied. A profile
+        -- with the switch off applied nothing, so it keeps nothing that would start changing the game: its
+        -- values go (the game's own stand, as they did), the preset is Custom, and the two options that
+        -- changed Blizzard's plates (frame size, combat stacking) are off. A profile with it on keeps all.
+        local stacking = settings.stacking
+        if type(stacking) == "table" then
+            if stacking.managed ~= true then
+                stacking.values, stacking.preset = {}, "custom"
+                stacking.matchFrameSize, stacking.combatStacking = false, false
+            end
+            stacking.managed = nil
+        end
+        settings.schemaVersion = 32
+    end,
+    [32] = function(settings)
+        -- Objects (books, chests) became a plate type of their own. They had no look to keep (they drew with a
+        -- fixed names-only Friendly NPCs plate), so a saved profile gets the new default, its tooltip-like box
+        -- included; one an earlier migration of this pass made here (NormalizeProfiles) is replaced the same way.
+        settings.plateProfiles = type(settings.plateProfiles) == "table" and settings.plateProfiles or {}
+        settings.plateProfiles.object = Table.DeepCopy(profileDefaults.object)
+        settings.schemaVersion = 33
+    end,
+    [33] = function(settings)
+        -- Extras on Blizzard's plates are new: a saved profile keeps what Blizzard, with PlateSmith extras drew before,
+        -- quest markers and threat text, with no threat edge, target glow or Loose mark. New profiles have them all.
+        if settings.extrasThreat == nil then settings.extrasThreat = "text" end
+        if settings.extrasTarget == nil then settings.extrasTarget = false end
+        if settings.extrasLoose == nil then settings.extrasLoose = false end
+        settings.schemaVersion = 34
+    end,
+    [34] = function(settings)
+        -- Objects' tooltip-like box became the Backdrop part (1.3.0 test builds): the name's box moves to it, so the
+        -- box now wraps the Status text and the Action icon too, in the same colours, edge, shape and padding. A
+        -- name without its box gets the Backdrop turned off. Context designs and object types keep what they set.
+        local object = type(settings.plateProfiles) == "table" and settings.plateProfiles.object
+        local layout = type(object) == "table" and object.layout
+        if type(layout) == "table" and layout.backdrop == nil then
+            object.styles = type(object.styles) == "table" and object.styles or {}
+            local name = type(object.styles.name) == "table" and object.styles.name or nil
+            local boxed = name ~= nil and name.box == true
+            layout.backdrop = Table.DeepCopy(profileDefaults.object.layout.backdrop)
+            layout.backdrop.visible = boxed
+            if boxed then
+                object.styles.backdrop = { boxColour = name.boxColour, boxBorder = name.boxBorder, padding = name.padding,
+                    boxShape = name.boxShape }
+                name.box, name.boxColour, name.boxBorder, name.padding, name.boxShape, name.boxHeight = nil, nil, nil, nil, nil, nil
+                if next(name) == nil then object.styles.name = nil end
+            end
+        end
+        settings.schemaVersion = 35
+    end,
 }
 
 local function MigrateSettings(settings)
@@ -2275,12 +2854,20 @@ local function SettingValue(key, value)
     return nil
 end
 
--- Blizzard's nameplate stacking, distance, scale and fade CVars PlateSmith can manage
+-- Blizzard's nameplate stacking, distance, scale and fade CVars PlateSmith can set
 -- (Nameplates/Stacking.lua), in the order the UI lists them: { key, group, kind, min, max, step,
--- default }. A choice lists its values; a number is clamped to [min, max]. default is used only
--- when the client reports none. The client reports no bounds, so these are PlateSmith's.
+-- default }. A choice or toggle lists its values; a number is clamped to [min, max]. default is used
+-- only when the client reports none. The client reports no bounds, so these are PlateSmith's.
+-- bitfield: one bit of that bitfield CVar, the bit `enum`'s `bit` (key "<cvar>.<bit>"; the 12.x clients'
+-- Stack Nameplates choice, read and written with C_CVar's Get/SetCVarBitfield).
+-- ignored: the game no longer reads it (nameplateMaxDistance: plates show to a fixed range since
+-- about 10.2.6), so PlateSmith shows it but never writes it; a value a profile kept stays unused.
 local STACKING_CVARS = {
     { "nameplateMotion", "stacking", "choice", choices = { 0, 1 }, default = 0 },
+    { "nameplateStackingTypes.Enemy", "stacking", "toggle", choices = { 0, 1 }, default = 1,
+        bitfield = "nameplateStackingTypes", enum = "NamePlateStackType", bit = "Enemy" },
+    { "nameplateStackingTypes.Friendly", "stacking", "toggle", choices = { 0, 1 }, default = 0,
+        bitfield = "nameplateStackingTypes", enum = "NamePlateStackType", bit = "Friendly" },
     { "nameplateMotionSpeed", "stacking", "number", 0, 0.5, 0.005, default = 0.025 },
     { "nameplateOverlapV", "stacking", "number", 0.2, 2.5, 0.05, default = 1.1 },
     { "nameplateOverlapH", "stacking", "number", 0.2, 2.5, 0.05, default = 0.8 },
@@ -2289,8 +2876,9 @@ local STACKING_CVARS = {
     { "nameplateLargeTopInset", "edges", "number", -1, 0.5, 0.01, default = 0.1 },
     { "nameplateLargeBottomInset", "edges", "number", -1, 0.5, 0.01, default = 0.15 },
     { "nameplateTargetRadialPosition", "edges", "choice", choices = { 0, 1, 2 }, default = 0 },
+    { "nameplateShowOffscreen", "edges", "toggle", choices = { 0, 1 }, default = 0 },
     { "nameplateTargetBehindMaxDistance", "distance", "number", 0, 100, 1, default = 15 },
-    { "nameplateMaxDistance", "distance", "number", 5, 100, 1, default = 41 },
+    { "nameplateMaxDistance", "distance", "number", 5, 100, 1, default = 41, ignored = true },
     { "nameplateMinScale", "scale", "number", 0.3, 1.5, 0.05, default = 0.8 },
     { "nameplateMaxScale", "scale", "number", 0.3, 2, 0.05, default = 1 },
     { "nameplateMinScaleDistance", "scale", "number", 0, 100, 1, default = 10 },
@@ -2308,24 +2896,25 @@ local STACKING_CVARS = {
 local stackingCVar = {}
 for _, entry in ipairs(STACKING_CVARS) do stackingCVar[entry[1]] = entry end
 
--- Fixed spacing presets (docs/STACKING.md): stacking on, then how fast plates move apart, how far
--- apart they stack (overlap: 1 = one plate's size) and how close to the screen edges they may go.
+-- Fixed spacing presets (docs/STACKING.md): stacking on (nameplateMotion, or enemy plates on a client
+-- with Stack Nameplates' bits), then how fast plates move apart, how far apart they stack (overlap:
+-- 1 = one plate's size) and how close to the screen edges they may go.
 local STACKING_PRESETS = {
-    tight = { nameplateMotion = 1, nameplateMotionSpeed = 0.1, nameplateOverlapV = 0.7, nameplateOverlapH = 0.6,
-        nameplateOtherTopInset = 0.05, nameplateOtherBottomInset = 0.05, nameplateLargeTopInset = 0.05,
-        nameplateLargeBottomInset = 0.05 },
-    normal = { nameplateMotion = 1, nameplateMotionSpeed = 0.05, nameplateOverlapV = 1.1, nameplateOverlapH = 0.8,
-        nameplateOtherTopInset = 0.08, nameplateOtherBottomInset = 0.1, nameplateLargeTopInset = 0.1,
-        nameplateLargeBottomInset = 0.15 },
-    loose = { nameplateMotion = 1, nameplateMotionSpeed = 0.025, nameplateOverlapV = 1.6, nameplateOverlapH = 1.1,
-        nameplateOtherTopInset = 0.1, nameplateOtherBottomInset = 0.15, nameplateLargeTopInset = 0.12,
-        nameplateLargeBottomInset = 0.2 },
+    tight = { nameplateMotion = 1, ["nameplateStackingTypes.Enemy"] = 1, nameplateMotionSpeed = 0.1,
+        nameplateOverlapV = 0.7, nameplateOverlapH = 0.6, nameplateOtherTopInset = 0.05,
+        nameplateOtherBottomInset = 0.05, nameplateLargeTopInset = 0.05, nameplateLargeBottomInset = 0.05 },
+    normal = { nameplateMotion = 1, ["nameplateStackingTypes.Enemy"] = 1, nameplateMotionSpeed = 0.05,
+        nameplateOverlapV = 1.1, nameplateOverlapH = 0.8, nameplateOtherTopInset = 0.08,
+        nameplateOtherBottomInset = 0.1, nameplateLargeTopInset = 0.1, nameplateLargeBottomInset = 0.15 },
+    loose = { nameplateMotion = 1, ["nameplateStackingTypes.Enemy"] = 1, nameplateMotionSpeed = 0.025,
+        nameplateOverlapV = 1.6, nameplateOverlapH = 1.1, nameplateOtherTopInset = 0.1,
+        nameplateOtherBottomInset = 0.15, nameplateLargeTopInset = 0.12, nameplateLargeBottomInset = 0.2 },
 }
 local stackingPresetNames = { custom = true, tight = true, normal = true, loose = true }
--- managed = false: PlateSmith never writes these CVars (the default, and every existing profile's).
--- values holds only what the player set; anything else keeps the client's own value.
-local stackingDefaults = { managed = false, preset = "custom", targetOnTop = true, focusOnTop = false,
-    matchFrameSize = true, combatStacking = false }
+-- values holds only what the player set, and PlateSmith writes each of them; anything else keeps the
+-- client's own value. The two options that change Blizzard's plates start off.
+local stackingDefaults = { preset = "custom", targetOnTop = true, focusOnTop = false, matchFrameSize = false,
+    combatStacking = false }
 local STACKING_OPTIONS = { "targetOnTop", "focusOnTop", "matchFrameSize", "combatStacking" }
 
 -- A stacking CVar's value made valid, or nil (unknown CVar, or not a usable value).
@@ -2342,7 +2931,7 @@ end
 
 local function NormalizeStacking(stacking)
     stacking = type(stacking) == "table" and stacking or {}
-    local result = { managed = stacking.managed == true, values = {} }
+    local result = { values = {} }
     result.preset = stackingPresetNames[stacking.preset] and stacking.preset or stackingDefaults.preset
     for _, key in ipairs(STACKING_OPTIONS) do
         if type(stacking[key]) == "boolean" then result[key] = stacking[key] else result[key] = stackingDefaults[key] end
@@ -2364,10 +2953,26 @@ local function NormalizeSettings(settings)
     if schemaVersion >= 29 then MoveDungeonOverride(settings) end
     -- The old switches are never read; one left over (a table stamped by another build) goes.
     for _, switch in ipairs(PART_SWITCHES) do settings[switch.key] = nil end
+    -- Clicking's first test builds had one friendly row (clickFriendly, the client's whole Friendly category): its
+    -- Click through is now Friendly NPCs', which drives that same category.
+    if settings.clickFriendly ~= nil then
+        if settings.clickFriendly == "through" and settings.clickFriendlyNPC == nil then settings.clickFriendlyNPC = "through" end
+        settings.clickFriendly = nil
+    end
     CopyDefaults(settings, defaults)
     for key in pairs(defaults) do
         local value = SettingValue(key, settings[key])
         if value ~= nil then settings[key] = value end
+    end
+    FRIENDLY.Normalize(settings)
+    -- The look a profile was made from (Profiles' CreateFromPreset: a look's ID and ProfilePresets.LOOK_VERSION), or
+    -- none. Not a setting: no default, never in a Blueprint (which carries Schema's lists only) nor taken from one.
+    local look = settings.look
+    if type(look) ~= "string" or #look > 32 or not look:match("^%w+$") then settings.look = nil end
+    local lookVersion = settings.lookVersion
+    if settings.look == nil or type(lookVersion) ~= "number" or lookVersion < 1 or lookVersion > 9999
+        or lookVersion ~= math.floor(lookVersion) then
+        settings.lookVersion = nil
     end
     settings.relationshipColours = type(settings.relationshipColours) == "table" and settings.relationshipColours or {}
     for key, fallback in pairs(defaultRelationshipColours) do
@@ -2375,7 +2980,9 @@ local function NormalizeSettings(settings)
     end
     settings.threatColours = THREAT_COLOURS.Normalize(settings.threatColours)
     settings.threatPartColours = THREAT_COLOURS.NormalizeParts(settings.threatPartColours, settings.threatColours)
-    settings.plateProfiles = NormalizeProfiles(settings.plateProfiles, settings, fresh)
+    -- Each layout entry and custom part of the profiles that is already valid is kept, once (see
+    -- NormalizeLayoutEntry): normalising a saved profile again (every load) makes little garbage.
+    settings.plateProfiles = NormalizeProfiles(settings.plateProfiles, settings, fresh, {})
     -- Stacking drives account-wide CVars, so Blueprints leave it out (Core/Blueprint.lua lists
     -- what they carry).
     settings.stacking = NormalizeStacking(settings.stacking)
@@ -2410,7 +3017,14 @@ local stateDefaults = {
     platePeak = 0,
     -- firstRunDone has no default: Profiles.Load sets it false on a fresh install (Studio's first-run
     -- picker is to show) and the picker true; an existing install leaves it nil and never sees it.
+    -- meterSkin has no default: true skins Blizzard's damage meter in the threat windows' theme (Threat/MeterSkin.lua).
+    -- objectTooltips has no default (Nameplates/ObjectStatus.lua): the game's tooltip lines under an object's name,
+    -- by its ID from the game, read when you hover one in the world: { order = { id, ... } (oldest first), byID =
+    -- { [id] = { line, ... } } }, at most objectTooltipLimits.entries of them. Never in a profile or a Blueprint.
 }
+-- The objectTooltips cache's bounds: entries, lines per entry, bytes per line. (A field, not a main chunk local:
+-- this chunk is at Lua 5.1's 200.)
+stateDefaults.objectTooltipLimits = { entries = 300, lines = 4, bytes = 120 }
 local studioScaleRange = { 0.6, 1.3 }
 
 local function NormalizeState(state)
@@ -2422,6 +3036,10 @@ local function NormalizeState(state)
     if type(state.threatWindows) ~= "table" then state.threatWindows = {} end
     if state.cvarRestore ~= nil and type(state.cvarRestore) ~= "table" then state.cvarRestore = nil end
     if type(state.firstRunDone) ~= "boolean" then state.firstRunDone = nil end
+    -- Whether 1.3.0's "threat settings moved" line was said (Profiles.Load): true or nothing.
+    if state.threatMovedSaid ~= true then state.threatMovedSaid = nil end
+    -- Skin Blizzard's damage meter (Threat/MeterSkin.lua): true or nothing, off by default.
+    if state.meterSkin ~= true then state.meterSkin = nil end
     -- CVars whose original was lost (NamePolicy): restore key -> { CVar name -> true }.
     local lost, lostCount = {}, 0
     for key, names in pairs(type(state.cvarOriginalsMissing) == "table" and state.cvarOriginalsMissing or {}) do
@@ -2436,6 +3054,20 @@ local function NormalizeState(state)
         end
     end
     state.cvarOriginalsMissing = next(lost) and lost or nil
+    -- What PlateSmith left in each CVar it captured (NamePolicy): restore key -> { CVar name -> text }.
+    local written, writtenCount = {}, 0
+    for key, names in pairs(type(state.cvarWritten) == "table" and state.cvarWritten or {}) do
+        if type(key) == "string" and #key <= 64 and type(names) == "table" then
+            local kept = {}
+            for name, value in pairs(names) do
+                if type(name) == "string" and #name <= 64 and type(value) == "string" and #value <= 64 and writtenCount < 128 then
+                    kept[name], writtenCount = value, writtenCount + 1
+                end
+            end
+            if next(kept) then written[key] = kept end
+        end
+    end
+    state.cvarWritten = next(written) and written or nil
     -- Studio no longer has themes: an older saved choice is dropped.
     state.editorTheme = nil
     state.studioScale = Bounded(studioScaleRange, state.studioScale, stateDefaults.studioScale)
@@ -2467,6 +3099,30 @@ local function NormalizeState(state)
         end
     end
     state.conflictNotice = { dismissed = dismissed }
+    -- Kept in place when valid (ObjectStatus holds the table); each ID once, lines readable text only.
+    local tooltips, limits = state.objectTooltips, stateDefaults.objectTooltipLimits
+    if type(tooltips) == "table" and type(tooltips.order) == "table" and type(tooltips.byID) == "table" then
+        local order, byID, seen = {}, {}, {}
+        for _, id in ipairs(tooltips.order) do
+            local lines = tooltips.byID[id]
+            if type(id) == "number" and id > 0 and id == math.floor(id) and not seen[id] and type(lines) == "table" then
+                local kept = {}
+                for _, line in ipairs(lines) do
+                    if type(line) == "string" and line ~= "" and #line <= limits.bytes and #kept < limits.lines then
+                        kept[#kept + 1] = line
+                    end
+                end
+                seen[id], order[#order + 1], byID[id] = true, id, kept
+            end
+        end
+        while #order > limits.entries do
+            byID[table.remove(order, 1)] = nil
+        end
+        tooltips.order, tooltips.byID = order, byID
+        for key in pairs(tooltips) do if key ~= "order" and key ~= "byID" then tooltips[key] = nil end end
+    else
+        state.objectTooltips = nil
+    end
     return state
 end
 
@@ -2505,6 +3161,12 @@ local function NormalizeCharacterSettings(settings)
     -- alwaysTank (saved by a tick box before tankRole) = true reads as always.
     if settings.tankRole == nil and settings.alwaysTank == true then settings.tankRole = "always" end
     settings.alwaysTank = nil
+    -- NamePolicy's names-only mark (no default): { cvar, wrote, original }, each short text, else dropped.
+    local mark = settings.namesOnlyMark
+    if mark ~= nil and (type(mark) ~= "table" or type(mark.cvar) ~= "string" or type(mark.wrote) ~= "string"
+        or type(mark.original) ~= "string" or #mark.cvar > 64 or #mark.wrote > 64 or #mark.original > 64) then
+        settings.namesOnlyMark = nil
+    end
     for key, value in pairs(characterDefaults) do
         if type(settings[key]) ~= type(value) then settings[key] = value end
     end
@@ -2514,10 +3176,12 @@ end
 
 PS.ProfileSchema = {
     defaults = defaults,
+    MARK = MARK,
     profileRanges = profileRanges,
     optionalProfileRanges = optionalProfileRanges,
     castOptions = castOptions,
-    CAST_COLOUR = CAST_COLOUR,
+    -- The cast bar's own colour.
+    CAST_COLOUR = { r = 0.95, g = 0.68, b = 0.16 },
     CAST_COLOUR_KEYS = CAST_COLOUR_KEYS,
     NormalizeCastColours = NormalizeCastColours,
     layoutRanges = layoutRanges,
@@ -2599,9 +3263,15 @@ PS.ProfileSchema = {
     STYLE_BADGE_ORIENTATIONS = STYLE_BADGE_ORIENTATIONS,
     STYLE_PIP_SHAPES = STYLE_PIP_SHAPES,
     STYLE_BOX_SHAPES = STYLE_BOX_SHAPES,
+    -- The box's height (style boxHeight): text (nil, the text's line and Padding above and below, every profile
+    -- before it) or parent: at least as tall as the part the text is pinned to, drawn border included (Blizzard's
+    -- level box beside its bar), centred on the text; Padding then sets only its sides (StyleBox.Place).
+    STYLE_BOX_HEIGHTS = { text = true, parent = true },
     STYLE_PIP_ANCHORS = STYLE_PIP_ANCHORS,
     STYLE_PIP_SHOW_ROWS = STYLE_PIP_SHOW_ROWS,
     STYLE_DEFAULTS = STYLE_DEFAULTS,
+    BACKDROP = PartChoices.backdrop,
+    PartChoice = PartChoices.New,
     RULE_SETS = RULE_SETS,
     MAX_RULES_PER_PART = MAX_RULES_PER_PART,
     MAX_RULES = MAX_RULES,
@@ -2620,6 +3290,10 @@ PS.ProfileSchema = {
     colourSettings = colourSettings,
     glowSettings = glowSettings,
     VISIBILITY = VISIBILITY,
+    CLICK = VISIBILITY.CLICK,
+    INTERACT = VISIBILITY.INTERACT,
+    HOVER = VISIBILITY.HOVER,
+    FRIENDLY = FRIENDLY,
     ENEMY_ALIASES = ENEMY_ALIASES,
     SettingValue = SettingValue,
     NormalizeLayout = NormalizeLayout,
@@ -2666,5 +3340,79 @@ PS.ProfileSchema = {
     RangeNeeded = RangeNeeded,
     ComboNeeded = ComboNeeded,
     TargetedByNeeded = TargetedByNeeded,
+    PlatesRead = PlatesRead,
     ENEMY_PLATES = ENEMY_PLATES,
 }
+
+-- The plate types with an Action icon (Nameplates/ActionIcon.lua), and whether its pass runs: while one of their
+-- layouts shows the part, or a custom part or rule there reads what it reads (object.kind, object.unable,
+-- interact.inrange). (Fields, not main chunk locals: this chunk is at Lua 5.1's 200.)
+PS.ProfileSchema.ACTION_PLATES = { object = true, friendlyNPC = true }
+function PS.ProfileSchema.ActionIconNeeded(settings)
+    local Schema = PS.ProfileSchema
+    local shown = false
+    Schema.EachPlateLayout(settings, Schema.ACTION_PLATES, function(layout, _, _, plateType)
+        if plateType == "object" and settings.objectPlates == "blizzard" then return end
+        shown = shown or (type(layout.actionIcon) == "table" and not Schema.TurnedOff(layout.actionIcon))
+    end)
+    return shown or Schema.PlatesRead(settings, Schema.ACTION_PLATES, { "object.kind", "object.unable", "interact." })
+        or Schema.ObjectKindsNeeded(settings)
+end
+
+-- Extras on Blizzard's plates (Nameplates/Extras.lua): what PlateSmith adds while Who draws the plates is Blizzard, with
+-- PlateSmith extras (mode overlay). extrasQuest: quest markers (and their progress); extrasThreat: text, edge (a thin
+-- edge round Blizzard's health bar in the threat colours), both or off; extrasTarget: the soft glow behind your
+-- target; extrasLoose: the Loose mark. ReadsThreat: whether they need the threat service's records.
+PS.ProfileSchema.EXTRAS = { THREAT = { text = true, edge = true, both = true, off = true },
+    THREAT_CHOICES = { "both", "text", "edge", "off" } }
+function PS.ProfileSchema.EXTRAS.ReadsThreat(settings)
+    if type(settings) ~= "table" or settings.mode ~= "overlay" then return false end
+    return (settings.extrasThreat ~= nil and settings.extrasThreat ~= "off") or settings.extrasLoose == true
+end
+-- Whether the threat edge (edge or both) or the threat text (text or both) is on.
+function PS.ProfileSchema.EXTRAS.Edge(settings)
+    return type(settings) == "table" and (settings.extrasThreat == "edge" or settings.extrasThreat == "both")
+end
+function PS.ProfileSchema.EXTRAS.Text(settings)
+    return type(settings) == "table" and (settings.extrasThreat == "text" or settings.extrasThreat == "both")
+end
+
+-- Whether every Objects plate's kind is read (its Action icon pass), whatever its layout shows: while objects are
+-- PlateSmith's and an object type has a layer (Designs.TYPES), Fade objects you can't use is on, or the Status text
+-- is wanted (StatusNeeded).
+function PS.ProfileSchema.ObjectKindsNeeded(settings)
+    if type(settings) ~= "table" or settings.objectPlates == "blizzard" then return false end
+    local profile = type(settings.plateProfiles) == "table" and settings.plateProfiles.object
+    if type(profile) == "table" and type(profile.types) == "table" and next(profile.types) ~= nil then return true end
+    return settings.objectFadeUnable == true or PS.ProfileSchema.StatusNeeded(settings)
+end
+
+-- Whether Objects plates get hover frames (Nameplates/ObjectHover.lua): while PlateSmith draws objects and the hover
+-- cursor or tooltip is on.
+function PS.ProfileSchema.HoverNeeded(settings)
+    if type(settings) ~= "table" or settings.objectPlates == "blizzard" then return false end
+    return settings.objectHoverCursor == true or settings.objectHoverTooltip == true
+end
+
+-- Whether the Status text's reads run (Nameplates/ObjectStatus.lua: the tooltip capture, your skills and Cultivation):
+-- while an Objects layout (a type's too) shows the part, a custom part or rule there reads object.skill,
+-- object.cangather or object.cancultivate, or Fade objects you can't use is on (which asks the last two).
+function PS.ProfileSchema.StatusNeeded(settings)
+    local Schema = PS.ProfileSchema
+    if type(settings) ~= "table" or settings.objectPlates == "blizzard" then return false end
+    if settings.objectFadeUnable == true then return true end
+    local shown, objects = false, { object = true }
+    Schema.EachPlateLayout(settings, objects, function(layout)
+        shown = shown or (type(layout.statusText) == "table" and not Schema.TurnedOff(layout.statusText))
+    end)
+    return shown or Schema.PlatesRead(settings, objects, { "object.skill", "object.cangather", "object.cancultivate" })
+end
+
+-- An aura row's countdown Font size in points, before the profile's text size: its own (timeFontSize), or Auto,
+-- the row's share of the icon (timeSize, 45% unless an early 1.1.1 build set it), at least 8. (A field, not a main
+-- chunk local: this chunk is at Lua 5.1's 200.)
+function PS.ProfileSchema.AuraCountdownSize(aura)
+    local points = tonumber(aura.timeFontSize)
+    if points then return points end
+    return math.max(8, math.floor((tonumber(aura.size) or 18) * ((tonumber(aura.timeSize) or 45) / 100)))
+end

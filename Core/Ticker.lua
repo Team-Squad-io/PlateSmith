@@ -40,12 +40,20 @@ function Ticker.SetInterval(id, interval)
     if entry then entry.interval = tonumber(interval) or 0 end
 end
 
+-- An enabled entry runs on the next frame (an event says its work is due before its interval is up).
+function Ticker.Due(id)
+    local entry = byId[id]
+    if entry and entry.enabled then entry.waited = entry.interval end
+end
+
 function Ticker.IsEnabled(id)
     local entry = byId[id]
     return entry ~= nil and entry.enabled
 end
 
 local function Run(entry, elapsed, now)
+    local Performance = PS.Performance
+    local memory = Performance and Performance.Memory()
     local started = Clock()
     local ok, failure = pcall(entry.callback, elapsed, now)
     local finished = Clock()
@@ -54,7 +62,7 @@ local function Run(entry, elapsed, now)
         entry.calls = entry.calls + 1
         entry.totalMs = entry.totalMs + cost
         if cost > entry.peakMs then entry.peakMs = cost end
-        if PS.Performance then PS.Performance.RecordTick(entry.id, cost) end
+        if Performance then Performance.RecordTick(entry.id, cost, Performance.Allocated(memory)) end
     end
     if not ok and PS.Chat and (not entry.reportedAt or now - entry.reportedAt >= ERROR_REPORT_INTERVAL) then
         entry.reportedAt = now
@@ -78,7 +86,10 @@ function Ticker.Step(elapsed)
             end
         end
     end
-    if PS.Performance and PS.Performance.RecordFrame and Clock() then PS.Performance.RecordFrame(spent) end
+    -- A profiler clock is there to be asked, not asked: a frame with nothing due makes no call it need not.
+    if PS.Performance and PS.Performance.RecordFrame and type(debugprofilestop) == "function" then
+        PS.Performance.RecordFrame(spent)
+    end
 end
 
 -- Each entry's peak starts again from its next run (the diagnostics' Reset peaks).

@@ -328,7 +328,7 @@ end
 
 function Options:QuickLayoutAnchor()
     local variant = self:CurrentEditorVariant()
-    return (variant == "names" or variant == "dungeon") and "name" or "health"
+    return (variant == "names" or variant == "dungeon" or self:IsEditorObject()) and "name" or "health"
 end
 
 function Options:QuickLayoutUsable()

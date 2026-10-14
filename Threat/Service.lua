@@ -75,6 +75,7 @@ local ThreatService = {
     allTargetersDirty = false,
     playerRole = "NONE",
     playerRoleSource = "none",
+    playerRoleReason = "none",
     -- What each tank-evidence signal said at the last role resolve, for /ps diagnose.
     roleReads = { formID = "not read", formIndex = "not read", power = "not read", aura = "not read", tankAura = "not read" },
     -- Bumped whenever the snapshot is rebuilt or the group threat is re-read, so a window
@@ -83,6 +84,12 @@ local ThreatService = {
     groupThreatRevision = 0,
     groupThreatCount = 0,
     groupThreatWanted = false,
+    -- Rescue windows' group situation (ReadMemberSituation): read only while one is shown and grouped.
+    rescueWanted = false,
+    rescueRevision = 0,
+    situationPending = false,
+    situationCursor = 0,
+    situationReads = 0,
     threatPass = 0,
     groupScans = 0,
     tickInterval = REFRESH_INTERVAL,
@@ -106,7 +113,7 @@ local SHOWN_FIELDS = {
     "unit", "guid", "enemyName", "serial", "root", "threatMobSource", "holdState", "engaged", "loose",
     "targetName", "activeAttackerCount", "attackerState", "targeterCount", "targeterState", "targeterRevision",
     "percent", "lead", "leadKind", "leadKept", "leadPercent", "rawThreat",
-    "selfHolds", "tankHolds", "tanking", "status", "hasOpaqueName", "hasOpaqueTargetName",
+    "selfHolds", "tankHolds", "targetIsPlayer", "tanking", "status", "hasOpaqueName", "hasOpaqueTargetName",
     "hasOpaqueTanking", "holdFlagCount", "holdFallback",
 }
 
@@ -315,6 +322,11 @@ local FORM_SPELLS = {
     -- Cat, Travel, Aquatic, Moonkin, Tree of Life, Flight and Swift Flight Form
     [768] = "none", [783] = "none", [1066] = "none", [24858] = "none", [33891] = "none", [33943] = "none", [40120] = "none",
 }
+-- Which druid form a "none" is, for the role's reason ("DPS (Cat Form)"), by spell and by form ID.
+local FORM_SPELL_WORDS = { [768] = "cat", [783] = "travel", [1066] = "travel", [24858] = "moonkin", [33891] = "tree",
+    [33943] = "travel", [40120] = "travel" }
+local FORM_ID_WORDS = { [1] = "cat", [2] = "tree", [3] = "travel", [4] = "travel", [27] = "travel", [29] = "travel",
+    [31] = "moonkin" }
 -- Who can tank by form ("form") or by aura ("aura": Righteous Fury, the death knight's tanking presence).
 local TANK_CLASSES = { DRUID = "form", WARRIOR = "form", PALADIN = "aura", DEATHKNIGHT = "aura" }
 local TANK_AURAS = { 25780, 48263 }
@@ -329,21 +341,25 @@ local function PlayerClass()
     return ok and Secret.String(class) or nil
 end
 
--- Each Form* read returns the form ("tank", "bear", "none") or nil, and what the client said
--- ("readable", "protected", "unavailable", "error", "api-missing") for /ps diagnose.
+-- Each Form* read returns the form ("tank", "bear", "none") or nil, what the client said
+-- ("readable", "protected", "unavailable", "error", "api-missing") for /ps diagnose, and for a
+-- "none" which druid form it is when known (FORM_ID_WORDS, "caster" for no form).
 local function FormFromID()
     if type(GetShapeshiftFormID) ~= "function" then return nil, "api-missing" end
     local ok, formID = pcall(GetShapeshiftFormID)
     if not ok then return nil, "error" end
     if not IsReadable(formID) then return nil, "protected" end
-    if formID ~= nil and TANK_FORMS[formID] then return "tank", "readable" end
-    if formID ~= nil and BEAR_FORMS[formID] then return "bear", "readable" end
-    return "none", "readable"
+    if formID == nil then return "none", "readable", "caster" end
+    if type(formID) ~= "number" then return "none", "readable" end
+    if TANK_FORMS[formID] then return "tank", "readable" end
+    if BEAR_FORMS[formID] then return "bear", "readable" end
+    return "none", "readable", FORM_ID_WORDS[formID]
 end
 
 -- A form bar slot (GetShapeshiftFormInfo: icon, active, castable, spellID; older clients icon,
 -- name, active, castable): whether it is active (nil when unknown), its form (a spell not named
--- here, such as a paladin aura, is "none"; nil when the spell is withheld) and the state word.
+-- here, such as a paladin aura, is "none"; nil when the spell is withheld), the state word and the
+-- druid form's word.
 local function FormSlot(index)
     local ok, _, second, third, fourth = pcall(GetShapeshiftFormInfo, index)
     if not ok then return nil, nil, "error" end
@@ -352,7 +368,7 @@ local function FormSlot(index)
     if not IsReadable(active) or type(active) ~= "boolean" then active = nil end
     if not IsReadable(spellID) then return active, nil, "protected" end
     if type(spellID) ~= "number" then return active, nil, "unavailable" end
-    return active, FORM_SPELLS[spellID] or "none", "readable"
+    return active, FORM_SPELLS[spellID] or "none", "readable", FORM_SPELL_WORDS[spellID]
 end
 
 local MAX_FORM_SLOTS = 10
@@ -363,9 +379,9 @@ local function FormFromIndex()
     end
     local ok, index = pcall(GetShapeshiftForm)
     if ok and IsReadable(index) and type(index) == "number" then
-        if index == 0 then return "none", "readable" end
-        local _, form, state = FormSlot(index)
-        return form, state
+        if index == 0 then return "none", "readable", "caster" end
+        local _, form, state, word = FormSlot(index)
+        return form, state, word
     end
     local slots
     if type(GetNumShapeshiftForms) == "function" then
@@ -375,16 +391,29 @@ local function FormFromIndex()
     if not slots then return nil, ok and "protected" or "error" end
     local known = true
     for slot = 1, math.min(slots, MAX_FORM_SLOTS) do
-        local active, form, state = FormSlot(slot)
-        if active == true then return form, state end
+        local active, form, state, word = FormSlot(slot)
+        if active == true then return form, state, word end
         if active == nil then known = false end
     end
-    if known then return "none", "readable" end
+    if known then return "none", "readable", "caster" end
     return nil, "protected"
 end
 
--- A druid has rage only in Bear or Dire Bear Form.
-local RAGE = 1
+-- The form bar slot holding Bear or Dire Bear Form (a macro's [form:N]), or nil when the client cannot say or the
+-- player has neither. Bear Form is slot 1 for most druids, but not for one who skipped its quest.
+local function BearFormSlot()
+    if type(GetNumShapeshiftForms) ~= "function" or type(GetShapeshiftFormInfo) ~= "function" then return nil end
+    local ok, count = pcall(GetNumShapeshiftForms)
+    if not ok or not IsReadable(count) or type(count) ~= "number" then return nil end
+    for slot = 1, math.min(count, MAX_FORM_SLOTS) do
+        local _, form = FormSlot(slot)
+        if form == "bear" then return slot end
+    end
+    return nil
+end
+
+-- A druid has rage only in Bear or Dire Bear Form, and energy only in Cat Form.
+local RAGE, ENERGY = 1, 3
 local function FormFromPower(class)
     if class ~= "DRUID" then return nil, "not used" end
     if type(UnitPowerType) ~= "function" then return nil, "api-missing" end
@@ -392,8 +421,10 @@ local function FormFromPower(class)
     if not ok then return nil, "error" end
     if not IsReadable(power) then return nil, "protected" end
     if type(power) ~= "number" then return nil, "unavailable" end
-    local rage = Enum and Enum.PowerType and Secret.Number(Enum.PowerType.Rage) or RAGE
-    return power == rage and "bear" or "none", "readable"
+    local types = Enum and Enum.PowerType
+    local rage = types and Secret.Number(types.Rage) or RAGE
+    if power == rage then return "bear", "readable" end
+    return "none", "readable", power == (types and Secret.Number(types.Energy) or ENERGY) and "cat" or nil
 end
 
 -- C_UnitAuras.GetPlayerAuraBySpellID on each spell: the first one on, false when every answer is
@@ -474,10 +505,13 @@ local function BearTanks()
     return balance - feral < BEAR_ESCAPE_MARGIN and restoration - feral < BEAR_ESCAPE_MARGIN
 end
 
+-- A shown, living unit you can attack: hostile and neutral alike (UnitCanAttack, not the reaction).
+-- A game object's plate (a book, a chest, ore) never is: not in the Tank list, the windows or their counts.
 local function IsVisibleHostile(root, unit)
     if not root or type(unit) ~= "string" then return false end
     if root.IsShown and not root:IsShown() then return false end
     if not UnitExistsSafely(unit) then return false end
+    if Secret.IsGameObject(unit) then return false end
     if ReadBoolean(UnitIsDeadOrGhost, unit) == true or ReadBoolean(UnitIsDead, unit) == true then return false end
 
     local hostile = ReadBoolean(UnitCanAttack, "player", unit)
@@ -535,7 +569,29 @@ local function SnapshotSort(left, right)
     return left.unit < right.unit
 end
 
-function ThreatService:AddRosterUnit(unit, owner, isMember)
+-- Whether a roster unit is you: true, false, or nil when the client will not say. In a raid you are
+-- "raidN", never "player", so the token cannot tell: UnitIsUnit decides, else readable GUIDs. Outside
+-- a raid only "player" is you, and a pet never is.
+local function IsPlayerUnit(unit, guid, isMember, raid)
+    if unit == "player" then return true end
+    if not (raid and isMember) then return false end
+    local same = ReadBoolean(UnitIsUnit, unit, "player")
+    if same ~= nil then return same end
+    local playerGUID = ReadGUID("player")
+    if guid and playerGUID then return guid == playerGUID end
+    return nil
+end
+
+-- A raid member's group (1-8) from GetRaidRosterInfo, or nil when the client will not say.
+local function RaidSubgroup(unit)
+    local index = tonumber(unit:match("^raid(%d+)$"))
+    if not index or type(GetRaidRosterInfo) ~= "function" then return nil end
+    local ok, _, _, subgroup = pcall(GetRaidRosterInfo, index)
+    if not ok or not IsReadable(subgroup) or type(subgroup) ~= "number" or subgroup < 1 or subgroup > 8 then return nil end
+    return math.floor(subgroup)
+end
+
+function ThreatService:AddRosterUnit(unit, owner, isMember, raid)
     if self.rosterCount >= MAX_ROSTER_UNITS or not UnitExistsSafely(unit) then return end
     self.rosterCount = self.rosterCount + 1
     local entry = self.rosterPool[self.rosterCount]
@@ -553,10 +609,14 @@ function ThreatService:AddRosterUnit(unit, owner, isMember)
     end
     entry.guid = ReadGUID(unit)
     entry.isMember = isMember and true or false
-    entry.isPlayer = unit == "player" or SameUnit(unit, "player")
+    local isPlayer = IsPlayerUnit(unit, entry.guid, isMember, raid)
+    entry.isPlayer, entry.isPlayerKnown = isPlayer == true, isPlayer ~= nil
     entry.ownerIsPlayer = entry.owner ~= unit and (entry.owner == "player" or SameUnit(entry.owner, "player"))
     entry.targetGUID, entry.targetKnown, entry.targetDirty = nil, false, true
     entry.plateFrame, entry.plateState = nil, nil
+    -- Rescue: the situation is read again for whoever the token names now; the raid group from the roster.
+    entry.situation, entry.situationState, entry.situationDirty = nil, "unread", isMember and true or false
+    entry.subgroup = (raid and isMember) and RaidSubgroup(unit) or nil
     entry.classToken = nil
     if entry.isMember and type(UnitClass) == "function" then
         local ok, _, token = pcall(UnitClass, unit)
@@ -580,103 +640,145 @@ end
 
 -- The player's form as "tank", "bear" or "none", and the signal that said so: the form ID, the
 -- form bar, a druid's power, the form auras, then the player's own last form cast (a readable
--- "no Bear Form buff" comes after the cast). nil when none of them can say.
+-- "no Bear Form buff" comes after the cast), and which druid form a "none" is when one says (cat,
+-- moonkin, tree, travel, caster). nil when none of them can say.
 function ThreatService:ReadPlayerForm(class)
     local reads = self.roleReads
     reads.formIndex, reads.power, reads.aura = "not needed", "not needed", "not needed"
-    local form
-    form, reads.formID = FormFromID()
-    if form then return form, "formID" end
-    form, reads.formIndex = FormFromIndex()
-    if form then return form, "formIndex" end
-    form, reads.power = FormFromPower(class)
-    if form then return form, "power" end
+    local form, word
+    form, reads.formID, word = FormFromID()
+    if form then return form, "formID", word end
+    form, reads.formIndex, word = FormFromIndex()
+    if form then return form, "formIndex", word end
+    form, reads.power, word = FormFromPower(class)
+    if form then return form, "power", word end
     local auraForm
     auraForm, reads.aura = FormFromAuras(class)
     if auraForm ~= nil and auraForm ~= "none" then return auraForm, "aura" end
-    if self.formCast ~= nil then return self.formCast, "cast" end
+    if self.formCast ~= nil then return self.formCast, "cast", self.formCastWord end
     if auraForm ~= nil then return auraForm, "aura" end
     return nil, nil
 end
 
--- true, false, or nil when the client will not say (the caller keeps what it last knew), and the
+-- Rescue's druid bindings cast in this slot's form only (Threat/RescueSecure.lua).
+function ThreatService:BearFormSlot()
+    return BearFormSlot()
+end
+
+-- Why the evidence says what it does, as the role's reason word (ResolvePlayerRole): a tanking
+-- stance, Bear Form, Righteous Fury or a tanking presence; or no tank: Bear Form on a healer's talents
+-- (an escape), a druid's other form (cat, moonkin, tree, travel, caster; nobear when it is not known
+-- which), out of Defensive Stance, without the aura, or a class that cannot tank.
+local TANK_AURA_REASONS = { [25780] = "fury", [48263] = "presence" }
+local NO_AURA_REASONS = { PALADIN = "nofury", DEATHKNIGHT = "nopresence" }
+local NO_FORM_REASONS = { DRUID = "nobear", WARRIOR = "nostance" }
+
+-- true, false, or nil when the client will not say (the caller keeps what it last knew), the
 -- signal that decided: formID, formIndex, power, aura, cast, event (a form change since the
--- last known tank form, with nothing readable: the player left it), or class (cannot tank).
+-- last known tank form, with nothing readable: the player left it), or class (cannot tank), and
+-- the reason word (TANK_AURA_REASONS and the like).
 function ThreatService:PlayerTankEvidence()
     local class = self:PlayerClass()
     local kind = class and TANK_CLASSES[class]
     local reads = self.roleReads
     reads.formID, reads.formIndex, reads.power, reads.aura, reads.tankAura =
         "not needed", "not needed", "not needed", "not needed", "not needed"
-    if class and not kind then return false, "class" end
-    local form, signal
+    if class and not kind then return false, "class", "class" end
+    local noForm = class and NO_FORM_REASONS[class] or "notank"
+    local form, signal, word
     if kind ~= "aura" then
-        form, signal = self:ReadPlayerForm(class)
+        form, signal, word = self:ReadPlayerForm(class)
+        if class == "DRUID" and word then noForm = word end
         -- Read now, so a remembered cast no longer stands for the form.
         if signal ~= nil and signal ~= "cast" then self.formCast = nil end
         if form == nil and self.formLeft and self.playerInTankForm then form, signal = "none", "event" end
         if form ~= nil then self.formLeft, self.playerInTankForm = false, form ~= "none" end
-        if form == "tank" then return true, signal end
-        if form == "bear" then return BearTanks(), signal end
+        if form == "tank" then return true, signal, "stance" end
+        if form == "bear" then
+            local tanks = BearTanks()
+            return tanks, signal, tanks and "bear" or "escape"
+        end
         if kind == "form" then
-            if form == "none" then return false, signal end
-            return nil, nil
+            if form == "none" then return false, signal, noForm end
+            return nil, nil, nil
         end
     end
     local spellID, state = PlayerAura(TANK_AURAS)
     reads.tankAura = state
-    if spellID then return true, "aura" end
+    if spellID then return true, "aura", TANK_AURA_REASONS[spellID] or "fury" end
     -- A client without the aura API can never say: that counts as no aura.
     if (spellID == false or state == "api-missing") and (kind == "aura" or form == "none") then
-        return false, kind == "aura" and "aura" or signal
+        if kind == "aura" then return false, "aura", NO_AURA_REASONS[class] or "notank" end
+        return false, signal, noForm
     end
-    return nil, nil
+    return nil, nil, nil
 end
 
--- The player's role. Always and Never (per character) win. Adaptive takes an assigned TANK role,
--- then what the player is doing (PlayerTankEvidence), then any other assigned role (a group finder
--- gives every member one, often DAMAGER), then the specialization's.
+-- A druid's form says it all: out of Bear Form (or in it on a healer's talents) a druid is no tank,
+-- whatever its specialization's role says (one may read Feral as a tank).
+local NOT_TANK_WHATEVER_SPEC = { nobear = true, escape = true, cat = true, moonkin = true, tree = true, travel = true,
+    caster = true }
+
+-- The player's role and why (playerRoleReason: setting, group, the evidence's word, spec, none).
+-- This character's setting wins over everything: Always is a tank, Never never is. Adaptive takes a
+-- Tank role assigned in the group (UnitGroupRolesAssigned, else a raid's Main Tank; while in a group),
+-- then what the player is doing (PlayerTankEvidence: Bear Form, a tanking stance, Righteous Fury or a
+-- presence), which outranks a group's DPS or Healer role (a group finder gives every member one; a
+-- bear tank listed as DPS is tanking), then that DPS or Healer role, then the specialization's role.
 function ThreatService:ResolvePlayerRole()
     self.roleDirty = false
     self.roleResolves = (self.roleResolves or 0) + 1
     self.roleResolvedAt, self.roleResolvedInCombat = Now(), Secret.InCombat()
     local previous = self.playerRole
-    local role, source = "NONE", "none"
+    local role, source, reason = "NONE", "none", "none"
     local mode = TankMode()
     local entry = self.playerRosterIndex and self.rosterPool[self.playerRosterIndex]
-    local assigned = mode ~= "always" and entry and entry.assignedRole or "NONE"
-    if assigned == "TANK" then role, source = "TANK", "assigned" end
-    -- Adaptive: what the player is doing now (a tanking stance, presence or bear form) outranks
-    -- an assigned DAMAGER or HEALER and the role a talent spec implies (Feral reads as damage). A
-    -- healer's bear form escape is ruled out by the talents (BearTanks).
-    self.tankEvidenceRead = role == "NONE" and mode == "adaptive"
-    if self.tankEvidenceRead then
-        local evidence, signal = self:PlayerTankEvidence()
+    local assigned = not self.isSolo and entry and entry.assignedRole or "NONE"
+    self.tankEvidenceRead = false
+    if mode == "always" then
+        role, source, reason = "TANK", "forced", "setting"
+    elseif assigned == "TANK" then
+        role, source, reason = "TANK", "assigned", "group"
+    elseif mode == "adaptive" then
+        self.tankEvidenceRead = true
+        local evidence, signal, why = self:PlayerTankEvidence()
         self.lastTankEvidence = evidence
         if evidence == nil then
-            evidence = self.playerTankEvidence
+            evidence, why = self.playerTankEvidence, self.playerTankReason
         else
             self.playerTankSignal = signal
         end
-        self.playerTankEvidence = evidence
-        if evidence then role, source = "TANK", "adaptive" end
+        self.playerTankEvidence, self.playerTankReason = evidence, why
+        if evidence then
+            role, source, reason = "TANK", "adaptive", why or "none"
+        elseif evidence == false then
+            reason = why or "none"
+        end
     end
-    if role == "NONE" and assigned ~= "NONE" then role, source = assigned, "assigned" end
+    if role == "NONE" and assigned ~= "NONE" then role, source, reason = assigned, "assigned", "group" end
     if role == "NONE" and mode ~= "always" then
         local specRole = SpecializationRole()
-        if specRole then role, source = specRole, "specialization" end
+        if specRole == "TANK" and self.tankEvidenceRead and NOT_TANK_WHATEVER_SPEC[reason] then
+            role, source = "DAMAGER", "adaptive"
+        elseif specRole then
+            role, source, reason = specRole, "specialization", "spec"
+        end
     end
-    if mode == "always" then
-        role, source = "TANK", "forced"
-    elseif mode == "never" then
-        if role == "TANK" then role, source = "DAMAGER", "never" end
+    if mode == "never" then
+        if role == "TANK" then
+            role, source, reason = "DAMAGER", "never", "setting"
+        elseif role == "NONE" then
+            reason = "setting"
+        end
     end
 
     if role ~= previous then
         self.roleChangedFrom, self.roleChangedAt, self.roleChangedInCombat = previous, self.roleResolvedAt,
             self.roleResolvedInCombat
+        -- The roster's roles changed (a druid shifting into Bear Form): Rescue re-sorts and re-filters.
+        self.rosterRevision = self.rosterRevision + 1
     end
-    self.playerRole, self.playerRoleSource = role, source
+    self.playerRole, self.playerRoleSource, self.playerRoleReason = role, source, reason
     -- Hold state reads roster roles, so the player's entries must carry the resolved role.
     for index = 1, self.rosterCount do
         local member = self.rosterPool[index]
@@ -702,8 +804,8 @@ function ThreatService:RebuildRoster()
             groupCount = math.min(value, 40)
         end
         for index = 1, groupCount do
-            self:AddRosterUnit(RAID_TOKENS[index], nil, true)
-            self:AddRosterUnit(RAID_PET_TOKENS[index], RAID_TOKENS[index], false)
+            self:AddRosterUnit(RAID_TOKENS[index], nil, true, true)
+            self:AddRosterUnit(RAID_PET_TOKENS[index], RAID_TOKENS[index], false, true)
         end
     else
         self:AddRosterUnit("player", nil, true)
@@ -722,14 +824,17 @@ function ThreatService:RebuildRoster()
 
     self.isSolo = not raid and groupCount == 0
     self.isRaid = raid
+    self.rescueRevision = self.rescueRevision + 1
+    if self.rescueWanted then self.situationPending = true end
 
     for index = self.rosterCount + 1, oldCount do
         local entry = self.rosterPool[index]
         entry.unit, entry.owner, entry.role, entry.assignedRole, entry.name, entry.guid = nil, nil, nil, nil, nil, nil
         entry.nameOpaque, entry.hasOpaqueName = nil, nil
-        entry.isMember, entry.isPlayer, entry.ownerIsPlayer, entry.classToken = nil, nil, nil, nil
+        entry.isMember, entry.isPlayer, entry.isPlayerKnown, entry.ownerIsPlayer, entry.classToken = nil, nil, nil, nil, nil
         entry.targetToken, entry.targetGUID, entry.targetKnown, entry.targetDirty = nil, nil, nil, nil
         entry.plateFrame, entry.plateState = nil, nil
+        entry.situation, entry.situationState, entry.situationDirty, entry.subgroup = nil, nil, nil, nil
         local tuple = self.threatTuples[index]
         tuple.pass, tuple.tanking, tuple.status, tuple.scaled, tuple.rawPercent, tuple.raw = nil, nil, nil, nil, nil, nil
     end
@@ -758,12 +863,13 @@ function ThreatService:MarkRoleDirty()
     self:Hurry()
 end
 
--- Whether what the player is doing can decide the role: Adaptive without an assigned TANK role.
+-- Whether what the player is doing can decide the role: Adaptive without a Tank role assigned in the
+-- group (Bear Form outranks a group's DPS or Healer role).
 function ThreatService:TankEvidenceMatters()
     if self.rosterDirty then return true end
     if TankMode() ~= "adaptive" then return false end
     local entry = self.playerRosterIndex and self.rosterPool[self.playerRosterIndex]
-    return not entry or entry.assignedRole ~= "TANK"
+    return not entry or self.isSolo or entry.assignedRole ~= "TANK"
 end
 
 -- The player's own form casts and form changes, kept for when the client withholds the form
@@ -774,7 +880,7 @@ function ThreatService:NoteFormEvent(event, unit, spellID)
         if not (IsReadable(unit) and unit == "player") or not Secret.Number(spellID) then return false end
         local form = FORM_SPELLS[spellID]
         if not form then return false end
-        self.formCast, self.formCastAt, self.formLeft = form, now, false
+        self.formCast, self.formCastAt, self.formLeft, self.formCastWord = form, now, false, FORM_SPELL_WORDS[spellID]
         return true
     end
     -- A change that is not the last cast's own: that cast no longer stands for the form.
@@ -1079,17 +1185,6 @@ function ThreatService:UpdateRecordGUID(record)
     if guid then self.enemyByGUID[guid] = record end
 end
 
--- Creature types (as the client names them) that are never part of a fight.
-local CRITTER_TYPES = { Critter = true, ["Non-combat Pet"] = true }
-local TRIVIAL_CLASSES = { trivial = true, minus = true }
-
-local function ReadString(callback, ...)
-    if type(callback) ~= "function" then return nil end
-    local ok, value = pcall(callback, ...)
-    if ok and IsReadable(value) and type(value) == "string" then return value end
-    return nil
-end
-
 local function ReadNumberValue(callback, ...)
     if type(callback) ~= "function" then return nil end
     local ok, value = pcall(callback, ...)
@@ -1107,33 +1202,59 @@ local function OnThreatTable(record)
         or (type(record.rawThreat) == "number" and record.rawThreat > 0) or group
 end
 
--- Units that are not part of the fight leave the Tank list and its counts (record.excluded): a
--- neutral critter (creature type Critter, trivial or minus, or level 1) not on the group's threat
--- table, or another neutral mob neither in combat nor on it. (One you cannot attack is never
--- tracked: IsVisibleHostile.) Only readable answers exclude; a protected one never does. What
--- does not change for a mob (reaction, type, classification, level) is read once per serial.
+-- Creature types that are never part of a fight, as the English client names them; the client's own
+-- names for them (Critter 8, Non-combat Pet 12, Wild Pet 14) are added when it can say them.
+local CRITTER_TYPES = { Critter = true, ["Non-combat Pet"] = true, ["Wild Pet"] = true }
+local CRITTER_TYPE_IDS = { 8, 12, 14 }
+local critterNamesAdded = false
+
+local function CritterTypes()
+    if critterNamesAdded then return CRITTER_TYPES end
+    critterNamesAdded = true
+    local getInfo = C_CreatureInfo and C_CreatureInfo.GetCreatureTypeInfo
+    if type(getInfo) ~= "function" then return CRITTER_TYPES end
+    for index = 1, #CRITTER_TYPE_IDS do
+        local ok, info = pcall(getInfo, CRITTER_TYPE_IDS[index])
+        if ok and IsReadable(info) and type(info) == "table" then
+            local name = info.name
+            if IsReadable(name) and type(name) == "string" and name ~= "" then CRITTER_TYPES[name] = true end
+        end
+    end
+    return CRITTER_TYPES
+end
+
+-- Whether a unit is a critter, a companion or a wild battle pet: true, false, or nil when the client
+-- will not say (its creature type protected, and no pet answer that it is one).
+local function ReadCritter(unit)
+    if ReadBoolean(UnitIsWildBattlePet, unit) == true then return true end
+    if type(UnitCreatureType) ~= "function" then return nil end
+    local ok, creature = pcall(UnitCreatureType, unit)
+    if not ok or not IsReadable(creature) then return nil end
+    -- A readable nil is a mob of no creature type, which is no critter.
+    return type(creature) == "string" and CritterTypes()[creature] == true
+end
+
+-- Neutral mobs you can attack are listed as hostile ones are, idle until the fight. Left out of the
+-- Tank list and its counts (record.excluded): a critter not on the group's threat table, and a mob
+-- that may be one (not readably hostile, its creature type protected) until it is in combat or on
+-- that table. (One you cannot attack, a game object or a dead unit is never tracked:
+-- IsVisibleHostile.) A protected reaction is not hostile: such a mob is looked at like a neutral
+-- one. What does not change for a mob (reaction, creature type) is read once per serial.
 function ThreatService:UpdateExcluded(record)
     local unit = record.unit
     if record.involvementSerial ~= record.serial then
         record.involvementSerial = record.serial
-        -- One read for a hostile mob (the usual case); a neutral one is looked at more closely.
-        -- A readable "cannot attack" never reaches here: IsVisibleHostile untracks it.
+        -- One read for a hostile mob (the usual case); any other is looked at more closely.
         local reaction = ReadNumberValue(UnitReaction, unit, "player")
         record.neutral = reaction == 4
         record.critter = false
-        if record.neutral then
-            local creature = ReadString(UnitCreatureType, unit)
-            local class = ReadString(UnitClassification, unit)
-            record.critter = (creature ~= nil and CRITTER_TYPES[creature] == true)
-                or (class ~= nil and TRIVIAL_CLASSES[class] == true)
-                or ReadNumberValue(UnitLevel, unit) == 1
-        end
+        if reaction == nil or reaction == 4 then record.critter = ReadCritter(unit) end
     end
     local excluded = false
-    if record.critter or record.neutral then
-        -- Joined the fight: on the group's threat table (or, for a neutral one, in combat).
+    if record.critter ~= false then
+        -- Joined the fight: on the group's threat table (or, for a possible critter, in combat).
         local fighting = OnThreatTable(record)
-        if not fighting and record.neutral and not record.critter then
+        if not fighting and record.critter == nil then
             fighting = ReadBoolean(UnitAffectingCombat, unit) == true
         end
         excluded = not fighting
@@ -1200,8 +1321,11 @@ end
 
 -- Drops the protected holding answers FoldHolders kept.
 local function ClearHoldFlags(record)
-    local flags, states = record.holdFlags, record.holdFlagStates
-    for index = 1, record.holdFlagCount or 0 do flags[index], states[index] = nil, nil end
+    local flags, states, units = record.holdFlags, record.holdFlagStates, record.holdFlagUnits
+    for index = 1, record.holdFlagCount or 0 do
+        flags[index], states[index] = nil, nil
+        if units then units[index] = nil end
+    end
     record.holdFlagCount, record.holdFallback, record.holdFlagsHaveSelf = 0, nil, false
 end
 
@@ -1214,7 +1338,7 @@ local function NameTarget(record, targetUnit)
 end
 
 local function SetHold(record, state, targetName)
-    record.targetName, record.targetUnit = targetName, nil
+    record.targetName, record.targetUnit, record.targetIsPlayer = targetName, nil, nil
     record.targetNameOpaque, record.hasOpaqueTargetName = nil, false
     record.targetClass, record.hasTargetClass = nil, false
     record.tankHolds, record.selfHolds, record.loose = false, false, state == "LOOSE"
@@ -1228,6 +1352,15 @@ function ThreatService:SetHolder(record, member, kept)
         record.lastHolderUnit, record.lastHolderAt, record.lastHolderSerial = member.unit, Now(), record.serial
     end
     record.targetName, record.targetUnit = member.name, member.unit
+    -- Whether the holder is you, from its roster entry (targetUnit is "raidN" for you in a raid); nil
+    -- when the client would not say.
+    if member.isPlayer then
+        record.targetIsPlayer = true
+    elseif member.isPlayerKnown then
+        record.targetIsPlayer = false
+    else
+        record.targetIsPlayer = nil
+    end
     record.targetNameOpaque, record.hasOpaqueTargetName = member.nameOpaque, member.hasOpaqueName == true
     record.targetClass, record.hasTargetClass = nil, false
     record.tankHolds = member.role == "TANK"
@@ -1276,11 +1409,14 @@ local MAX_FOLDED_MEMBERS = 5
 -- UNKNOWN (not loose, for counts and order). Lua never branches on a protected answer.
 function ThreatService:FoldHolders(record, player, onlyTank)
     local flags, states = record.holdFlags, record.holdFlagStates
+    -- The member each flag is about, for Rescue's per-member fold (MemberHoldFlags).
+    local units = record.holdFlagUnits
     local count = 0
     if player and record.tanking == nil and record.hasOpaqueTanking then
         count = 1
         flags[1] = record.tankingOpaque
         states[1] = player.role == "TANK" and "TANK" or (self.isSolo and "YOU") or "LOOSE"
+        if units then units[1] = player.unit end
         record.holdFlagCount, record.holdFlagsHaveSelf = count, true
     end
     local source = record.threatMobSource
@@ -1306,6 +1442,7 @@ function ThreatService:FoldHolders(record, player, onlyTank)
             elseif ok and IsSecret(tanking) then
                 count = count + 1
                 flags[count], states[count] = tanking, member.role == "TANK" and "TANK" or "LOOSE"
+                if units then units[count] = member.unit end
                 record.holdFlagCount = count
                 complete = false
             elseif not ok or not IsReadable(tanking) then
@@ -1860,6 +1997,111 @@ function ThreatService:SetGroupThreatWanted(wanted)
     end
 end
 
+-- Rescue windows (Threat/Rescue.lua) ask for each member's own threat situation; nobody else pays for it.
+function ThreatService:SetRescueWanted(wanted)
+    wanted = wanted and true or false
+    if wanted == self.rescueWanted then return end
+    self.rescueWanted = wanted
+    if not wanted then
+        self.situationPending = false
+        return
+    end
+    for index = 1, self.rosterCount do
+        local member = self.rosterPool[index]
+        if member.isMember then member.situationDirty = true end
+    end
+    self.situationPending = true
+    self:Hurry()
+end
+
+-- UnitThreatSituation(unit) with no mob: the unit's highest status on any mob. The readable status (0-3; nil
+-- for none) and what the client said: readable, none, protected, unavailable, error or api-missing.
+function ThreatService:ReadMemberSituation(unit)
+    if type(UnitThreatSituation) ~= "function" then return nil, "api-missing" end
+    local ok, value = pcall(UnitThreatSituation, unit)
+    if not ok then return nil, "error" end
+    if not IsReadable(value) then return nil, "protected" end
+    if value == nil then return nil, "none" end
+    if type(value) ~= "number" then return nil, "unavailable" end
+    return value, "readable"
+end
+
+-- Reads one roster member's situation; rescueRevision moves only when what it shows changed.
+function ThreatService:RefreshMemberSituation(member)
+    member.situationDirty = false
+    self.situationReads = self.situationReads + 1
+    local status, state = self:ReadMemberSituation(member.unit)
+    if status == member.situation and state == member.situationState then return false end
+    member.situation, member.situationState = status, state
+    self.rescueRevision = self.rescueRevision + 1
+    return true
+end
+
+-- A member's situation event: that member is read at the next flush, however many events come first. You
+-- in a raid ("player"; the roster names you raidN) are found by index; an unknown token marks everyone.
+function ThreatService:MarkSituationDirty(unit)
+    local readable = IsReadable(unit) and type(unit) == "string"
+    local member = readable and self.rosterByUnit[unit] or nil
+    if not member and readable and unit == "player" and self.playerRosterIndex then
+        member = self.rosterPool[self.playerRosterIndex]
+    end
+    if member then
+        member.situationDirty = true
+    else
+        for index = 1, self.rosterCount do
+            local entry = self.rosterPool[index]
+            if entry.isMember then entry.situationDirty = true end
+        end
+    end
+    self.situationPending = true
+end
+
+function ThreatService:FlushMemberSituations()
+    if self.rescueWanted and not self.isSolo then
+        for index = 1, self.rosterCount do
+            local member = self.rosterPool[index]
+            if member.isMember and member.situationDirty then self:RefreshMemberSituation(member) end
+        end
+    end
+    self.situationPending = false
+end
+
+-- The backstop for withheld events (Rescue's refresh tick): up to budget members re-read on a rolling cursor,
+-- so a 40-player raid is read every five ticks.
+function ThreatService:BackstopMemberSituations(budget)
+    if not self.rescueWanted or self.isSolo or self.rosterCount == 0 then return 0 end
+    local read, steps = 0, 0
+    while read < budget and steps < self.rosterCount do
+        self.situationCursor = self.situationCursor % self.rosterCount + 1
+        local member = self.rosterPool[self.situationCursor]
+        if member.isMember then
+            self:RefreshMemberSituation(member)
+            read = read + 1
+        end
+        steps = steps + 1
+    end
+    return read
+end
+
+-- The protected "holding it" answers about one member across the tracked records (FoldHolders keeps them
+-- per record: a party's members, a raid's tanks only), into out, a list the caller reuses; returns how many
+-- (at most limit). Lua never branches on one: Rescue folds them inside the client.
+function ThreatService:MemberHoldFlags(unit, out, limit)
+    local count = 0
+    for index = 1, self.enemyCount do
+        local record = self.enemyOrder[index]
+        local units = record.holdFlagUnits
+        for flag = 1, units and record.holdFlagCount or 0 do
+            if units[flag] == unit and count < limit then
+                count = count + 1
+                out[count] = record.holdFlags[flag]
+            end
+        end
+    end
+    for index = count + 1, #out do out[index] = nil end
+    return count
+end
+
 local function ShownChanged(record)
     if record.hasOpaquePercent or record.hasOpaqueLeadPercent or record.hasOpaqueRawThreat
         or record.hasOpaqueLeadSituation or record.hasOpaqueTanking or (record.holdFlagCount or 0) > 0
@@ -1986,7 +2228,7 @@ function ThreatService:ReadCurveGap(record)
     -- The mob's own target names you (YOU, or TANK for a solo tank): only then is the gap raw x 1.1.
     -- A kept gap (an older readable read) does not stop it: a live curve read is newer.
     if not self.isSolo or not record.hasOpaqueRawThreat or (record.lead ~= nil and not record.leadKept)
-        or record.targetUnit ~= "player"
+        or record.targetIsPlayer ~= true
         or not record.holdFromTarget then
         return
     end
@@ -2133,7 +2375,7 @@ function ThreatService:TrackEnemy(unit, root)
     self.nextRecordSerial = self.nextRecordSerial + 1
     record.serial = self.nextRecordSerial
     record.dirty, record.revision = true, 0
-    record.enemyName, record.targetName, record.targetUnit = unit, L["No target"], nil
+    record.enemyName, record.targetName, record.targetUnit, record.targetIsPlayer = unit, L["No target"], nil, nil
     record.enemyNameOpaque, record.hasOpaqueName, record.targetNameOpaque, record.hasOpaqueTargetName = nil, false, nil, false
     record.tankHolds, record.selfHolds, record.loose, record.engaged = false, false, false, false
     record.holdState = "IDLE"
@@ -2372,6 +2614,13 @@ function ThreatService:GetPlayerRole()
     return self.playerRole, self.playerRoleSource
 end
 
+-- The player's role and the reason word behind it (ResolvePlayerRole), for "Colouring as"
+-- (ThreatColours.ColouringAs) and /ps diagnose.
+function ThreatService:GetPlayerRoleReason()
+    if self.rosterDirty or self.roleDirty then self:FlushPending() end
+    return self.playerRole, self.playerRoleReason or "none"
+end
+
 local function GetTargeterBucket(service, unit)
     if type(unit) ~= "string" then return nil end
     if service.rosterDirty then service:FlushPending() end
@@ -2451,7 +2700,7 @@ function ThreatService:GetSnapshot()
         local count, loose, engaged = 0, 0, 0
         for index = 1, self.enemyCount do
             local record = self.enemyOrder[index]
-            -- Critters and mobs not in the fight are left out of the list and its counts. Decided here,
+            -- Critters (and mobs that may be one) not in the fight are left out of the list and its counts. Decided here,
             -- so only a shown Tank window pays for it (its inputs are shown fields, which rebuild this).
             if record and record.unit then self:UpdateExcluded(record) end
             if record and record.unit and not record.excluded then
@@ -2577,6 +2826,7 @@ function ThreatService:HandleEvent(event, unit, action, spellID)
             local record = self.enemyOrder[index]
             if record.engaged then record.dirty = true end
         end
+        if self.rescueWanted then self:MarkSituationDirty(unit) end
         self:Hurry()
     elseif event == "UNIT_THREAT_LIST_UPDATE" or event == "UNIT_THREAT_SITUATION_UPDATE" then
         self:MarkDirty(unit)
@@ -2655,6 +2905,7 @@ function ThreatService:OnUpdate()
         end
     end
     self:FlushTargeters()
+    if self.situationPending then self:FlushMemberSituations() end
     if self.groupThreatPending then self:FlushGroupThreat(now) end
     self:RefreshBatch(REFRESH_BUDGET)
     if self.groupThreatWanted then self:ReadTargetScope(now) end
@@ -2663,7 +2914,9 @@ end
 
 -- Something is still waiting to be re-read.
 function ThreatService:HasPendingWork()
-    if self.targetersDirty or self.groupThreatPending or self.rosterDirty or self.roleDirty then return true end
+    if self.targetersDirty or self.groupThreatPending or self.rosterDirty or self.roleDirty or self.situationPending then
+        return true
+    end
     for index = 1, self.enemyCount do
         if self.enemyOrder[index].dirty then return true end
     end
@@ -2697,7 +2950,7 @@ function ThreatService:OnInitialize()
             targeters = { count = 0, names = {}, units = {} },
             damageStamps = {}, damageCounts = {},
             -- Protected "holding it" answers and what each means (FoldHolders).
-            holdFlags = {}, holdFlagStates = {}, holdFlagCount = 0,
+            holdFlags = {}, holdFlagStates = {}, holdFlagUnits = {}, holdFlagCount = 0,
         }
     end
     self.freeCount = MAX_ENEMIES
@@ -2866,7 +3119,8 @@ local function EvidenceWord(value)
     return value and "true" or "false"
 end
 
--- For /ps diagnose (role): the tank choice, the resolved role and its source, the assigned role
+-- For /ps diagnose (role): the tank choice, the resolved role, its source and reason, what threat
+-- colours colour as (the line Studio and the threat windows show), the assigned role
 -- and how it read, the tank evidence and the signal behind it, what each signal read at the last
 -- resolve and reads now, a druid's talents, the last role change, and whom the Tank window counts
 -- as tanks. Readable facts and state words only; built on demand.
@@ -2912,8 +3166,15 @@ function ThreatService:RoleReport()
     end
     local reads = self.roleReads
     local resolvedAt = self.roleResolvedAt
+    local colours = PS.ThreatColours
+    local colouringAs = "unavailable"
+    if colours and type(colours.ColouringAsText) == "function" and type(PS.GetSettings) == "function" then
+        local ok, text = pcall(colours.ColouringAsText, PS.GetSettings())
+        if ok and type(text) == "string" then colouringAs = text end
+    end
     return {
         tankMode = TankMode(), role = self.playerRole, source = self.playerRoleSource,
+        reason = self.playerRoleReason or "none", colouringAs = colouringAs,
         assigned = player and player.assignedRole or "NONE", assignedRead = assignedRead, class = class or "protected",
         evidence = EvidenceWord(self.playerTankEvidence), signal = self.playerTankSignal or "none",
         -- What the last resolve read (nil: nothing answered, so the evidence above was kept).

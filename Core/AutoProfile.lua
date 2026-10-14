@@ -21,9 +21,11 @@ local CONTENT_LABELS = {
 }
 AutoProfile.CONTENT_LABELS = CONTENT_LABELS
 
--- IsInInstance's type: "none" outdoors, "party" (and "scenario") for dungeons, "pvp" and "arena".
-local CONTENT_BY_INSTANCE = { none = "world", party = "dungeon", scenario = "dungeon", raid = "raid", pvp = "pvp",
-    arena = "pvp" }
+-- NamePolicy.InstanceType's word (IsInInstance's type, the one reader designs use too): "none" outdoors, "party"
+-- dungeons, "raid", "pvp" and "arena". A scenario or delve is open world, as it is for designs (PlateContext): since
+-- 1.3.0, so the Dungeons rule and the Dungeons & raids designs agree there. Any other kind is world too; "unknown"
+-- (a failed or protected read) is nil.
+local CONTENT_BY_INSTANCE = { none = "world", party = "dungeon", raid = "raid", pvp = "pvp", arena = "pvp" }
 
 local SPEC_KEYS = {}
 for index = 1, AutoProfile.MAX_SPECS do SPEC_KEYS[index] = "spec" .. index end
@@ -38,13 +40,14 @@ local function Rules()
 end
 AutoProfile.Rules = Rules
 
--- The content type here, or nil when the client cannot say (missing API, error, protected value).
+-- The content type here, or nil when the client cannot say (missing API, error, protected value). A fresh read:
+-- the zone events reach this file's frame before Lifecycle has NamePolicy read the new zone.
 function AutoProfile.Content()
-    if type(IsInInstance) ~= "function" then return nil end
-    local ok, inInstance, instanceType = pcall(IsInInstance)
-    if not ok or not Secret.IsReadable(inInstance) or not Secret.IsReadable(instanceType) then return nil end
-    if not inInstance then return "world" end
-    return type(instanceType) == "string" and CONTENT_BY_INSTANCE[instanceType] or nil
+    local NamePolicy = PS.NamePolicy
+    if not NamePolicy then return nil end
+    local kind = NamePolicy.InstanceType(true)
+    if kind == "unknown" then return nil end
+    return CONTENT_BY_INSTANCE[kind] or "world"
 end
 
 -- A readable whole number from 1 to MAX_SPECS returned by callback, or nil.
@@ -56,11 +59,22 @@ local function ReadIndex(callback, ...)
     return value
 end
 
--- "specialization" (GetSpecialization), "talent-groups" (dual spec through GetActiveTalentGroup) or
--- "not-supported". A client with GetSpecialization but no specializations to count uses talent groups.
+-- The client's active talent group reader (dual spec): GetActiveTalentGroup, else
+-- C_SpecializationInfo.GetActiveSpecGroup (Forever has only this one), or nil.
+local function TalentGroupReader()
+    if type(GetActiveTalentGroup) == "function" then return GetActiveTalentGroup end
+    local info = C_SpecializationInfo
+    if type(info) == "table" and type(info.GetActiveSpecGroup) == "function" then return info.GetActiveSpecGroup end
+    return nil
+end
+
+-- "specialization" (GetSpecialization), "talent-groups" (dual spec, TalentGroupReader) or
+-- "not-supported". A client with GetSpecialization but one specialization or none to count (Forever
+-- reports 1) uses talent groups.
 function AutoProfile.SpecSupport()
-    if type(GetSpecialization) == "function" and ReadIndex(GetNumSpecializations) then return "specialization" end
-    if type(GetActiveTalentGroup) == "function" then return "talent-groups" end
+    local count = ReadIndex(GetNumSpecializations)
+    if type(GetSpecialization) == "function" and count and count > 1 then return "specialization" end
+    if TalentGroupReader() then return "talent-groups" end
     return "not-supported"
 end
 
@@ -77,7 +91,7 @@ end
 function AutoProfile.Spec()
     local support = AutoProfile.SpecSupport()
     if support == "specialization" then return ReadIndex(GetSpecialization) end
-    if support == "talent-groups" then return ReadIndex(GetActiveTalentGroup) end
+    if support == "talent-groups" then return ReadIndex(TalentGroupReader()) end
     return nil
 end
 

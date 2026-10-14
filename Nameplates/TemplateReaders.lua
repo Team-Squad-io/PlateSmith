@@ -45,10 +45,7 @@ PS._CreateTemplateReaders = function(context)
     end
     Readers.ReadPercent = ReadPercent
 
-    local function ReadClassification(unit)
-        local kind = Call(UnitClassification, unit)
-        if IsReadable(kind) and type(kind) == "string" then return kind end
-    end
+    local ReadClassification = PS.ClassificationMark.Read
     local function ReadReaction(unit)
         local reaction = Call(UnitReaction, unit, "player")
         if IsReadable(reaction) and type(reaction) == "number" then return reaction end
@@ -153,12 +150,11 @@ PS._CreateTemplateReaders = function(context)
         ["targeted"] = function(_, unit) return Call(UnitIsUnit, unit, "target") end,
         ["player"] = function(_, unit) return Call(UnitIsPlayer, unit) end,
         ["focus"] = function(_, unit) return Call(UnitIsUnit, unit, "focus") end,
+        -- The mark's letters after the level (the Elite / rare mark's Level suffix draws the same letters).
         ["level.smart"] = function(_, unit, read)
             local level = read("level")
             if not IsReadable(level) or type(level) ~= "number" then return level end
-            local text = level < 0 and "??" or tostring(level)
-            local mark = MARKS[ReadClassification(unit) or ""]
-            return mark and text .. mark.suffix or text
+            return PS.ClassificationMark.SmartLevel(level, ReadClassification(unit))
         end,
         ["level.diff"] = function(_, _, read)
             local level, own = read("level"), Call(UnitLevel, "player")
@@ -217,6 +213,7 @@ PS._CreateTemplateReaders = function(context)
         ["threat.pulling"] = ThreatFact("pulling"),
         ["threat.other"] = ThreatFact("other"),
         ["threat.offtank"] = ThreatFact("offtank"),
+        ["threat.loose"] = ThreatFact("loose"),
         -- Whether you have a target at all; unknown while the client withholds it.
         ["hastarget"] = function() return Secret.ReadBoolean(UnitExists, "target") end,
         -- The range service's answer (Nameplates/Range.lua): nil while unknown or not checked.
@@ -229,7 +226,50 @@ PS._CreateTemplateReaders = function(context)
             local combo = PS.ComboPoints
             if combo then return combo.Read(data) end
         end,
+        -- What the game's cursor icon says the unit is for, and whether it says you cannot (Nameplates/ActionIcon.lua,
+        -- on Objects and Friendly NPCs plates); whether it is within reach. nil while unknown.
+        ["object.kind"] = function(data) return data.objectKind end,
+        ["object.unable"] = function(data) return data.objectUnable end,
+        ["interact.inrange"] = function(data) return data.interactInRange end,
+        -- The ID from the game in the unit's readable GUID: an object's (GameObject), or a creature's (Creature, Vehicle).
+        ["object.id"] = function(data) return Readers.EntryID(data, true) end,
+        ["unit.id"] = function(data) return Readers.EntryID(data, false) end,
+        -- Whether a quest provider (the PlateSmith_QuestieDB companion) lists the object in a quest; nil without one.
+        ["object.quest"] = function(data)
+            local id = Readers.EntryID(data, true)
+            if id then return PS.QuestProgress.ObjectRelevance(id) end
+        end,
+        -- What the object needs and whether your skill reaches it (ObjectStatus.lua); nil while unknown.
+        ["object.skill"] = function(data)
+            local id = data.object and Readers.EntryID(data, true)
+            if id then return PS.ObjectStatus.Level(id) end
+        end,
+        ["object.cangather"] = function(data)
+            local id = data.object and Readers.EntryID(data, true)
+            if id then return PS.ObjectStatus.CanGather(id) end
+        end,
+        -- Whether you can cultivate this herb now (Cultivation.lua, the Tauren racial): nil while unknown.
+        ["object.cancultivate"] = function(data)
+            if not data.object then return nil end
+            local id = Readers.EntryID(data, true)
+            return PS.ObjectStatus.CanCultivate(id, data.objectKind, id and data.entryGUID)
+        end,
     }
+
+    -- The entry ID in the plate unit's readable GUID, kept for that GUID (a GUID is never parsed twice in a row):
+    -- an object's when object, else a creature's. nil for an unreadable GUID or another kind of unit.
+    local CREATURES = { Creature = true, Vehicle = true }
+    function Readers.EntryID(data, object)
+        local guid = Secret.ReadGUID(data.unit)
+        if not guid then return nil end
+        if data.entryGUID ~= guid then
+            data.entryGUID = guid
+            data.entryKind, data.entryID = Secret.GUIDEntry(guid)
+        end
+        local kind = data.entryKind
+        if object then return kind == "GameObject" and data.entryID or nil end
+        return CREATURES[kind] and data.entryID or nil
+    end
 
     -- What a plate's custom parts and rules read, by the kind of change that marks it (Lifecycle's
     -- MarkValues). A token with no event of its own (combat, level, a module's token) is volatile:
@@ -242,11 +282,18 @@ PS._CreateTemplateReaders = function(context)
         ["threat.leadpercent"] = "threat",
         ["tanking"] = "threat", ["threat.holding"] = "threat", ["threat.losing"] = "threat",
         ["threat.pulling"] = "threat", ["threat.other"] = "threat", ["threat.offtank"] = "threat",
+        ["threat.loose"] = "threat",
         ["casting"] = "cast", ["cast.name"] = "cast", ["interruptible"] = "cast", ["interruptReady"] = "interrupt",
         ["target"] = "target", ["targeted"] = "targeted", ["friendly"] = false,
         -- Not in READ_KINDS: a volatile set does not start the range checks or follow quest progress.
         ["hastarget"] = "targeted", ["inrange"] = "range", ["quest.progress"] = "quest", ["quest.percent"] = "quest",
         ["combo"] = "combo",
+        -- The Action icon pass marks "object" when what it read changes; IDs are fixed for the unit (a new unit is
+        -- laid out again); quest marks follow the quest log ("quest", Lifecycle's UpdateQuest).
+        ["object.kind"] = "object", ["object.unable"] = "object", ["interact.inrange"] = "object",
+        ["object.id"] = false, ["unit.id"] = false, ["object.quest"] = "quest",
+        -- A kept line, a skill change or Cultivation's marks "object" (ObjectStatus' Follow and FollowHerbs).
+        ["object.skill"] = "object", ["object.cangather"] = "object", ["object.cancultivate"] = "object",
     }
     local SOURCE_KINDS = {
         healthCurrent = "health", healthValue = "health", healthPercent = "health",
@@ -302,7 +349,11 @@ PS._CreateTemplateReaders = function(context)
             local position = layout and layout[key]
             if type(slot) == "table" and not (position and position.visible == false) then
                 local set = {}
-                if slot.kind == "bar" then
+                -- A bar or icon from a module's source (Core/ModuleSources.lua) reads its token: volatile.
+                local moduleToken = PS.ModuleSources.SlotToken(slot)
+                if moduleToken then
+                    AddToken(set, moduleToken)
+                elseif slot.kind == "bar" then
                     if BAR_KINDS[slot.source] then set[BAR_KINDS[slot.source]] = true end
                 elseif not slot.kind and slot.source == "template" and slot.template then
                     -- A template that does not compile shows nothing, whatever changes.

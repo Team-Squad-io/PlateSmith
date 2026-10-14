@@ -1,0 +1,9 @@
+## Interface: 120100, 16001
+## Title: PlateSmith: Example Module
+## Notes: Minimal third-party module and Blueprint extension example.
+## Author: PlateSmith contributors
+## Version: 1.0.0
+## Dependencies: PlateSmith
+## SavedVariables: PlateSmithExampleModuleDB
+
+ExampleModule.lua

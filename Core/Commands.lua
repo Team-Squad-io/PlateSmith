@@ -2,8 +2,8 @@ local _, PS = ...
 local Secret = assert(PS.Secret, "PlateSmith Secret missing")
 local Chat = assert(PS.Chat, "PlateSmith Chat missing")
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
+local Dev = assert(PS._Dev, "PlateSmith _Dev missing")
 local L = PS.L
-local SCALE = S.profileRanges.scale
 
 -- Slash commands and the Addon Compartment entry. Everything here goes through
 -- the public PS.* API, so commands never reach into plate internals.
@@ -31,24 +31,12 @@ function Commands.OpenSettings()
     end
 end
 
--- The command syntax stays literal; what each command does is translated.
+-- The command syntax stays literal; what each command does is translated. Players are shown these
+-- three; the others keep working unlisted (docs/DEVELOPER_COMMANDS.md).
 local USAGE = {
     { "/ps", L["Open Blueprint Studio."] },
-    { "/ps config", L["Open Settings."] },
-    { "/ps save | revert", L["Keep or undo unsaved changes."] },
-    { "/ps profile [name]", L["List profiles, or switch to one."] },
-    { "/ps console [on|off]", L["Show or hide the threat windows."] },
-    { "/ps console sample", L["Show or hide sample data in the threat windows (out of combat)."] },
-    { "/ps status", L["Show the profile and any active restrictions."] },
-    { "/ps diagnose [history [on|off]]", L["Open the diagnostics report."] },
-    { "/ps perf | performance", L["Watch PlateSmith's live performance (captures no report)."] },
-    { "/ps mode auto|own|overlay", L["Who draws the plates."] },
-    { "/ps friendly names|full|off", L["How friendly plates show outdoors."] },
-    { string.format("/ps quest on|off, threat on|off, scale %s-%s, reset", SCALE[1], SCALE[2]),
-        L["Quick settings; /ps save keeps them."] },
-    { "/ps fetch <Name-Realm> <id>", L["Ask for a Blueprint shared in chat, if its link isn't clickable."] },
-    { "/ps playerprobe", L["Test tools for bug reports."] },
-    { "/ps testname [text|cn|kr|ru]", L["Show text as your target's name, to check your font; no text clears it."] },
+    { "/ps diagnose", L["Open the diagnostics report."] },
+    { "/ps console", L["Show or hide the threat windows."] },
 }
 
 local function Usage()
@@ -56,13 +44,26 @@ local function Usage()
     for _, line in ipairs(USAGE) do Chat.Print(line[1] .. " - " .. line[2]) end
 end
 
-local function Status()
-    local db = PS.GetSettings()
-    local profile = tostring(PS.Profiles.Active()) .. (PS.Profiles.IsDirty() and " (unsaved)" or "")
-    Chat.Print(string.format("%s: profile=%s, mode=%s (%s), friendly=%s, quest=%s, threat=%s, scale=%.2f, restrictions=%s",
-        tostring(PS.RUNTIME_BUILD), profile, db.mode, PS.ExternalProvider() or "native", db.friendly,
-        tostring(PS.GetPartShownState("quest")), tostring(PS.GetPartShownState("threat")), db.scale,
-        PS.Restrictions.Summary()))
+-- The developer commands live in Dev/PlateSmith_Dev (installed by deploy -Dev, never packaged), which registers
+-- them here; without it each says so in one line. "console sample" is the console's developer form. Only these
+-- names can be registered, so the developer addon adds no command of its own.
+local DEV_COMMANDS = {
+    status = true, perf = true, performance = true, fetch = true, playerprobe = true, testname = true,
+    ["console sample"] = true,
+}
+local devHandlers = {}
+
+-- handler(value, rawValue): value lower-cased, rawValue as typed. nil removes it. False for a name not listed.
+function Dev.RegisterCommand(name, handler)
+    if not DEV_COMMANDS[name] or (handler ~= nil and type(handler) ~= "function") then return false end
+    devHandlers[name] = handler
+    return true
+end
+
+local function RunDev(name, value, rawValue)
+    local handler = devHandlers[name]
+    if handler then return handler(value, rawValue) end
+    Chat.Print(L["That's a developer command (PlateSmith_Dev)."])
 end
 
 local function Diagnose(value)
@@ -93,42 +94,39 @@ local function Profile(name)
     end
 end
 
--- The target's plate draws text as its name (Lifecycle's SetTestName) until cleared or the target
--- changes; cn, kr and ru are Studio's sample names (Media.sampleNames).
-local function TestName(text)
-    if text == "" then
-        PS.SetTestName(nil)
-        return Chat.Print(L["Test name cleared."])
-    end
-    for _, sample in ipairs(PS.Media.sampleNames) do
-        if text:lower() == sample.short then text = sample.name end
-    end
-    if Secret.ReadBoolean(UnitExists, "target") == false then
-        PS.SetTestName(nil)
-        return Chat.Print(L["Target a unit first: /ps testname shows the text on your target's plate."])
-    end
-    local ok, reason = PS.SetTestName(text)
-    if ok then
-        Chat.Print(string.format(L["Your target's plate shows %s as its name until you change target. "
-            .. "/ps testname clears it."], text))
-    elseif reason == "withheld" then
-        Chat.Print(L["The game does not say which plate is your target's here."])
-    else
-        Chat.Print(L["Your target has no PlateSmith plate."])
-    end
-end
-
--- Commands that only change a setting; each is applied through PS.SetOption, which clamps scale.
+-- /ps mode: who draws the plates. /ps scale: only the Enemies' World design's Plate settings › Scale (the top-level
+-- scale is its alias), so it says that rather than "plate scale". Each goes through PS.SetOption, which clamps.
 local function Choice(key) return function(value) return S.enumSettings[key][value] and value or nil end end
-local function Switch(value) if value == "on" then return true elseif value == "off" then return false end end
 local settingCommands = {
-    mode = Choice("mode"), friendly = Choice("friendly"), quest = Switch, threat = Switch, scale = tonumber,
+    mode = Choice("mode"), scale = tonumber,
 }
+
+-- /ps friendly names|full|blizzard [players|npcs]: Studio's Show as for one friendly plate type, or both
+-- with no type (as before each had its own), through PS.SetFriendlyMode. off: blizzard's stored name, kept as an alias.
+local FRIENDLY_TYPES = { players = "friendlyPlayer", player = "friendlyPlayer", npcs = "friendlyNPC", npc = "friendlyNPC" }
+local function Friendly(value)
+    local mode, plateType
+    for typed in value:gmatch("%S+") do
+        local word = typed == "blizzard" and "off" or typed
+        if S.FRIENDLY.MODES[word] and not mode then
+            mode = word
+        elseif FRIENDLY_TYPES[word] and not plateType then
+            plateType = FRIENDLY_TYPES[word]
+        else
+            return Usage()
+        end
+    end
+    if not mode or not PS.SetFriendlyMode(plateType, mode) then return Usage() end
+    Chat.Print(L["Updated. /ps save keeps it in this profile."])
+end
 
 function Commands.Run(text)
     local rawCommand, rawValue = text:match("^%s*(%S*)%s*(.-)%s*$")
     local command, value = rawCommand:lower(), rawValue:lower()
-    if command == "" or command == "studio" or command == "editor" then
+    local devName = (command == "console" and value == "sample") and "console sample" or command
+    if DEV_COMMANDS[devName] then
+        RunDev(devName, value, rawValue)
+    elseif command == "" or command == "studio" or command == "editor" then
         PS.OpenVisualEditor()
     elseif command == "config" or command == "settings" then
         Commands.OpenSettings()
@@ -136,33 +134,20 @@ function Commands.Run(text)
         local parsed = settingCommands[command](value)
         if parsed == nil then return Usage() end
         PS.SetOption(command, parsed)
-        Chat.Print(L["Updated. /ps save keeps it in this profile."])
+        if command == "scale" then
+            Chat.Print(string.format(L["Enemy plates' scale (World design) is %.2f. /ps save keeps it in this profile."],
+                PS.GetSettings().scale))
+        else
+            Chat.Print(L["Updated. /ps save keeps it in this profile."])
+        end
+    elseif command == "friendly" then
+        Friendly(value)
     elseif command == "console" then
         local console = PS.ThreatConsole
         if not console then return Chat.Print(L["Threat windows are unavailable."]) end
-        if value == "sample" then
-            if not console:SetSampleData(not console:IsSampleData()) then
-                return Chat.Print(L["Sample data is not available in combat."])
-            end
-            console:RefreshOptions()
-            Chat.Print(console:IsSampleData() and L["The threat windows show sample data until you enter combat."]
-                or L["The threat windows show live threat."])
-        elseif value == "on" then console:Show() elseif value == "off" then console:Hide() else console:Toggle() end
-    elseif command == "status" then
-        Status()
+        if value == "on" then console:Show() elseif value == "off" then console:Hide() else console:Toggle() end
     elseif command == "diagnose" then
         Diagnose(value)
-    elseif command == "perf" or command == "performance" then
-        PS.DiagnosticUI.ShowPerformance()
-    elseif command == "fetch" then
-        -- The chat text's "#id" may be typed with or without its "#".
-        local sender, id = rawValue:match("^(%S+)%s+#?(%S+)$")
-        if not sender then return Usage() end
-        PS.BlueprintLink.Request(sender, id)
-    elseif command == "playerprobe" then
-        PS.ProbePlayerPlate()
-    elseif command == "testname" then
-        TestName(rawValue)
     elseif command == "reset" then
         PS.ResetSettings()
         if PS.Options and PS.Options.Refresh then PS.Options:Refresh() end

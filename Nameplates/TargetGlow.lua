@@ -89,37 +89,69 @@ function Glow.Under(glow, overlay)
     Glow.SetLevel(glow, math.max(0, overlay:GetFrameLevel() - Glow.LEVELS_UNDER))
 end
 
--- Spread (how far past the plate: the corners' size), offset (the whole glow moved right and up),
--- opacity and pulse.
-function Glow.Style(glow, settings)
-    local spread = settings.targetGlowSpread or S.defaults.targetGlowSpread
-    local opacity = settings.targetGlowOpacity or S.defaults.targetGlowOpacity
-    glow.spread = spread
-    glow.offsetX, glow.offsetY = settings.targetGlowOffsetX or 0, settings.targetGlowOffsetY or 0
-    for _, piece in ipairs(glow.corners) do piece:SetSize(spread, spread) end
+-- The look of settings (a design's resolved highlight, Schema's HIGHLIGHT) at scale (nil: 1; Studio's
+-- preview draws at its sample's). Wrap "parts": spread and spreadY, how far it reaches past the parts across
+-- and up and down (the corners' size; both the one spread while targetGlowEven), and parts, the ones it wraps
+-- (HIGHLIGHT.PartsSet: nil for every one). Wrap "fixed": width by height (by width while even), centred on
+-- the bar, fading over half its shorter side. Then offset (the whole glow moved right and up), opacity, pulse.
+function Glow.Style(glow, settings, scale)
+    scale = scale or 1
+    local D = S.defaults
+    local even = settings.targetGlowEven ~= false
+    local spread = settings.targetGlowSpread or D.targetGlowSpread
+    local spreadY = even and spread or settings.targetGlowSpreadY or D.targetGlowSpreadY
+    local opacity = settings.targetGlowOpacity or D.targetGlowOpacity
+    if settings.targetGlowWrap == "fixed" then
+        local width = settings.targetGlowWidth or D.targetGlowWidth
+        local height = even and width or settings.targetGlowHeight or D.targetGlowHeight
+        glow.width, glow.height = width * scale, height * scale
+        spread = math.min(width, height) / 2
+        spreadY = spread
+    else
+        glow.width, glow.height = nil, nil
+    end
+    glow.spread, glow.spreadY = spread * scale, spreadY * scale
+    glow.parts = S.HIGHLIGHT.PartsSet(settings.targetGlowParts)
+    glow.offsetX, glow.offsetY = (settings.targetGlowOffsetX or 0) * scale, (settings.targetGlowOffsetY or 0) * scale
+    for _, piece in ipairs(glow.corners) do piece:SetSize(glow.spread, glow.spreadY) end
     for _, piece in ipairs(glow.pieces) do piece:SetAlpha(opacity) end
     Glow.SetPulse(glow, settings.targetGlowPulse == true)
 end
 
--- left, right, top, bottom: the regions whose edges the glow reaches past by its spread, all moved by
--- its offset. leftReach, rightReach (readable numbers, the glow's units; Bounds' long name): that side
--- reaches this far from its region's centre instead of from its edge. Placed again only when one of
--- them, the spread or the offset changes.
+-- What a region draws, which the glow wraps: a plate's text is a font string with one point, as wide as its text,
+-- but Studio's stage parts are frames wider than their text (for easy grabbing) that keep it as previewText.
+local function DrawnRegion(region)
+    local text = type(region) == "table" and not region.previewBar and region.previewText
+    return text or region
+end
+
+-- left, right, top, bottom: the regions whose edges the glow reaches past by its spread (across) and
+-- spreadY (up and down), all moved by its offset. leftReach, rightReach (readable numbers, the glow's units;
+-- Bounds' long name): that side reaches this far from its region's centre instead of from its edge. A fixed
+-- glow (Style's width) is its size, centred on left (Bounds gives the bar, or a lone name). Placed again only
+-- when one of them, the spreads, the size or the offset changes. Each region stands for what it draws (DrawnRegion).
 function Glow.Place(glow, left, right, top, bottom, leftReach, rightReach)
+    left, right, top, bottom = DrawnRegion(left), DrawnRegion(right), DrawnRegion(top), DrawnRegion(bottom)
     local frame, spread = glow.frame, glow.spread or S.defaults.targetGlowSpread
+    local spreadY, width, height = glow.spreadY or spread, glow.width, glow.height
     local x, y = glow.offsetX or 0, glow.offsetY or 0
     local placed = glow.placed
     if placed and placed[1] == left and placed[2] == right and placed[3] == top and placed[4] == bottom
         and placed[5] == spread and placed[6] == x and placed[7] == y and placed[8] == leftReach
-        and placed[9] == rightReach then return end
+        and placed[9] == rightReach and placed[10] == spreadY and placed[11] == width and placed[12] == height then return end
     placed = placed or {}
     placed[1], placed[2], placed[3], placed[4], placed[5], placed[6], placed[7] = left, right, top, bottom, spread, x, y
-    placed[8], placed[9] = leftReach, rightReach
+    placed[8], placed[9], placed[10], placed[11], placed[12] = leftReach, rightReach, spreadY, width, height
     glow.placed = placed
     frame:ClearAllPoints()
+    if width then
+        frame:SetPoint("CENTER", left, "CENTER", x, y)
+        frame:SetSize(width, height)
+        return
+    end
     if left == top and right == bottom and not leftReach and not rightReach then
-        frame:SetPoint("TOPLEFT", left, "TOPLEFT", x - spread, y + spread)
-        frame:SetPoint("BOTTOMRIGHT", right, "BOTTOMRIGHT", x + spread, y - spread)
+        frame:SetPoint("TOPLEFT", left, "TOPLEFT", x - spread, y + spreadY)
+        frame:SetPoint("BOTTOMRIGHT", right, "BOTTOMRIGHT", x + spread, y - spreadY)
         return
     end
     -- Edges from different regions: each edge point sets only its own side's position.
@@ -133,8 +165,8 @@ function Glow.Place(glow, left, right, top, bottom, leftReach, rightReach)
     else
         frame:SetPoint("RIGHT", right, "RIGHT", x + spread, 0)
     end
-    frame:SetPoint("TOP", top, "TOP", 0, y + spread)
-    frame:SetPoint("BOTTOM", bottom, "BOTTOM", 0, y - spread)
+    frame:SetPoint("TOP", top, "TOP", 0, y + spreadY)
+    frame:SetPoint("BOTTOM", bottom, "BOTTOM", 0, y - spreadY)
 end
 
 function Glow.Paint(glow, r, g, b)
@@ -260,6 +292,8 @@ end
 
 -- Scratch boxes for Bounds (at most the bar and EDGE_PARTS), reused between calls.
 local boxes, waiting = { {}, {}, {}, {} }, {}
+-- A glow whose parts leave out the health bar grows from the first of these it wraps that shows.
+local BODY_ORDER = { "power", "cast", "name" }
 
 -- The regions the glow reaches past (Place's left, right, top, bottom). parts: the regions by layout
 -- key (a plate's data, Studio's components); profile sizes them (PartSize). A barless plate (names-only,
@@ -273,18 +307,24 @@ local boxes, waiting = { {}, {}, {}, {} }, {}
 -- its own units, a readable number, or nil (unknown or protected: the bar's width, as without it); that
 -- side's reach from the name's centre is returned too (Place's leftReach, rightReach). Last, the part
 -- whose alpha the glow takes (the bar, or a lone name). The plates and Studio's preview both place it
--- through this.
+-- through this. glow (Style's; nil: every part): only its parts count. Without the health bar it grows
+-- from the first of BODY_ORDER shown (the name alone: its line, as on a plate without a bar), and from
+-- the health bar when none of them shows. A fixed glow: the bar (or a lone name) it is centred on.
 local NameLine -- (below)
-function Glow.Bounds(layout, parts, barless, TransformsOf, owner, profile, Drawn, NameWidth)
+function Glow.Bounds(layout, parts, barless, TransformsOf, owner, profile, Drawn, NameWidth, glow)
     local name, health = parts.name, parts.health
-    if barless or not layout or S.TurnedOff(layout.health) then
-        return NameLine(layout, parts, TransformsOf, owner, profile, Drawn)
+    local bar = not barless and layout and not S.TurnedOff(layout.health)
+    if glow and glow.width then
+        local centre = bar and health or name
+        return centre, centre, centre, centre, nil, nil, centre
     end
-    local top, bottom, transforms, topY, bottomY = health, health, nil, nil, nil
+    if not bar then return NameLine(layout, parts, TransformsOf, owner, profile, Drawn) end
+    local wrap = glow and glow.parts
+    local transforms, topY, bottomY = nil, nil, nil
     local count = 0
     for _, key in ipairs(Glow.EDGE_PARTS) do
         local region, position = parts[key], layout[key]
-        if region and position and not S.TurnedOff(position) and region:IsShown()
+        if (not wrap or wrap[key]) and region and position and not S.TurnedOff(position) and region:IsShown()
             and (not Drawn or Drawn(owner, key, region)) then
             transforms = transforms or TransformsOf(layout, owner)
             if transforms[key] and transforms.health then
@@ -293,9 +333,25 @@ function Glow.Bounds(layout, parts, barless, TransformsOf, owner, profile, Drawn
             end
         end
     end
-    if count == 0 then return health, health, top, bottom, nil, nil, health end
-    local taken, healthAt, nameAt = 1, transforms.health, nil
-    Box(boxes[1], profile, "health", healthAt)
+    local bodyKey = "health"
+    if wrap and not wrap.health then
+        bodyKey = nil
+        for _, key in ipairs(BODY_ORDER) do
+            for index = 1, count do
+                if waiting[index] == key then bodyKey, waiting[index] = key, false end
+            end
+            if bodyKey then break end
+        end
+        if bodyKey == "name" then
+            for index = 1, count do waiting[index] = nil end
+            return NameLine(layout, parts, TransformsOf, owner, profile, Drawn)
+        end
+        if not bodyKey then count = 0 end
+    end
+    if count == 0 then return health, health, health, health, nil, nil, health end
+    local body = parts[bodyKey]
+    local top, bottom, taken, bodyAt, nameAt = body, body, 1, transforms[bodyKey], nil
+    Box(boxes[1], profile, bodyKey, bodyAt)
     local found = true
     while found do
         found = false
@@ -308,9 +364,9 @@ function Glow.Bounds(layout, parts, barless, TransformsOf, owner, profile, Drawn
                     if Near(box, boxes[other]) then
                         taken, found, waiting[index] = taken + 1, true, false
                         if key == "name" then nameAt = at end
-                        if at.y > (topY or healthAt.y) then
+                        if at.y > (topY or bodyAt.y) then
                             top, topY = parts[key], at.y
-                        elseif at.y < (bottomY or healthAt.y) then
+                        elseif at.y < (bottomY or bodyAt.y) then
                             bottom, bottomY = parts[key], at.y
                         end
                         break
@@ -320,12 +376,12 @@ function Glow.Bounds(layout, parts, barless, TransformsOf, owner, profile, Drawn
         end
     end
     for index = 1, count do waiting[index] = nil end
-    local left, right, leftReach, rightReach = health, health, nil, nil
+    local left, right, leftReach, rightReach = body, body, nil, nil
     local width = nameAt and NameWidth and NameWidth(owner, name)
     if type(width) == "number" and width > 0 then
-        local reach, bar = width * nameAt.scale / 2, boxes[1]
-        if nameAt.x - reach < bar.x - bar.halfWidth then left, leftReach = name, reach end
-        if nameAt.x + reach > bar.x + bar.halfWidth then right, rightReach = name, reach end
+        local reach, box = width * nameAt.scale / 2, boxes[1]
+        if nameAt.x - reach < box.x - box.halfWidth then left, leftReach = name, reach end
+        if nameAt.x + reach > box.x + box.halfWidth then right, rightReach = name, reach end
     end
     return left, right, top, bottom, leftReach, rightReach, health
 end
@@ -464,7 +520,7 @@ PS._CreatePlateTargetGlow = function(context)
     -- The regions the glow reaches past on a plate (Glow.Bounds, with Placement's transforms and the
     -- plate's design sizing the parts), and a long name's reach.
     function Pass.Bounds(data)
-        return Glow.Bounds(data.layout, data, data.namesOnly, Transforms, data, data.profile, nil, NameWidth)
+        return Glow.Bounds(data.layout, data, data.namesOnly, Transforms, data, data.profile, nil, NameWidth, data.targetSoftGlow)
     end
 
     -- Placed round the plate; the frame takes the alpha of the part it follows (the bar, or a lone name),
@@ -559,6 +615,9 @@ PS._CreatePlateTargetGlow = function(context)
     -- the glow restyle it, each with its own design's values.
     function Glow.RestyleShown(settings)
         for data in pairs(shown) do Show(data, settings, true) end
+        -- And the glow behind your target's plate where Blizzard draws it (Extras.lua).
+        local extras = PS.Extras and PS.Extras._pass
+        if extras then extras.RestyleShown(settings) end
     end
 
     return Pass

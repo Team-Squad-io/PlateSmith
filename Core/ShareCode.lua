@@ -40,10 +40,10 @@ local function DocumentText(text)
 end
 
 local ImportDocument = PS.ImportBlueprint
-function PS.ImportBlueprint(text, selection)
+function PS.ImportBlueprint(text, selection, restored)
     local json, reason = DocumentText(text)
     if not json then return false, reason end
-    return ImportDocument(json, selection)
+    return ImportDocument(json, selection, restored)
 end
 
 -- The import preview's settings (Blueprint.lua's ImportResult), from a share code or JSON.

@@ -256,6 +256,14 @@ PS._CreateDiagnosticProbes = function(context)
             local ok, visibility = pcall(PS.PlateVisibility.Report)
             section.visibility = ok and visibility or "failed"
         end
+        if PS.ClickThrough then
+            local ok, clicks = pcall(PS.ClickThrough.Report)
+            section.clickThrough = ok and clicks or "failed"
+        end
+        if PS.Interaction then
+            local ok, interaction = pcall(PS.Interaction.Report)
+            section.interaction = ok and interaction or "failed"
+        end
         return section
     end
 
@@ -303,7 +311,6 @@ PS._CreateDiagnosticProbes = function(context)
     local function StackingReport(Stacking)
         local ok, section = pcall(Stacking.Report)
         if not ok or type(section) ~= "table" then return { state = "failed" } end
-        local readCVar = C_CVar and C_CVar.GetCVar or GetCVar
         local okPreset, preset = pcall(Stacking.Preset)
         section.preset = okPreset and tostring(preset) or "error"
         section.options = {}
@@ -317,18 +324,58 @@ PS._CreateDiagnosticProbes = function(context)
         section.combatSwitch = okCombat and (allowed == true and "allowed" or tostring(probe or "untested")) or "error"
         section.cvars = {}
         local okCatalogue, catalogue = pcall(Stacking.Catalogue)
+        -- Through NamePolicy's reader, which also reads a bitfield's bits (Stack enemy and friendly plates).
         for _, entry in ipairs(okCatalogue and type(catalogue) == "table" and catalogue or {}) do
-            local value = "api-missing"
-            if type(readCVar) == "function" then
-                local okRead, text = pcall(readCVar, entry.key)
-                value = not okRead and "error" or type(text) == "string" and text or "unavailable"
-            end
-            section.cvars[entry.key] = value
+            local okRead, text = pcall(ReadCVar, entry.key)
+            section.cvars[entry.key] = not okRead and "error" or type(text) == "string" and text or "unavailable"
         end
         return section
     end
 
-    local function BuildReport()
+    -- Every console variable whose name holds "nameplate" (any case), with its value and default: which
+    -- plate settings this client has and what they hold. Only for /ps diagnose (never for a capture
+    -- taken for an error), at most NAMEPLATE_CVARS.limit of them, each text cut to NAMEPLATE_CVARS.text.
+    local NAMEPLATE_CVARS = { limit = 150, text = 24 }
+    local function NameplateCVars()
+        local console = C_Console
+        if type(console) ~= "table" or type(console.GetAllCommands) ~= "function" then return { state = "api-missing" } end
+        local ok, commands = pcall(console.GetAllCommands)
+        if not ok or type(commands) ~= "table" then return { state = "failed" } end
+        local kinds = type(Enum) == "table" and Enum.ConsoleCommandType
+        local cvarKind = type(kinds) == "table" and kinds.Cvar or nil
+        local names = {}
+        for _, command in ipairs(commands) do
+            local name = type(command) == "table" and command.command or nil
+            local kind = type(command) == "table" and command.commandType or nil
+            if type(name) == "string" and name:lower():find("nameplate", 1, true)
+                and (cvarKind == nil or kind == nil or kind == cvarKind) then
+                names[#names + 1] = name
+            end
+        end
+        table.sort(names, function(left, right) return left:lower() < right:lower() end)
+        local function Short(value)
+            if value == nil then return "?" end
+            local text = tostring(value)
+            if #text > NAMEPLATE_CVARS.text then text = text:sub(1, NAMEPLATE_CVARS.text) .. "..." end
+            return text
+        end
+        local info = C_CVar and C_CVar.GetCVarInfo
+        local section = { count = #names, shown = math.min(#names, NAMEPLATE_CVARS.limit), cvars = {} }
+        for index = 1, section.shown do
+            local name, value, default = names[index], nil, nil
+            if type(info) == "function" then
+                local okInfo, current, fallback = pcall(info, name)
+                if okInfo then value, default = current, fallback end
+            end
+            if value == nil then value = ReadCVar(name) end
+            section.cvars[name] = string.format("%s (default %s)", Short(value), Short(default))
+        end
+        return section
+    end
+
+    -- collect: asked for by hand (/ps diagnose, the window's report tabs), so performance.memory.retained
+    -- may run a full collection; an error's captured report never does.
+    local function BuildReport(collect)
         local db = GetSettings()
         local build = type(GetBuildInfo) == "function" and select(4, GetBuildInfo()) or "unknown"
         local plates = C_NamePlate and C_NamePlate.GetNamePlates and C_NamePlate.GetNamePlates() or {}
@@ -349,16 +396,22 @@ PS._CreateDiagnosticProbes = function(context)
             groupType = raid and "raid" or "party"
         end
         local questAPI = C_QuestLog and type(C_QuestLog.UnitIsRelatedToActiveQuest) == "function"
+        -- Game objects' plates (a book, a chest), drawn names only and kept out of threat.
+        local objects = 0
+        for unit, data in pairs(active) do
+            if data.unit == unit and data.object == true then objects = objects + 1 end
+        end
         local report = {
             format = "platesmith-diagnostics",
             version = tostring(PS.RUNTIME_BUILD or "unknown build"),
             context = {
-                build = build, provider = ExternalProvider() or "native", plates = #plates,
+                build = build, provider = ExternalProvider() or "native", plates = #plates, objects = objects,
                 instance = inInstance and instanceType or "world",
                 group = { type = groupType, members = groupCount },
+                ownership = PS.PlateOwnership and PS.PlateOwnership() or "api-missing",
             },
             api = { quest = questAPI == true, secret = type(issecretvalue) == "function" },
-            settings = { mode = db.mode, friendly = db.friendly },
+            settings = { mode = db.mode, friendly = PS.ProfileSchema.FRIENDLY.Text(db) },
             questProviders = PS.Json.Array(),
             restrictions = PS.Restrictions.Report(),
             profile = {
@@ -367,9 +420,11 @@ PS._CreateDiagnosticProbes = function(context)
                 studio = PS.Options and PS.Options.editorNamedProfileDropdown
                     and tostring(PS.Options.editorNamedProfileDropdown:GetText()) or "none",
                 changes = PS.Json.Array(PS.Profiles.Changes(10)),
+                -- The look a profile was made from (New from preset, first run) and its version; none for others.
+                look = type(db.look) == "string" and db.look or "none", lookVersion = db.lookVersion,
             },
             designs = DesignsReport(db),
-            performance = PS.Performance.Report(),
+            performance = PS.Performance.Report(collect == true),
             raid = {},
         }
         -- Studio's design beside the one its plate type draws with here (the Summary's mismatch check).
@@ -384,10 +439,25 @@ PS._CreateDiagnosticProbes = function(context)
         -- Modules (the QuestieDB companion and any extension) and the add-ons they rely on, so a report
         -- shows why an optional feature is off: not installed, disabled, or loaded but failing.
         report.modules = {}
+        -- Each one's Studio settings page (Core/ModuleSettings.lua): ok, error: ..., disabled or api-missing, its build
+        -- time when it was slow (over 20 ms); PlateSmith's own pages (Threat) are listed as modules here too.
+        local Pages = PS.ModuleSettings
+        local function Studio(record, id)
+            local entry = Pages and Pages.Get(id)
+            if not entry then return record end
+            record.studio = Pages.State(entry)
+            if entry.slow and entry.buildMs then record.studioBuildMs = math.floor(entry.buildMs + 0.5) end
+            return record
+        end
         if type(PS.IterateModules) == "function" then
             for id, module in PS:IterateModules() do
-                report.modules[#report.modules + 1] = { id = id, version = tostring(module.version or "unknown"),
-                    state = tostring(module._plateSmithState or "registered") }
+                report.modules[#report.modules + 1] = Studio({ id = id, version = tostring(module.version or "unknown"),
+                    state = tostring(module._plateSmithState or "registered") }, id)
+            end
+        end
+        for _, entry in ipairs(Pages and Pages.List() or {}) do
+            if entry.builtin then
+                report.modules[#report.modules + 1] = Studio({ id = entry.id, version = "built-in", state = "enabled" }, entry.id)
             end
         end
         report.addons = {}
@@ -936,6 +1006,11 @@ PS._CreateDiagnosticProbes = function(context)
         else
             report.blizzardMeter = { present = false }
         end
+        -- Skin Blizzard's damage meter (Threat/MeterSkin.lua): on or off, what it skinned, errors it caught.
+        if PS.ThreatMeterSkin and type(PS.ThreatMeterSkin.Report) == "function" then
+            local ok, skin = pcall(PS.ThreatMeterSkin.Report)
+            report.meterSkin = ok and skin or { state = "failed" }
+        end
         if PS.ThreatConsole and type(PS.ThreatConsole.Report) == "function" then
             local ok, windows = pcall(PS.ThreatConsole.Report, PS.ThreatConsole)
             report.threatConsole = ok and windows or { state = "failed" }
@@ -945,18 +1020,42 @@ PS._CreateDiagnosticProbes = function(context)
             local ok, targeted = pcall(PS.TargetedBy.Report)
             report.targetedBy = ok and targeted or { state = "failed" }
         end
+        -- The Action icon: whether its pass runs, and what the client gave for the plates it reads.
+        if PS.ActionIcon and type(PS.ActionIcon.Report) == "function" then
+            local ok, action = pcall(PS.ActionIcon.Report)
+            report.actionIcon = ok and action or { state = "failed" }
+        end
+        -- Extras on Blizzard's plates: the choice, which extras are on, and whether the plates found Blizzard's
+        -- regions to anchor them to (regions: missing names a client whose plate is not as expected).
+        if PS.Extras and type(PS.Extras.Report) == "function" then
+            local ok, extras = pcall(PS.Extras.Report, db)
+            report.extras = ok and extras or { state = "failed" }
+        end
+        -- The Objects' Status text: its capture, how many objects are kept, your skills counted.
+        if PS.ObjectStatus and type(PS.ObjectStatus.Report) == "function" then
+            local ok, status = pcall(PS.ObjectStatus.Report)
+            report.objectStatus = ok and status or { state = "failed" }
+        end
+        -- Hovering object plates: whether it runs, its frames, and the SetCursor form each cursor took.
+        if PS.ObjectHover and type(PS.ObjectHover.Report) == "function" then
+            local ok, hover = pcall(PS.ObjectHover.Report)
+            report.objectHover = ok and hover or { state = "failed" }
+        end
         return report
     end
 
     -- A probe that fails (a value the client withholds in combat, say) must not leave /ps diagnose
     -- silent: the window still opens, on a short report naming the failure.
     local function Diagnose()
-        local ok, report = pcall(BuildReport)
+        local ok, report = pcall(BuildReport, true)
         if not ok then
             local reason = tostring(report)
             PS.Chat.ReportError("diagnose", reason)
             report = { format = "platesmith-diagnostics", version = tostring(PS.RUNTIME_BUILD or "unknown build"),
                 reportError = reason, performance = PS.Performance.Report() }
+        else
+            local okCVars, cvars = pcall(NameplateCVars)
+            report.nameplateCVars = okCVars and cvars or { state = "failed" }
         end
         DiagnosticUI.ShowReport(report, "manual")
     end

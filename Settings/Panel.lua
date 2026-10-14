@@ -15,6 +15,8 @@ local function Register(control)
     return control
 end
 Options.RegisterControl = Register
+-- A page under PlateSmith's category in Game Options (defined with RegisterModuleSettings, below).
+local AddCategory
 
 -- A kit slider's drag holds back the live plates' refresh until it ends (Settings' SetSettingsDrag).
 Controls.DragListener = function(active)
@@ -169,23 +171,31 @@ local function CreatePage(name)
     return page
 end
 
+-- Builds a page with build(page); the controls it registered are the page's (settingsPage): a refresh passes
+-- over them while the page is hidden (Studio's IsEditorControlAway), since showing it refreshes them all.
+local function BuildPage(page, build)
+    local first = #Options.controls + 1
+    build(Options, page)
+    for index = first, #Options.controls do Options.controls[index].settingsPage = page end
+end
+
 -- Plate appearance lives in Blueprint Studio; this page only points there.
 local function BuildMainPage(panel)
     local kit, flow = Options:NewSettingsPage(panel, "PlateSmith",
-        L["Plate appearance and layout are edited in Blueprint Studio (/ps). The Threat and Profiles pages hold "
-            .. "the rest."])
+        L["Plate appearance, the threat settings and modules' settings are edited in Blueprint Studio (/ps), which "
+            .. "also opens in combat. The Profiles page holds the rest."])
     local row, editor = kit.ButtonRow(flow, L["Open Blueprint Studio"], 200)
     editor:SetScript("OnClick", function() PS.OpenVisualEditor() end)
     row.flowBefore = kit.SECTION_TOP
     kit.Add(flow, row)
     Options.editorButton = editor
-    -- The live Performance view (/ps perf): watching it captures no diagnostics report.
+    -- The live Performance view: watching it captures no diagnostics report.
     local troubleshooting = Options.SettingsSection(kit, flow, L["Troubleshooting"], { collapsible = false })
     local perfRow, perf = kit.ButtonRow(troubleshooting, L["Open performance view"], 200)
     perf:SetScript("OnClick", function() PS.DiagnosticUI.ShowPerformance() end)
     kit.Add(troubleshooting, perfRow)
     kit.Add(troubleshooting, kit.Help(troubleshooting, L["PlateSmith's live CPU cost, refreshed once a second while "
-        .. "shown (/ps perf). /ps diagnose opens the full report to share."]))
+        .. "shown. /ps diagnose opens the full report to share."]))
     Options.performanceButton = perf
     panel:Relayout()
 end
@@ -210,28 +220,76 @@ function PS.CreateOptions()
         InterfaceOptions_AddCategory(panel)
     end
 
-    -- Threat (with the threat windows) and Profiles, in that order under PlateSmith.
-    local threatPage = CreatePage(L["Threat"])
-    Options:BuildThreatPage(threatPage)
-    Options.threatPanel = threatPage
-    PS.RegisterModuleSettings("threat", L["Threat"], threatPage)
-    -- The threat windows' "settings" route (ThreatConsole:OpenSettings) opens the Threat page.
-    Options.moduleSettings.threatWindows = Options.moduleSettings.threat
+    -- Threat, Profiles, then each module's page, in that order under PlateSmith. Threat's settings live in Studio
+    -- (Modules › Threat): its page here opens them, as every module's does.
+    local threat = PS.ModuleSettings.Get("threat")
+    if threat then
+        Options.threatPanel = Options:AddModuleLauncher(threat)
+        Options.moduleSettings.threatWindows = Options.moduleSettings.threat
+    end
 
     local profilesPage = CreatePage(L["Profiles"])
-    Options:BuildProfilesPage(profilesPage)
+    BuildPage(profilesPage, Options.BuildProfilesPage)
     Options.profilesPanel = profilesPage
-    PS.RegisterModuleSettings("profiles", L["Profiles"], profilesPage)
+    AddCategory("profiles", L["Profiles"], profilesPage)
+
+    for _, entry in ipairs(PS.ModuleSettings.List()) do
+        if entry ~= threat then Options:AddModuleLauncher(entry) end
+    end
 
     Options:Refresh()
     return panel
 end
 
-function PS.RegisterModuleSettings(id, title, panel)
+-- A module's page in Game Options (one home: its settings are in Studio): what it is, where its settings are, an
+-- Open in Studio button, and that Studio opens in combat where this panel does not. A module's gameOptions = false
+-- has none. Returns the page, or nil.
+function Options:AddModuleLauncher(entry)
+    if not entry.gameOptions or entry.launcherPage then return entry.launcherPage end
+    local page = CreatePage(entry.title)
+    local kit, flow = self:NewSettingsPage(page, entry.title, entry.launcher
+        or string.format(L["%s is a PlateSmith module. Its settings are in Blueprint Studio › Settings › Modules › %s."],
+            entry.title, entry.title))
+    local row, open = kit.ButtonRow(flow, L["Open in Studio"], 200)
+    open:SetScript("OnClick", function() Options:OpenModuleSettings(entry.id) end)
+    row.flowBefore = kit.SECTION_TOP
+    kit.Add(flow, row)
+    kit.Add(flow, kit.Help(flow, L["Blueprint Studio opens in combat too; this panel does not."]))
+    page.moduleOpenButton = open
+    page:Relayout()
+    entry.launcherPage = page
+    AddCategory(entry.id, entry.title, page)
+    return page
+end
+
+-- Core/ModuleSettings.lua, as a module registers: its Game Options page (once PlateSmith's own exist), and Studio's
+-- Modules list follows (Studio/Modules.lua reads the registrations).
+function Options:OnModuleSettingsRegistered(entry)
+    if self.panel then self:AddModuleLauncher(entry) end
+    if self.editorSettingsCategoriesPanel and self.LayoutEditorSettingsPanels then self:LayoutEditorSettingsPanels() end
+    -- Settings search indexes the new page the next time it is used.
+    local search = self.settingsSearch
+    if search and search._index and search._index.done and not search.IsBusy() then search.Reset() end
+end
+
+-- Deprecated for module API 1 (docs/MODULES.md): a raw page in Game Options. A module's settings belong in Studio
+-- (PlateSmith:RegisterStudioSettings); a page registered here is still found by Studio's Settings search, by its title.
+function PS.RegisterModuleSettings(...)
+    local id, title, panel = PS._Args(...)
     if type(id) ~= "string" or type(title) ~= "string" or not panel then
         return nil, "module settings require an id, title, and panel"
     end
     PS.CreateOptions()
+    local category, reason = AddCategory(id, title, panel)
+    if category then
+        Options.legacyModulePages = Options.legacyModulePages or {}
+        table.insert(Options.legacyModulePages, { id = id, title = title, page = panel, category = category })
+    end
+    return category, reason
+end
+
+-- A page under PlateSmith's category in Game Options: its category, or nil and the reason.
+AddCategory = function(id, title, panel)
     Options.moduleSettings = Options.moduleSettings or {}
     if Options.moduleSettings[id] then return nil, "module settings are already registered" end
 

@@ -8,7 +8,7 @@ local editorLabels = catalog.editorLabels
 local editorDefinitions = catalog.editorDefinitions
 local editorProfiles = model.editorProfiles
 local WidgetName = model.WidgetName
-local editorProfileSet = { enemy = true, friendlyPlayer = true, friendlyNPC = true, enemyPlayer = true }
+local editorProfileSet = { enemy = true, friendlyPlayer = true, friendlyNPC = true, enemyPlayer = true, object = true }
 local Designs = assert(PS.Designs, "PlateSmith Designs missing")
 
 local IsReadableValue = PS.Secret.IsReadable
@@ -55,9 +55,14 @@ local function MakeEditorComponent(parent, key, width, height)
     component:SetBackdropBorderColor(0, 0, 0, 0)
     component:SetScript("OnEnter", function(instance)
         if Options.selectedComponent ~= key then instance:SetBackdropBorderColor(0.85, 0.75, 0.5, 0.6) end
+        -- A stack ghost's dashed outline lights while pointed at.
+        instance.ghostHover = true
+        Options:PaintEditorGhost(key)
     end)
     component:SetScript("OnLeave", function(instance)
         if Options.selectedComponent ~= key then instance:SetBackdropBorderColor(0, 0, 0, 0) end
+        instance.ghostHover = nil
+        Options:PaintEditorGhost(key)
     end)
     component:SetScript("OnMouseDown", function() Options:PressEditorComponent(key) end)
     component:SetScript("OnDragStart", function(instance) Options:StartEditorDrag(key, instance) end)
@@ -84,9 +89,23 @@ function Options:IsEditorComponentRelevant(key, settings, includeRemoved)
     if key == "questLoot" then return false end
     local position = self.editorLayout and self.editorLayout[key]
     if position and position.removed and not includeRemoved then return false end
+    -- The Action icon: Objects and Friendly NPCs, in the layouts that have it (not Blizzard's dungeon names).
+    if key == "actionIcon" and (position == nil or not PS.ProfileSchema.ACTION_PLATES[self.editorProfile]) then
+        return false
+    end
+    -- The Status text (ObjectStatus.lua): Objects only.
+    if key == "statusText" then return self:IsEditorObject() and position ~= nil end
+    -- The Loose mark (LooseMark.lua): Enemies (and Enemy players) only, in the layouts that have it.
+    if key == "looseMark" then return self:IsEditorEnemy() and position ~= nil end
+    -- The Backdrop (Backdrop.lua): Objects only.
+    if key == "backdrop" then return self:IsEditorObject() and position ~= nil end
+    -- Objects: the name, the quest mark, the Action icon, the Status text and the Backdrop (no custom parts).
+    if self:IsEditorObject() then return key == "name" or key == "quest" or key == "actionIcon" end
     settings = settings or (type(PS.GetSettings) == "function" and PS.GetSettings())
+    -- Friendly plates Blizzard draws (Show as: Blizzard plates) have no parts here.
+    local showAs = settings and PS.ProfileSchema.FRIENDLY.Mode(settings, self.editorProfile)
     local friendlyMode = self.editorDesign == "dungeon" and "full"
-        or (self.editorFriendlyView or (settings and settings.friendly))
+        or showAs ~= "off" and self.editorFriendlyView or showAs
     if key:match("^value%d+$") then
         local profile = self:EditorProfileSettings()
         local slot = profile and profile.valueSlots and profile.valueSlots[key]
@@ -148,10 +167,14 @@ function Options:ApplyEditorPreviewStyles(profile)
                 box:SetFrameLevel(math.max(0, component:GetFrameLevel() - 1))
                 component.styleBox = box
             end
-            local padding = style.padding or STYLE_DEFAULTS.padding
-            box:ClearAllPoints()
-            box:SetPoint("TOPLEFT", text, "TOPLEFT", -padding, padding)
-            box:SetPoint("BOTTOMRIGHT", text, "BOTTOMRIGHT", padding, -padding)
+            -- Placed as on the plates (StyleBox.Place), as tall as the part it is pinned to where its style says.
+            local parent, parentStyle
+            local parentKey = style.boxHeight == "parent" and self.editorLayout and PS.ProfileSchema.PinTarget(self.editorLayout, key)
+            if parentKey and self.editorComponents[parentKey] then
+                local holder = self.editorComponents[parentKey]
+                parent, parentStyle = holder.previewBar or holder.previewText or holder, holder.previewBar and styles[parentKey]
+            end
+            PS.StyleBox.Place(box, text, style, parent, parentStyle and parentStyle.border)
             -- Rounded: Blizzard's level box art, as on the plates (the square box where the client lacks it).
             if PS.StyleBox.Rounded(box, style.boxShape == "rounded") then
                 box:SetBackdrop(nil)
@@ -200,23 +223,16 @@ function Options:ApplyEditorPreviewStyles(profile)
     end
 end
 
--- A blend's colour at percent: the plates' own blend (PS.StyleBlend), so the preview matches.
-local function BlendColour(stops, percent)
-    local r, g, b = PS.StyleBlend.Colour(stops, percent)
-    return r and { r = r, g = g, b = b } or nil
-end
-
 -- Rules in the preview: with the sample values (Options.templateSamples), or every condition
 -- holding while "Preview as if true" is ticked. The components' own refresh has just set their
--- normal look, so a rule only needs to put its colour or opacity over it. As on the plates, the
--- last colour or blend rule that holds sets the colour, the last opacity rule the opacity, and
--- any hide rule hides; an empty condition always holds.
+-- normal look, so a rule only needs to put its colour or opacity over it. Which rules apply is the
+-- plates' own answer (PS.StyleRules, Nameplates/Styles.lua), blends included.
 function Options:ApplyEditorPreviewRules(profile)
     for _, component in pairs(self.editorComponents or {}) do component.previewRuleHidden = nil end
     self:ApplyEditorPreviewPartRules(profile)
     -- As on the plates: what sits under a part a rule hides (or fades to 0) hides with it; a
     -- turned-off part passes the question up to its own parent.
-    local layout, components = self.editorLayout or {}, self.editorComponents or {}
+    local layout, components = self:EditorDrawnLayout(), self.editorComponents or {}
     local function HiddenUnder(key, depth)
         local component = components[key]
         if component and component.targetPreviewVisible and component.previewRuleHidden then return true end
@@ -236,14 +252,17 @@ function Options:ApplyEditorPreviewRules(profile)
 end
 
 -- Threat colours in the preview, from the test values (ThreatColours.ForSample): the health bar and
--- the name where no rule colours them (ruled[key]), and the health bar's edge.
+-- the name where no rule colours them (ruled[key]), and the health bar's edge. Over them, as on the plates
+-- (Lifecycle's ApplyPartRules), the health bar's grey while Tagged is on (ThreatColours.GreyForSample).
 function Options:ApplyEditorPreviewThreat(ruled)
     local Threat, settings = PS.ThreatColours, PS.GetSettings and PS.GetSettings()
     if not Threat or not settings then return end
     local components, samples = self.editorComponents or {}, self.templateSamples or {}
+    local enemy = self:IsEditorEnemy()
     for _, key in ipairs(Threat.RULE_PARTS) do
         local component = components[key]
-        local colour = not ruled[key] and Threat.ForSample(settings, key, samples)
+        local colour = not ruled[key] and (key == "health" and Threat.GreyForSample(settings, samples, enemy)
+            or Threat.ForSample(settings, key, samples))
         if colour and component and component:IsShown() and not component.previewNative then
             if component.previewBar then
                 component.previewBar:SetStatusBarColor(colour.r, colour.g, colour.b)
@@ -269,6 +288,24 @@ function Options:ApplyEditorPreviewThreat(ruled)
     edge:SetShown(colour and true or false)
 end
 
+-- The Bar frame mark round the sample's health bar (ClassificationMark.PaintFrame, outside its own border), and the
+-- bar's edges moved out past it as on the plates (Lifecycle's rounds.MarkFrame): the threat edge and the target's
+-- gold edge or halo stay the outermost line.
+function Options:ApplyEditorMarkFrame(profile)
+    local health = self.editorComponents and self.editorComponents.health
+    local bar = health and health.previewBar
+    if not bar then return end
+    local Mark = PS.ClassificationMark
+    local style = self:IsEditorEnemy() and self:EditorMarkStyle() or nil
+    local kind = style == "frame" and health:IsShown() and self.SampleClassification(self.templateSamples) or nil
+    local border = profile and profile.styles and profile.styles.health and tonumber(profile.styles.health.border) or 0
+    local width = Mark.PaintFrame(health, bar, kind, border)
+    local outset = width > 0 and border + width or 0
+    local glow, edge = health.targetPreviewGlow, health.previewThreatEdge
+    if glow then Mark.PlaceRing(glow, health, (self.targetPreviewStyle == "halo" and 3 or 1) + outset) end
+    if edge then Mark.PlaceRing(edge, health, 1 + outset) end
+end
+
 function Options:ApplyEditorPreviewPartRules(profile)
     local rules = profile and profile.rules
     local ruled = {}
@@ -277,29 +314,22 @@ function Options:ApplyEditorPreviewPartRules(profile)
         return
     end
     local samples, forced = self.templateSamples or {}, self.editorRulesPreviewTrue
-    local function Read(token) return samples[token] end
-    local percent = tonumber(samples["health.percent"]) or 72
+    local function read(token) return samples[token] end
     for key, list in pairs(rules) do
         local component = self.editorComponents and self.editorComponents[key]
         if component and component:IsShown() and not component.previewNative then
-            local colour, alpha, hide
-            for _, rule in ipairs(list) do
-                -- A rule turned off never applies, not even as if its condition held.
-                local always = rule.when == ""
-                local tree = not always and PS.Template.CompileCondition(rule.when)
-                if rule.enabled ~= false and (always or (tree and (forced or PS.Template.Test(tree, Read)))) then
-                    if rule.set == "colour" then colour = rule.colour
-                    elseif rule.set == "blend" and rule.stops then colour = BlendColour(rule.stops, percent)
-                    elseif rule.set == "alpha" then alpha = rule.alpha
-                    elseif rule.set == "hide" then hide = true end
-                end
-            end
-            if colour then
+            -- The plates' own answer (PS.StyleRules), from Test values; forced: as if every condition held (a rule
+            -- turned off still never applies).
+            local colourRule, alpha, hide = PS.StyleRules.Resolve(list, read, forced)
+            local r, g, b
+            if colourRule then r, g, b = PS.StyleRules.Colour(colourRule, read) end
+            if r then
                 ruled[key] = true
-                if component.previewBar then component.previewBar:SetStatusBarColor(colour.r, colour.g, colour.b)
-                elseif component.previewTexture then component.previewTexture:SetVertexColor(colour.r, colour.g, colour.b)
-                elseif component.previewText then component.previewText:SetTextColor(colour.r, colour.g, colour.b) end
+                if component.previewBar then component.previewBar:SetStatusBarColor(r, g, b)
+                elseif component.previewTexture then component.previewTexture:SetVertexColor(r, g, b)
+                elseif component.previewText then component.previewText:SetTextColor(r, g, b) end
             end
+            -- A hidden part stays faintly in the preview (12%), so it can still be selected and edited.
             if hide or alpha then
                 local current = component.GetAlpha and component:GetAlpha() or 1
                 component:SetAlpha(current * (hide and 0.12 or alpha))
@@ -401,16 +431,12 @@ function Options:RefreshSoftGlowPreview(settings, shown)
         self.targetPreviewSoftGlow = glow
     end
     Glow.SetLevel(glow, stage:GetFrameLevel())
-    -- Its spread at the sample's drawn size (the preview's zoom and the profile's scale).
-    local scale = health and health.GetScale and health:GetScale() or 1
-    local spread = settings.targetGlowSpread
-    Glow.Style(glow, { targetGlowSpread = spread and spread * scale, targetGlowOpacity = settings.targetGlowOpacity,
-        targetGlowPulse = settings.targetGlowPulse, targetGlowOffsetX = (settings.targetGlowOffsetX or 0) * scale,
-        targetGlowOffsetY = (settings.targetGlowOffsetY or 0) * scale })
-    local layout = self.editorLayout or {}
+    -- Its sizes at the sample's drawn size (the preview's zoom and the profile's scale).
+    Glow.Style(glow, settings, health and health.GetScale and health:GetScale() or 1)
+    local layout = self:EditorDrawnLayout()
     local barless = not (health and health:IsShown() and layout.health)
     Glow.Place(glow, Glow.Bounds(layout, components, barless, EditorTransforms, self,
-        StageSizes(self:EditorProfileSettings() or settings), EditorEdgeDrawn, EditorNameWidth))
+        StageSizes(self:EditorProfileSettings() or settings), EditorEdgeDrawn, EditorNameWidth, glow))
     Glow.Paint(glow, SoftGlowColour(self, settings))
     Glow.Show(glow)
 end
@@ -421,7 +447,8 @@ function Options:RefreshTargetHighlightPreview(settings)
     if not self.editorCanvas then return end
     local highlight = PS.ProfileSchema.HIGHLIGHT.Resolve(settings, self:EditorProfileSettings(), self.editorHighlight)
     self.editorHighlight = highlight
-    local style = highlight.targetHighlightStyle
+    -- Objects show no target highlight (as on the plates: Lifecycle's UpdateTarget).
+    local style = self:IsEditorObject() and "off" or highlight.targetHighlightStyle
     if self.targetPreviewStyle ~= style then
         self.targetPreviewStyle = style
         self:UpdateEditorPulse()
@@ -443,14 +470,16 @@ function Options:RefreshTargetHighlightPreview(settings)
     self:RefreshSoftGlowPreview(highlight, targeted and style == "glow" and not self:IsEditorBlizzardNames(settings))
 end
 
--- Test values' reaction flags colour the sample's name: hostile red, friendly green for a
--- player or blue for an NPC, otherwise neutral yellow. Each plate type starts from its own; the
--- Enemies' Battlegrounds & arenas design from an enemy player.
+-- Test values' reaction flags colour the sample as the plates colour a unit (SampleBaseColour). Each plate type starts
+-- from its own; the Enemies' Battlegrounds & arenas design from an enemy player. The friendly player sample is you, in
+-- your group and PvP-flagged (the preview draws its PvP mark), so rules on pvp and ingroup hold for it too.
 local SAMPLE_REACTIONS = {
-    enemy = { hostile = true, friendly = false, player = false },
-    enemyPlayer = { hostile = true, friendly = false, player = true },
-    friendlyPlayer = { hostile = false, friendly = true, player = true },
-    friendlyNPC = { hostile = false, friendly = true, player = false },
+    enemy = { hostile = true, friendly = false, player = false, pvp = false, ingroup = false },
+    enemyPlayer = { hostile = true, friendly = false, player = true, pvp = false, ingroup = false },
+    friendlyPlayer = { hostile = false, friendly = true, player = true, pvp = true, ingroup = true },
+    friendlyNPC = { hostile = false, friendly = true, player = false, pvp = false, ingroup = false },
+    -- An object has no reaction; it starts as a quest object (Shipment of Iron, its quest mark lit).
+    object = { hostile = false, friendly = false, neutral = false, player = false, quest = true, pvp = false, ingroup = false },
 }
 local function SampleKind(plateType, design)
     if plateType == "enemy" and design == "pvp" then return "enemyPlayer" end
@@ -487,13 +516,38 @@ function Options:ResetEditorSamples(defaults)
     end
 end
 
-local function SampleNameColour(samples)
-    if samples.hostile then return 1, 0.25, 0.2 end
-    if samples.friendly then
-        if samples.player then return 0.25, 1, 0.45 end
-        return 0.35, 0.9, 1
-    end
-    return 1, 0.9, 0.35
+-- Test values as the facts of the plates' base colour (PS.PlateColours.Base, which also colours every plate): the
+-- sample table stands for the unit. A player sample's class is yours (the friendly player sample is you); group and
+-- guild come from ingroup and inguild; neutral from its flag, or a sample neither hostile nor friendly.
+local SAMPLE_FACTS = {
+    IsPlayer = function(samples) return samples.player == true end,
+    PvP = function(samples) return samples.pvp == true end,
+    Relationship = function(samples)
+        if samples.ingroup == true then return "group" end
+        if samples.inguild == true then return "guild" end
+        return nil
+    end,
+    ClassFile = function(samples) if samples.player == true then return PS.Secret.ClassFile("player") end end,
+    Neutral = function(samples) return samples.neutral == true or (samples.hostile ~= true and samples.friendly ~= true) end,
+}
+
+-- The sample's own colour, without PvP: its name's, and its health bar's unless the design or the PvP colour sets the
+-- bar's (PlateColours.Base, as a plate of plateType with these facts). settings: the general settings.
+function Options.SampleBaseColour(settings, samples, plateType)
+    samples = samples or Options.templateSamples
+    return PS.PlateColours.Base(settings, SAMPLE_FACTS, samples, samples.friendly == true, plateType == "object")
+end
+
+-- The sample's PvP colour (PlateColours.PvP from Test values; the friendly player sample is a flagged ally) and whether
+-- it goes on the health bar (PvPMark.ColourOnBar, as the plates decide; else on the name). nil when it has none.
+function Options:EditorPvPColour(settings, profile)
+    local samples = self.templateSamples or Options.templateSamples
+    if samples.friendly ~= true or self.editorProfile == "object" then return nil end
+    local colour = PS.PlateColours.PvP(settings, SAMPLE_FACTS, samples)
+    if type(colour) ~= "table" then return nil end
+    local health = self.editorLayout and self.editorLayout.health
+    local barShown = health ~= nil and not PS.ProfileSchema.TurnedOff(health) and self:IsEditorComponentRelevant("health", settings)
+    return colour, PS.PvPMark.ColourOnBar(settings, profile or self:EditorProfileSettings(), barShown)
 end
 
 -- Blizzard's friendly names in a dungeon, as its plates draw them: a class-coloured player, a green
@@ -636,24 +690,43 @@ function Options:RefreshEditorAppearance(settings, light)
     if name and name.previewText and sample then
         local text = SampleKind(self.editorProfile, self.editorDesign) == "enemyPlayer" and ENEMY_PLAYER_SAMPLE
             or sample.sampleName
+        -- An object: a quest object while Test values' Quest unit is ticked, else the book.
+        if sample.questSampleName and (self.templateSamples or {}).quest ~= false then text = sample.questSampleName end
+        -- A Type open: an object of that type.
+        local objectType = self.EditorObjectType and self:EditorObjectType()
+        if objectType and sample.typeSampleNames and sample.typeSampleNames[objectType] then
+            text = sample.typeSampleNames[objectType]
+        end
         if self.editorProfile == "friendlyPlayer" then
             -- As on the plates (Nameplates/Identity): without surnames only the first word shows.
             text = CurrentCharacterName()
             if settings.showPlayerSurnames == false then text = text:match("^(%S+)") or text end
         end
         name.previewText:SetText(self:EditorSampleScript().name or text)
-        local colour = self.editorProfile == "friendlyPlayer"
-            and (settings.friendlyPvpStyle == "colour" or settings.friendlyPvpStyle == "both")
-            and settings.relationshipColours and settings.relationshipColours.pvp
-        if colour then
+        -- As the plates colour it: a flagged ally's PvP colour where the bar does not take it (EditorPvPColour), else
+        -- its own (PlateColours.Base: an object's gold, a social or class colour, a reaction).
+        local colour, onBar = self:EditorPvPColour(settings, profile)
+        if colour and not onBar then
             name.previewText:SetTextColor(colour.r, colour.g, colour.b)
         else
-            name.previewText:SetTextColor(SampleNameColour(self.templateSamples or {}))
+            name.previewText:SetTextColor(Options.SampleBaseColour(settings, self.templateSamples or {}, self.editorProfile))
         end
     end
+    -- The sample's level ({level}: 14; -1 draws "??"); an Enemies plate's in its Elite / rare mark style, as the
+    -- plates write it (ClassificationMark.LevelText: Level suffix's letters, the Classic dragon's boss skull).
     local level = self.editorComponents.level
     if level and level.previewText then
-        level.previewText:SetText(self:IsEditorEnemy() and "14" or "15")
+        if self:IsEditorEnemy() then
+            local style, styles = self:EditorMarkStyle(settings), profile.styles
+            local Schema = PS.ProfileSchema
+            local height = Schema.ScaledFontSize(Schema.StyledFontSize(Schema.PartTextSize("level", profile.nameFontSize),
+                styles and styles.level), settings.textScale)
+            local samples = self.templateSamples or {}
+            level.previewText:SetText(tostring(PS.ClassificationMark.LevelText(math.floor(tonumber(samples.level) or 14),
+                self.SampleClassification(samples), style, height * PS.ClassificationMark.DRAGON.SKULL)))
+        else
+            level.previewText:SetText("15")
+        end
     end
     local guild = self.editorComponents.guild
     if guild and guild.previewText and self.editorProfile == "friendlyPlayer" then
@@ -679,6 +752,7 @@ function Options:RefreshEditorAppearance(settings, light)
     -- Styles and rules last, over every colour and text set above (the sample name's colour too).
     self:ApplyEditorPreviewStyles(profile)
     self:ApplyEditorPreviewRules(profile)
+    self:ApplyEditorMarkFrame(profile)
     if blizzardNames then self:ApplyEditorBlizzardName(settings) end
     -- Again, now what the rules hide is known: a hidden part's ghost goes under the drawn ones.
     self:RefreshEditorComponentLayers()
@@ -692,26 +766,34 @@ function Options:RefreshEditorAppearance(settings, light)
     if self.editorPreviewFit and not self.editorDrag then self:FitEditorPreview(self.editorPreviewFitZoom) end
     -- The model behind the plate follows its lowest part (PreviewModel.lua; nothing while Off).
     if self.PlaceEditorModel then self:PlaceEditorModel() end
+    -- Fade objects you can't use, as the plates fade (Lifecycle's ObjectFade), with Test values' Can't use yet; a herb
+    -- with Cultivation ready does not fade.
+    local stage = self.editorPreviewStage
+    if stage and stage.SetAlpha then
+        local samples = self.templateSamples or {}
+        local faded = self:IsEditorObject() and settings.objectFadeUnable == true and samples["object.unable"] == true
+            and not (samples["object.kind"] == "herb" and samples["object.cancultivate"] == true)
+        stage:SetAlpha(faded and PS.ObjectPlate.FADE or 1)
+    end
 end
 
--- The preview's Names only / Full plate switch: friendly plates, on every design but Dungeons &
--- raids (Blizzard's). The one the plates use now (Settings > Friendly units) is gold.
+-- The preview's Editing: Names only / Full plate switch: friendly plates, on every design but Dungeons &
+-- raids (Blizzard's), while PlateSmith draws them. The one the plates use now (Plate settings › Friendly
+-- plates › Show as) is gold: its label's ink (studioInk), which every repaint of the button keeps.
 local LIVE_VIEW = { 1, 0.82, 0.2 }
 function Options:RefreshEditorFriendlyViewButtons()
     local buttons = self.editorFriendlyViewButtons
     if not buttons then return end
     local friendly = (self.editorProfile == "friendlyPlayer" or self.editorProfile == "friendlyNPC")
-        and self.editorDesign ~= "dungeon"
+        and self.editorDesign ~= "dungeon" and self:EditorShowAs() ~= "off"
     local view, live = self:EditorFriendlyView(), self:EditorLiveFriendlyView()
     local chrome = self.studioChrome
     for key, button in pairs(buttons) do
         button:SetShown(friendly and true or false)
+        button.studioInk = key == live and LIVE_VIEW or nil
         chrome.SetStudioButtonState(button, key == view)
-        if button.label then
-            local colour = key == live and LIVE_VIEW or chrome.LABEL
-            button.label:SetTextColor(colour[1], colour[2], colour[3])
-        end
     end
+    if self.editorFriendlyViewLabel then self.editorFriendlyViewLabel:SetShown(friendly and true or false) end
 end
 
 -- The design Studio opens on a plate type: the one last edited there while it still exists, else World.

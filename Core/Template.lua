@@ -10,7 +10,8 @@ local Format = assert(PS.Format, "PlateSmith Format missing")
 --
 -- A token is {name} or {name:format}; format is short (1.2k) or 0, 1 or 2 decimals. Conditions
 -- are [if ...], [elseif ...], [else] and [end], nesting up to four deep, with and, or, not,
--- brackets and comparisons (< <= > >= = !=) between tokens and numbers. {{ and [[ write a
+-- brackets and comparisons (< <= > >= = == !=) between tokens and numbers, or an enum token and one of its
+-- values (object.kind = herb). {{ and [[ write a
 -- literal { or [. Protected values are only ever shown: they pass straight into the client's
 -- SetFormattedText, never compared or calculated. Conditions use three values: a protected or
 -- missing value is unknown, unknown carries through not, and, or (Kleene logic), and only a
@@ -44,9 +45,22 @@ Template.tokens = {
     ["questdrop"] = "flag",
     ["pvp"] = "flag", ["instance"] = "flag", ["ingroup"] = "flag", ["inguild"] = "flag",
     ["role.tank"] = "flag", ["threat.holding"] = "flag", ["threat.losing"] = "flag", ["threat.pulling"] = "flag",
-    ["threat.other"] = "flag", ["threat.offtank"] = "flag",
+    ["threat.other"] = "flag", ["threat.offtank"] = "flag", ["threat.loose"] = "flag",
     ["hastarget"] = "flag", ["inrange"] = "flag", ["quest.progress"] = "text", ["quest.percent"] = "percent",
     ["combo"] = "number",
+    -- Objects and NPCs you can interact with (Nameplates/ActionIcon.lua): what the game's cursor icon says the
+    -- unit is for, whether it says you cannot (a too-low skill), whether it is within reach, its ID from the game.
+    ["object.kind"] = "enum", ["object.unable"] = "flag", ["interact.inrange"] = "flag",
+    ["object.id"] = "number", ["unit.id"] = "number", ["object.quest"] = "flag",
+    -- What the object needs (Nameplates/ObjectStatus.lua: its tooltip's skill line, kept once hovered, else the
+    -- original game's herbs and veins) and whether your skill reaches it; unknown until it is known. Whether you can
+    -- cultivate the herb now (Nameplates/Cultivation.lua, the Tauren racial).
+    ["object.skill"] = "number", ["object.cangather"] = "flag", ["object.cancultivate"] = "flag",
+}
+-- An enum token's values: a bare word on the right of = or != (object.kind = herb). Shown as text.
+Template.enums = {
+    ["object.kind"] = { herb = true, ore = true, skin = true, loot = true, quest = true, inspect = true, interact = true,
+        talk = true, trainer = true, vendor = true, flight = true, repair = true, mail = true, other = true },
 }
 -- Short names people know from other addons.
 Template.aliases = {
@@ -74,10 +88,12 @@ local function Tokenize(condition)
         else
             local word = rest:match("^[%a][%w%.]*")
             local number = not word and rest:match("^%-?%d+%.?%d*")
-            local operator = not word and not number and (rest:match("^[<>!]=") or rest:match("^[<>=()]"))
+            local operator = not word and not number and (rest:match("^==") or rest:match("^[<>!]=") or rest:match("^[<>=()]"))
             local piece = word or number or operator
             if not piece then return nil, string.format(L["cannot read \"%s\""], Format.Truncate(rest, 8)) end
-            list[#list + 1] = { text = piece, word = word ~= nil, number = number and tonumber(number) or nil }
+            -- == is = (as other addons write it).
+            list[#list + 1] = { text = piece == "==" and "=" or piece, word = word ~= nil,
+                number = number and tonumber(number) or nil }
             position = position + #piece
         end
     end
@@ -116,7 +132,22 @@ local function ParseCondition(text)
         local left, failure = Operand()
         if not left then return nil, failure end
         local operator = Peek()
-        if operator and COMPARISONS[operator.text] then
+        local values = left.token and Template.enums[left.token]
+        if operator and COMPARISONS[operator.text] and values then
+            -- An enum: = or != one of its values, a bare word.
+            Take()
+            local value = Take()
+            if operator.text ~= "=" and operator.text ~= "!=" then
+                return nil, string.format(L["%s takes = or !="], left.token)
+            end
+            if not (value and value.word and values[value.text]) then
+                local names = {}
+                for name in pairs(values) do names[#names + 1] = name end
+                table.sort(names)
+                return nil, string.format(L["%s is one of: %s"], left.token, table.concat(names, ", "))
+            end
+            return { compare = operator.text, left = left, right = { value = value.text } }
+        elseif operator and COMPARISONS[operator.text] then
             Take()
             local right, rightFailure = Operand()
             if not right then return nil, rightFailure end
@@ -316,6 +347,7 @@ end
 
 local function Value(operand, read)
     if operand.number then return operand.number end
+    if operand.value then return operand.value end
     return read(operand.token)
 end
 
@@ -344,8 +376,14 @@ local function Evaluate(node, read)
     if node.truth then return Truth(Value(node.truth, read)) end
     local left, right = Value(node.left, read), Value(node.right, read)
     if not Readable(left) or not Readable(right) then return nil end
-    if type(left) ~= "number" or type(right) ~= "number" then return false end
     local operator = node.compare
+    -- An enum's value (readable text, never a protected value: Readable above).
+    if node.right.value then
+        if type(left) ~= "string" then return false end
+        if operator == "=" then return left == right end
+        return left ~= right
+    end
+    if type(left) ~= "number" or type(right) ~= "number" then return false end
     if operator == "<" then return left < right end
     if operator == "<=" then return left <= right end
     if operator == ">" then return left > right end
@@ -411,13 +449,14 @@ local function Walk(list, read, parts, arguments)
             elseif #arguments < MAX_ARGUMENTS then
                 -- Protected: the client formats it (a formatter is skipped). Short numbers go
                 -- through its abbreviator.
-                local shown, pattern = value, kind == "text" and "%s" or "%.0f"
-                if node.format == "short" and kind ~= "text" then
+                local text = kind == "text" or kind == "enum"
+                local shown, pattern = value, text and "%s" or "%.0f"
+                if node.format == "short" and not text then
                     local abbreviate = type(AbbreviateNumbers) == "function" and AbbreviateNumbers or nil
                     local ok, abbreviated = false, nil
                     if abbreviate then ok, abbreviated = pcall(abbreviate, value) end
                     if ok and Secret.HasValue(abbreviated) then shown, pattern = abbreviated, "%s" end
-                elseif tonumber(node.format) and kind ~= "text" then
+                elseif tonumber(node.format) and not text then
                     pattern = "%." .. node.format .. "f"
                 end
                 parts[#parts + 1] = pattern
@@ -466,6 +505,12 @@ end
 -- True only when the condition is true; false and unknown both fail.
 function Template.Test(tree, read) return tree ~= nil and Evaluate(tree, read) == true end
 
+-- The condition's own answer: true, false, or nil while unknown (or no condition).
+function Template.Evaluate(tree, read)
+    if tree == nil then return nil end
+    return Evaluate(tree, read)
+end
+
 -- Writes a template into a font string. Returns true when something shows.
 function Template.Apply(fontString, source, read)
     local nodes = Template.Compile(source)
@@ -491,7 +536,7 @@ end
 
 -- Installed addons are trusted code and may register functions; templates and rules (from
 -- profiles and Blueprints) are data and can only name what is registered (STYLING_RULES 12.1).
-local MAX_ID_LENGTH, MAX_LABEL_LENGTH, MAX_SAMPLE_LENGTH = 64, 80, 60
+local MAX_LABEL_LENGTH, MAX_SAMPLE_LENGTH = 80, 60
 local KINDS = { number = "number", percent = "number", signed = "number", text = "string", flag = "boolean" }
 local BUILT_IN_MODIFIERS = {
     short = true, full = true, ["0"] = true, ["1"] = true, ["2"] = true, d0 = true, d1 = true, d2 = true,
@@ -503,15 +548,13 @@ local reserved = {}
 for name in pairs(Template.tokens) do reserved[name:match("^[^.]+")] = true end
 for name in pairs(Template.aliases) do reserved[name:match("^[^.]+")] = true end
 
+-- The module ID grammar (Core/Modules.lua's IsModuleId, loaded after this file and read when a module registers).
 local function CheckId(id, what)
-    if type(id) ~= "string" or #id > MAX_ID_LENGTH or not id:match("^[a-z][a-z0-9]*%.[a-z0-9][a-z0-9.]*$")
-        or id:find("..", 1, true) or id:sub(-1) == "." then
-        return false, what .. " id must be \"<module>.<name>\" in lowercase letters, digits and dots, at most "
-            .. MAX_ID_LENGTH .. " characters"
-    end
+    if not PS.IsModuleId(id, 2) then return false, PS._IdReason(what, 2) end
     if reserved[id:match("^[^.]+")] then return false, what .. " id " .. id .. " uses a PlateSmith namespace" end
     return true
 end
+Template.CheckId = CheckId
 
 local function CheckLabel(label)
     return label == nil or (type(label) == "string" and #label <= MAX_LABEL_LENGTH)
@@ -581,6 +624,9 @@ function Template.ReadExtension(token, unit, read)
     if Readable(value) and type(value) ~= KINDS[entry.kind] then return nil end
     return value
 end
+
+-- Whether id is a token or fact another addon registered.
+function Template.IsExtension(id) return extensions[id] ~= nil end
 
 -- Studio's preview value for a registered token.
 function Template.Sample(token)

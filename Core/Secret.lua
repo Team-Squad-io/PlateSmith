@@ -102,10 +102,27 @@ function Secret.UnitExists(unit)
     return Secret.ReadBoolean(UnitExists, unit) == true
 end
 
+-- Whether unit is a game object the client gave a nameplate (a book, a chest): only a readable true. Read before
+-- UnitExists, which an object may fail; a missing API or a protected answer is not an object (the old behaviour).
+-- The one reader for plates and the threat service.
+function Secret.IsGameObject(unit)
+    return Secret.ReadBoolean(UnitIsGameObject, unit) == true
+end
+
 function Secret.ReadGUID(unit)
     if type(UnitGUID) ~= "function" then return nil end
     local ok, guid = pcall(UnitGUID, unit)
     return ok and Secret.String(guid) or nil
+end
+
+-- A readable GUID's kind and entry ID (its sixth field: an NPC's or an object's ID from the game), as
+-- "GameObject", 175734 or "Creature", 299; nil for anything else. Only ever given ReadGUID's readable string.
+function Secret.GUIDEntry(guid)
+    if type(guid) ~= "string" then return nil end
+    local kind, entry = guid:match("^(%a+)%-[^-]*%-[^-]*%-[^-]*%-[^-]*%-(%d+)")
+    entry = tonumber(entry)
+    if not kind or not entry or entry <= 0 then return nil end
+    return kind, entry
 end
 
 function Secret.ReadName(unit, fallback)
@@ -123,6 +140,16 @@ function Secret.Pick(flag, whenTrue, whenFalse)
     if type(sink) ~= "function" then return false end
     local ok, value = pcall(sink, flag, whenTrue, whenFalse)
     if ok then return true, value end
+    return false
+end
+
+-- Pick for a colour, channel by channel: true and r, g, b when flag is true, else elseR, elseG,
+-- elseB (any of them possibly protected; the result for a setter only), or false.
+function Secret.PickColour(flag, r, g, b, elseR, elseG, elseB)
+    local okR, pr = Secret.Pick(flag, r, elseR)
+    local okG, pg = Secret.Pick(flag, g, elseG)
+    local okB, pb = Secret.Pick(flag, b, elseB)
+    if okR and okG and okB then return true, pr, pg, pb end
     return false
 end
 
@@ -165,6 +192,32 @@ function Secret.ClassColour(classFile)
     local colour = type(colours) == "table" and colours[classFile]
     if type(colour) == "table" and type(colour.r) == "number" then return colour.r, colour.g, colour.b end
     return nil
+end
+
+-- A readable value as it is (a cooldown's isEnabled: a boolean, or 1 and 0 on older clients), else nil.
+local function Flag(value)
+    if IsReadable(value) then return value end
+    return nil
+end
+
+-- A spell's cooldown: its start, its duration and whether it runs, each readable or nil, then what the client
+-- said: "readable", "protected" (an answer withheld) or "api-missing". The one reader for Cultivation and Rescue.
+function Secret.SpellCooldown(spell)
+    local api = rawget(_G, "C_Spell")
+    if type(api) == "table" and type(api.GetSpellCooldown) == "function" then
+        local ok, info = pcall(api.GetSpellCooldown, spell)
+        if not (ok and IsReadable(info) and type(info) == "table") then return nil, nil, nil, "protected" end
+        local start, duration = Secret.Number(info.startTime), Secret.Number(info.duration)
+        return start, duration, Flag(info.isEnabled), (start and duration) and "readable" or "protected"
+    end
+    local legacy = rawget(_G, "GetSpellCooldown")
+    if type(legacy) == "function" then
+        local ok, start, duration, enabled = pcall(legacy, spell)
+        if not ok then return nil, nil, nil, "protected" end
+        start, duration = Secret.Number(start), Secret.Number(duration)
+        return start, duration, Flag(enabled), (start and duration) and "readable" or "protected"
+    end
+    return nil, nil, nil, "api-missing"
 end
 
 function Secret.InCombat()

@@ -10,7 +10,7 @@ local L = PS.L
 -- filter, using the message's author as the sender); a click whispers the sender's client over hidden
 -- addon messages, which answers only for offers it made, in checksummed chunks. What arrives opens
 -- Import filled in; nothing applies until the player presses Import selected. Without the filter,
--- /ps fetch <Name-Realm> <id> asks for the same offer.
+-- /ps fetch <Name-Realm> <id> (Dev/PlateSmith_Dev) asks for the same offer.
 local BlueprintLink = {}
 PS.BlueprintLink = BlueprintLink
 

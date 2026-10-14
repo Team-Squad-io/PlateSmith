@@ -172,7 +172,8 @@ local function CreatePlateRow(content)
     row:SetScript("OnClick", function() Options:SelectEditorPlate() end)
     PS.UI.Controls.AttachTooltip(row, L["Plate settings"], { L["The whole plate's scale, for this plate type."],
         L["Target highlight: how your target's plate of this type is lit (Gold edge or Soft glow)."],
-        L["Quick layout: place parts by position (top, bottom, left, right, centre)."] })
+        L["Quick layout: place parts by position (top, bottom, left, right, centre)."],
+        L["Players and Friendly NPCs: Friendly plates, how and where they show."] })
     Paint(row, "normal")
     return row
 end
@@ -183,7 +184,7 @@ end
 local function BuildTestPanel(canvas)
     -- It takes the pointer only over its own rectangle; drags elsewhere reach the preview.
     local testPanel = CreateFrame("Frame", nil, canvas)
-    testPanel:SetSize(300, 378)
+    testPanel:SetSize(300, 384)
     testPanel:SetFrameLevel(canvas:GetFrameLevel() + 30)
     testPanel:EnableMouse(true)
     local testArt = chrome.CreatePanelArt(testPanel, "dark")
@@ -241,27 +242,79 @@ local function BuildTestPanel(canvas)
     })
     Options.editorTestComboSlider = comboSlider
     testControls[#testControls + 1] = comboSlider
-    -- Each flag shows in the preview (and in rules and custom text): tagged the indicator, elite,
-    -- rare and boss the mark, casting and interruptible the cast bar, combat and tanking the
-    -- threat text, targeted the glow, quest the marker, friendly, hostile and player the name.
+    -- The unit's classification as one choice (normal, elite, rare, rare elite, boss): it sets the elite, rare and
+    -- boss flags, which rules and custom text read and the mark draws (Options.SampleClassification).
+    local classLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    classLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 16, -72)
+    classLabel:SetText(L["Elite / rare"])
+    local classification = PS.UI.Controls.Dropdown(testPanel, {
+        x = 84, y = -62, width = 160,
+        choices = Options.SAMPLE_CLASSIFICATIONS,
+        get = function() return Options.SampleClassification(samples) or "normal" end,
+        set = function(value)
+            for _, choice in ipairs(Options.SAMPLE_CLASSIFICATIONS) do
+                if choice.value == value then
+                    samples.elite, samples.rare, samples.boss = choice.elite, choice.rare, choice.boss
+                end
+            end
+            Changed()
+        end,
+    })
+    PS.UI.Controls.AttachTooltip(classification, L["Elite / rare"],
+        { L["The unit's classification: its mark, and what rules and custom text read as elite, rare and boss."] })
+    classification.sampleClassification = true
+    Options.editorTestClassification = classification
+    testControls[#testControls + 1] = classification
+    -- What the object or NPC is for (object.kind): its Action icon (the game's own) and what rules read.
+    local objectLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    objectLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 16, -98)
+    objectLabel:SetText(L["Object"])
+    local objectLabels = { herb = L["Herb"], ore = L["Ore"], inspect = L["Book"], loot = L["Chest"], quest = L["Quest"],
+        talk = L["Talk"], trainer = L["Trainer"] }
+    local objectChoices = {}
+    for _, kind in ipairs(PS.ActionIcon.SAMPLE_CHOICES) do
+        objectChoices[#objectChoices + 1] = { value = kind, label = objectLabels[kind] or kind }
+    end
+    local objectKind = PS.UI.Controls.Dropdown(testPanel, {
+        x = 84, y = -88, width = 160, choices = objectChoices,
+        get = function() return samples["object.kind"] or "quest" end,
+        set = function(value)
+            samples["object.kind"] = value
+            Changed()
+        end,
+    })
+    PS.UI.Controls.AttachTooltip(objectKind, L["Object"], { L["What an object or NPC is for, as its Action icon shows it: "
+        .. "rules and custom text read this as object.kind (herb, ore, inspect, loot, quest, talk, trainer)."] })
+    Options.editorTestObjectKind = objectKind
+    testControls[#testControls + 1] = objectKind
+    -- Each flag shows in the preview (and in rules and custom text): tagged the indicator (elite,
+    -- rare and boss are the Elite / rare choice above), casting and interruptible the cast bar, combat and tanking
+    -- the threat text, targeted the glow, quest the marker, friendly, hostile and player the name.
     -- interruptReady colours the cast bar with Colour by interrupt. The role and threat-state flags
     -- show Threat colours (with combat) and are for rules, hastarget and inrange for the fades.
     -- Each box says what it is in plain words; its tooltip names the flag rules and custom text read.
     local flags = {
-        { "tagged", L["Tagged"] }, { "elite", L["Elite"] }, { "rare", L["Rare"] }, { "boss", L["Boss"] },
-        { "casting", L["Casting"] }, { "interruptible", L["Interruptible"] }, { "interruptReady", L["Interrupt ready"] },
+        { "tagged", L["Tagged"] }, { "casting", L["Casting"] }, { "interruptible", L["Interruptible"] },
+        { "interruptReady", L["Interrupt ready"] },
         { "combat", L["In combat"] }, { "tanking", L["Tanking"] }, { "targeted", L["Your target"] },
         { "quest", L["Quest unit"] }, { "friendly", L["Friendly"] }, { "hostile", L["Hostile"] }, { "player", L["Player"] },
         { "role.tank", L["You tank"] }, { "threat.holding", L["Holding threat"] }, { "threat.losing", L["Losing threat"] },
         { "threat.pulling", L["Pulling threat"] }, { "threat.other", L["Someone else has it"] },
         { "threat.offtank", L["Other tank has it"] }, { "hastarget", L["Has a target"] }, { "inrange", L["In range"] },
+        -- object.unable: the Action icon's Unable look (its Can't use choice) and the Objects preset's fade.
+        -- object.cancultivate: a herb's Status text adds Cultivate ready, and it does not fade.
+        { "object.unable", L["Can't use yet"] }, { "object.cancultivate", L["Cultivation ready"], slot = 22 },
+        -- threat.loose: the Loose mark (with You tank, or its Show for: Everyone) and rules. In the right column
+        -- beside Reset (slot; rows 20 px apart), so the panel keeps its height.
+        { "threat.loose", L["Loose"], slot = 24 },
     }
-    for index, entry in ipairs(flags) do
-        local flag = entry[1]
-        local column, row = (index - 1) % 2, math.floor((index - 1) / 2)
+    -- slot: where the box goes, two to a row 20 px apart (a built-in flag may name its own).
+    local function FlagBox(slot, flag, label, module)
+        local column, row = (slot - 1) % 2, math.floor((slot - 1) / 2)
         local checkbox = PS.UI.Controls.Checkbox(testPanel, {
-            label = entry[2], x = 12 + column * 144, y = -70 - row * 24, labelTemplate = "GameFontHighlightSmall",
-            tooltip = { title = entry[2], lines = { string.format(L["Rules and custom text read this as %s."], flag) } },
+            label = label, x = 12 + column * 144, y = -122 - row * 20, labelTemplate = "GameFontHighlightSmall",
+            tooltip = { title = label, lines = { string.format(L["Rules and custom text read this as %s."], flag),
+                module and L["From another addon."] or nil } },
             get = function() return samples[flag] == true end,
             set = function(on)
                 samples[flag] = on and true or false
@@ -270,7 +323,34 @@ local function BuildTestPanel(canvas)
         })
         checkbox.sampleFlag = flag
         testControls[#testControls + 1] = checkbox
+        return checkbox
     end
+    local lastSlot = 0
+    for index, entry in ipairs(flags) do
+        local slot = entry.slot or index
+        FlagBox(slot, entry[1], entry[2])
+        lastSlot = math.max(lastSlot, slot)
+    end
+    -- Then other addons' boolean facts (PlateSmith:RegisterFact), a few at most, each added the first time the panel
+    -- is opened after it registers (Options:EditorTestPanel); the panel grows to hold them. Their sample until ticked
+    -- is the module's own (Components' TEMPLATE_SAMPLES).
+    local builtIn, shownFlags = #flags, {}
+    local function AddModuleFlags()
+        for _, token in ipairs(PS.Template.ListTokens()) do
+            if not token.builtin and token.kind == "flag" and token.state ~= "disabled" and not shownFlags[token.id]
+                and #flags - builtIn < 8 then
+                shownFlags[token.id] = true
+                flags[#flags + 1] = token.id
+                FlagBox(lastSlot + #flags - builtIn, token.id, token.label or token.id, true):Refresh()
+            end
+        end
+        -- Below the last built-in row (beside Reset), so Reset moves down under them.
+        local rows = math.ceil((#flags - builtIn) / 2)
+        testPanel:SetHeight(384 + (rows > 0 and rows * 20 + 24 or 0))
+        Options.editorTestModuleFlags = #flags - builtIn
+    end
+    AddModuleFlags()
+    Options.SyncEditorTestModuleFlags = AddModuleFlags
     -- Reset also puts back View's sample name (Preview's ResetEditorSamples); it leaves the model.
     local reset = CreateStudioButton(testPanel, L["Reset"], 90, 24)
     reset:SetPoint("BOTTOMLEFT", testPanel, "BOTTOMLEFT", 14, 12)
@@ -284,6 +364,7 @@ local function BuildTestPanel(canvas)
 end
 
 function Options:EditorTestPanel()
+    if self.editorTestPanel and self.SyncEditorTestModuleFlags then self.SyncEditorTestModuleFlags() end
     if self.editorTestPanel or not self.editorCanvas then return self.editorTestPanel end
     self._BuildEditorLater("studio test values", BuildTestPanel, self.editorCanvas)
     if self.LayoutEditorPreviewPanel then self:LayoutEditorPreviewPanel() end
@@ -291,7 +372,9 @@ function Options:EditorTestPanel()
     return self.editorTestPanel
 end
 
--- Settings' categories panel (its search box over a row per category), made when Settings first opens.
+-- Settings' categories panel (its search box over a scrolling list of a row per category, the Modules group under its
+-- heading), made when Settings first opens. Rows are made as the list needs them (Chrome's
+-- LayoutEditorSettingsCategoryRows lays them out).
 function Options:EditorSettingsCategories()
     if self.editorSettingsCategoriesPanel or not self.editor then return self.editorSettingsCategoriesPanel end
     self._BuildEditorLater("studio settings categories", function()
@@ -299,17 +382,45 @@ function Options:EditorSettingsCategories()
         categories:Hide()
         self.editorSettingsCategoriesPanel = categories
         self.editorSettingsCategoryRows = {}
-        for index = 1, 8 do
-            local row = CreateStudioButton(categories, "", 282, 44, "category")
-            row:SetScript("OnClick", function(instance)
-                if instance.categoryKey then self:SetSettingsCategory(instance.categoryKey) end
-            end)
-            self.editorSettingsCategoryRows[index] = row
-        end
+        local list = CreateFrame("ScrollFrame", nil, categories)
+        local content = CreateFrame("Frame", nil, list)
+        content:SetSize(282, 1)
+        list:SetScrollChild(content)
+        self.editorSettingsCategoryList, self.editorSettingsCategoryContent = list, content
+        self.editorSettingsCategoryScrollBar = chrome.CreateStudioScrollBar(list, categories)
+        local header = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        header:SetFont(LABEL_FONT, 15)
+        header:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+        header:SetText(L["Modules"])
+        header:Hide()
+        self.editorSettingsModulesHeader = header
         self:BuildSettingsSearch(categories)
     end)
     self:ReflowVisualEditor()
     return self.editorSettingsCategoriesPanel
+end
+
+-- The list's row at index, made the first time it is wanted.
+function Options:EditorSettingsCategoryRow(index)
+    local rows = self.editorSettingsCategoryRows
+    if rows[index] then return rows[index] end
+    local row = CreateStudioButton(self.editorSettingsCategoryContent, "", 282, 44, "category")
+    row:SetScript("OnClick", function(instance)
+        if instance.categoryKey then self:SetSettingsCategory(instance.categoryKey) end
+    end)
+    -- A module row whose page cannot show says why.
+    row:HookScript("OnEnter", function(instance)
+        if not instance.categoryProblem or not GameTooltip then return end
+        GameTooltip:SetOwner(instance, "ANCHOR_RIGHT")
+        GameTooltip:SetText(instance.label:GetText() or "", 1, 1, 1)
+        GameTooltip:AddLine(instance.categoryProblem, 1, 0.82, 0.45, true)
+        GameTooltip:Show()
+    end)
+    row:HookScript("OnLeave", function(instance)
+        if instance.categoryProblem and GameTooltip then GameTooltip:Hide() end
+    end)
+    rows[index] = row
+    return row
 end
 
 function PS.CreateVisualEditor()
@@ -334,11 +445,12 @@ function PS.CreateVisualEditor()
     editor:SetScript("OnDragStop", function(instance) instance:StopMovingOrSizing() end)
     editor:SetScript("OnSizeChanged", function() Options:ReflowVisualEditor() end)
     -- Changes show on the plates live, so leaving with some unsaved asks what to do with them
-    -- rather than keeping them in play unsaved.
+    -- rather than keeping them in play unsaved (not when Studio only steps aside for Blizzard's
+    -- Settings panel and comes back: Search's RevealBlizzardSetting).
     editor:SetScript("OnHide", function()
         if PS.SetLayoutMeasure then PS.SetLayoutMeasure(nil) end
         Options:UpdateEditorPulse()
-        if PS.Profiles.IsDirty() then UnsavedChangesDialog():Show() end
+        if PS.Profiles.IsDirty() and not Options.editorSteppingAside then UnsavedChangesDialog():Show() end
     end)
     local function Opened()
         -- Tree moves keep a stacked part where its stack draws it (the preview's sizes).
@@ -368,7 +480,7 @@ function PS.CreateVisualEditor()
     -- While it is built, layouts leave the tree and the inspector's column to the one full refresh
     -- at the end (Chrome's ReflowVisualEditor).
     Options.editorBuilding = true
-    PS.UI.Window.CloseOnEscape("PlateSmithBlueprintEditor")
+    PS.UI.Window.CloseOnEscape("PlateSmithBlueprintEditor", editor)
 
     -- The painted frame (Chrome's LayoutEditorShell places it).
     Options.editorShell = chrome.CreateEditorShell(editor)
@@ -450,11 +562,21 @@ function PS.CreateVisualEditor()
             and string.format(L["Profile: %s · |cffffc94aUnsaved changes|r · Save or revert before switching profile"], active)
             or "")
     end
+    -- Studio always shows and edits the active profile: a profile loaded into the working copy (a switch from
+    -- anywhere: Settings, a slash command, New from preset) redraws it once, whoever asks first (the listener
+    -- below, which every load's Notify reaches, or this menu after it). Deleting or renaming another profile
+    -- loads nothing, so it redraws only the profile's name.
+    local seenLoads = PS.Profiles.Loads()
+    local function RefreshLoaded()
+        if PS.Profiles.Loads() == seenLoads then return end
+        seenLoads = PS.Profiles.Loads()
+        Options:Refresh(true)
+    end
     -- Profiles: switch between them, and below a divider New, Duplicate, Rename and Delete.
     local function ProfileAction(ok, reason)
         if ok then
             RefreshProfile()
-            Options:Refresh(true)
+            RefreshLoaded()
         end
         return ok, reason
     end
@@ -467,7 +589,7 @@ function PS.CreateVisualEditor()
                 -- A menu can outlive the clean state it was opened in; Switch checks again.
                 local switched = Profiles.Switch(profileName)
                 RefreshProfile()
-                if switched then Options:Refresh(true) end
+                if switched then RefreshLoaded() end
             end }
         end
         items[#items + 1] = { separator = true }
@@ -527,19 +649,24 @@ function PS.CreateVisualEditor()
             return items
         end })
     chrome.SkinDropdown(profileDropdown)
-    PS.UI.Controls.AttachTooltip(profileDropdown, L["Profile"], { L["The saved profile being edited."] })
+    -- With the look the profile was made from (New from preset, first run), when it records one.
+    PS.UI.Controls.AttachTooltip(profileDropdown, L["Profile"], function()
+        local lines = { L["The saved profile being edited."] }
+        local db = PS.GetSettings()
+        local look = db and type(db.look) == "string" and db.look or nil
+        if look then
+            local preset = PS.ProfilePresets.Get(look)
+            lines[2] = { string.format(L["Made from the %s look (version %d)."], preset and preset.name or look,
+                tonumber(db.lookVersion) or 1), 0.86, 0.86, 0.86 }
+        end
+        return lines
+    end)
     profileDropdown.studioLabel = Options.editorProfileLabel
     Options.editorNamedProfileDropdown = profileDropdown
-    -- Studio always shows and edits the active profile: a switch from anywhere (Settings, a slash
-    -- command, New from preset) redraws it, not only one made from this menu.
     -- While Studio is hidden the listener is skipped and runs once when it is shown again.
-    local seenLoads = PS.Profiles.Loads()
     PS.Profiles.Subscribe(function()
         RefreshProfile()
-        if PS.Profiles.Loads() ~= seenLoads then
-            seenLoads = PS.Profiles.Loads()
-            Options:Refresh(true)
-        end
+        RefreshLoaded()
     end, editor)
     RefreshProfile()
 
@@ -654,7 +781,17 @@ function PS.CreateVisualEditor()
         end
     end)
 
-    -- Friendly plates: which outdoor layout the preview edits (names only or full plate).
+    -- Friendly plates: which outdoor layout the preview edits (names only or full plate), after "Editing:"
+    -- in the design row's label look (Design:).
+    local editingHolder = CreateFrame("Frame", nil, canvas)
+    editingHolder:SetFrameLevel(canvas:GetFrameLevel() + 6)
+    editingHolder:SetAllPoints(canvas)
+    local editing = editingHolder:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    editing:SetFont(LABEL_FONT, 15)
+    editing:SetTextColor(LABEL[1], LABEL[2], LABEL[3])
+    editing:SetText(L["Editing:"])
+    editing:Hide()
+    Options.editorFriendlyViewLabel = editing
     Options.editorFriendlyViewButtons = {}
     for _, view in ipairs({ { "names", L["Names only"] }, { "full", L["Full plate"] } }) do
         local key = view[1]
@@ -664,7 +801,7 @@ function PS.CreateVisualEditor()
         PS.UI.Controls.AttachTooltip(button, view[2], {
             L["Friendly plates keep two outdoor layouts; this switch picks which one you are editing. Styles "
                 .. "and rules are shared by both."],
-            { L["Gold: the one your plates use now (Settings > Behaviour & display > Friendly units)."], 0.86, 0.86, 0.86 },
+            { L["Gold: the one these plates use now (Plate settings › Friendly plates › Show as)."], 0.86, 0.86, 0.86 },
         })
         button:Hide()
         Options.editorFriendlyViewButtons[key] = button
@@ -837,7 +974,7 @@ function Options:FailEditorOpen(failure, broken)
     PS.Chat.Print(L["Blueprint Studio could not open. Type /reload, then /ps to try again."])
 end
 
-function PS.OpenVisualEditor()
+local function OpenVisualEditor()
     if Options.editorBroken then
         PS.Chat.Print(L["Blueprint Studio could not open. Type /reload, then /ps to try again."])
         return false
@@ -853,4 +990,11 @@ function PS.OpenVisualEditor()
     -- A fresh install's first open: the first-run picker over Studio (Studio/FirstRun.lua).
     if Options.ShowFirstRunIfPending then Options:ShowFirstRunIfPending() end
     return editor:IsShown() and true or false
+end
+
+-- Measured as the studio.open action (/ps diagnose's performance.memory): the first open builds Studio.
+function PS.OpenVisualEditor()
+    local Performance = PS.Performance
+    if Performance and Performance.RunAction then return Performance.RunAction(Performance.ACTIONS.open, OpenVisualEditor) end
+    return OpenVisualEditor()
 end

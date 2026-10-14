@@ -321,7 +321,10 @@ function Layout.New(config)
                 first, previous = first or frame, frame
             end
         end
-        flow.flowEdges = { flowBefore = first, flowAfter = previous }
+        -- The flow's own table, filled again (a refresh lays every shown flow out).
+        local edges = flow.flowEdges or {}
+        edges.flowBefore, edges.flowAfter = first, previous
+        flow.flowEdges = edges
         return y
     end
 
@@ -542,7 +545,9 @@ function Layout.New(config)
             self:RefreshHeader()
             if K.IsFolded(self.foldKey) then
                 for _, item in ipairs(self.flowItems) do item.frame:Hide() end
-                self.flowEdges = {}
+                local edges = self.flowEdges or {}
+                edges.flowBefore, edges.flowAfter = nil, nil
+                self.flowEdges = edges
                 self:SetHeight(head)
                 return head
             end

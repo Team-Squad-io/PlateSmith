@@ -1,21 +1,23 @@
 # PlateSmith
 
 Clear, lightweight nameplates for WoW Forever that you design yourself. PlateSmith draws its own enemy and
-friendly plates, marks quest mobs, shows your threat on every plate and lets you shape every part in
+friendly plates, gives herbs, ore, chests and books plates of their own, marks quest mobs, shows your threat on
+every plate and lets you shape every part in
 **Blueprint Studio**, a live editor with a preview of the plate. Give dungeons, battlegrounds and cities a look
 of their own, colour plates by threat, and share your whole setup with one code or a chat link. It needs no
 other addon.
 
-## What's new in 1.2.0
+## What's new in 1.3.0
 
-- A design for each kind of place: World, Dungeons & raids, Battlegrounds & arenas, Cities & inns
-- An Enemy players tab, so hostile players can look different from NPCs
-- Where plates show: hide a plate type in cities, dungeons or battlegrounds with one tick
-- A soft glow behind your target, with its own look for each plate type
-- Combo point styles: coins, squares, diamonds, bar segments or Blizzard's art
-- Colour by threat with one tick box, no rules needed
-- Blueprint chat links, and a review of what an import will change before it does
-- A short first-run setup and a new Blizzard look
+- **Objects**: herbs, ore, chests, books and quest objects get plates of their own, with the game's icon for what you
+  can do and the skill a herb or vein needs, in the game's skill-up colours for yours
+- **Refreshed looks**: each look's plates match its card, with friendly plates and an elite mark of its own
+- **Rescue**, a third threat window mode: your group at a glance, and a click taunts an enemy off them
+- **Skin Blizzard's damage meter** (optional) to match the threat windows
+- Four new elite, rare and boss marks, and the **Loose mark** for a mob attacking someone who is not a tank
+- **Blizzard, with PlateSmith extras**: keep Blizzard's plates and add quest markers, threat and the target glow
+- **Clicking**: make friendly players, friendly NPCs or enemies click through
+- All threat settings on one page, Studio › Settings › Modules › Threat
 
 See [CHANGELOG.md](CHANGELOG.md) for everything that changed in each release.
 
@@ -34,6 +36,14 @@ See [CHANGELOG.md](CHANGELOG.md) for everything that changed in each release.
 
 PlateSmith, Classic, Sleek, Bold, Tank, Healer, Minimal, Compact and Blizzard. Each makes a new profile that
 you can change freely.
+
+### Objects
+
+- Herbs, ore, chests, books, quest objects and services get plates of their own on Studio's **Objects** tab, styled
+  for all objects or one type at a time.
+- The game's icon shows what you can do with it, and the **Status text** shows the skill a herb or vein needs, such
+  as **Mining 65**, coloured by how likely it is to raise your skill. Tauren see when **Cultivation** is ready.
+- Optionally fade objects you can't use yet, and show a hover cursor and tooltip on an object's plate.
 
 ### Designs for each place
 
@@ -66,8 +76,9 @@ bar if you like, and shown always, in combat or only when you have points.
 - Your threat on every plate: your threat percent and the gap to the next player.
 - Colour by threat colours health bars and names for tanks (holding, losing it) or for DPS and healers
   (safe, pulling, aggro).
-- Up to five threat windows: a threat meter for your target, or a tank list of every enemy in view. They can
-  follow Blizzard's damage meter.
+- Up to five threat windows: a threat meter for your target, a tank list of every enemy in view, or **Rescue**,
+  your group at a glance with a click to taunt. They can follow Blizzard's damage meter, which PlateSmith can skin
+  to match.
 
 ### Quests
 
@@ -80,6 +91,10 @@ bar if you like, and shown always, in combat or only when you have points.
 
 - Export your whole setup as a share code, or **Link in chat** for other PlateSmith players to click.
 - Import shows what will change, design by design, and you pick the sections to bring in.
+
+### Clicking
+
+Choose whether friendly players, friendly NPCs and enemies can be clicked through, separately from how they look.
 
 ### Profiles
 
@@ -103,16 +118,10 @@ the optional quest companion, put `PlateSmith_QuestieDB` beside it and install Q
 | Command | What it does |
 | --- | --- |
 | `/ps` | Open Blueprint Studio |
-| `/ps config` | Open Settings |
-| `/ps save` or `/ps revert` | Keep or undo unsaved changes |
-| `/ps profile [name]` | List profiles, or switch to one |
-| `/ps console` | Show or hide the threat windows |
-| `/ps console sample` | Show or hide sample data in the threat windows (out of combat) |
-| `/ps status` | Show the profile and any active restrictions |
 | `/ps diagnose` | Open the diagnostics report |
-| `/ps perf` | Watch PlateSmith's live performance |
-| `/ps mode auto`, `own` or `overlay` | Choose who draws the plates |
-| `/ps fetch <Name-Realm> <id>` | Ask for a Blueprint shared in chat if its link isn't clickable |
+| `/ps console` | Show or hide the threat windows |
+
+Everything else is in Studio and its Settings.
 
 ## Compatibility
 

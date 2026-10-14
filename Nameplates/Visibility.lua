@@ -12,8 +12,18 @@ PS.PlateVisibility = Visibility
 local GROUP = "plateVisibility"
 local V = S.VISIBILITY
 Visibility.TYPES, Visibility.PLACES, Visibility.COMBAT = V.TYPES, V.PLACES, V.COMBAT
-Visibility.CVARS = { enemy = "nameplateShowEnemies", friendlyPlayer = "nameplateShowFriends",
-    friendlyNPC = "nameplateShowFriendlyNPCs" }
+-- Friendly players' switch is nameplateShowFriendlyPlayers on newer clients (WoW Forever) and
+-- nameplateShowFriends on older ones: whichever this client has, read when asked.
+local FRIENDLY_PLAYER_CVARS = { "nameplateShowFriendlyPlayers", "nameplateShowFriends" }
+Visibility.CVARS = setmetatable({ enemy = "nameplateShowEnemies", friendlyNPC = "nameplateShowFriendlyNPCs" }, {
+    __index = function(_, key)
+        if key ~= "friendlyPlayer" then return nil end
+        for _, name in ipairs(FRIENDLY_PLAYER_CVARS) do
+            if NamePolicy.Read(name) ~= nil then return name end
+        end
+        return FRIENDLY_PLAYER_CVARS[2]
+    end,
+})
 -- The combat columns write at PLAYER_REGEN_DISABLED, which is not yet proven in game; until it is,
 -- they are hidden in Studio and their settings are not applied.
 Visibility.combatColumns = false
@@ -31,6 +41,16 @@ local function Settings() return type(PS.GetSettings) == "function" and PS.GetSe
 -- friendly plate, so Players' cells stand for all of them (Studio shows one Friendly row).
 function Visibility.FriendlyShared()
     return NamePolicy.Read(Visibility.CVARS.friendlyNPC) == nil
+end
+
+-- Whether the game's own switch for plateType's plates is off, not by PlateSmith (Where plates show only turns
+-- switches off, where a place is unticked, and puts the player's value back): its plates do not show anywhere,
+-- whatever is ticked. False where the client has no switch of the type's own.
+function Visibility.GameHides(plateType)
+    local cvar = Visibility.CVARS[plateType]
+    if not cvar or (plateType == "friendlyNPC" and Visibility.FriendlyShared()) then return false end
+    if applied[cvar] == "hide" then return false end
+    return NamePolicy.Read(cvar) == "0"
 end
 
 -- Whether settings show plateType's plates in place (world, dungeon, pvp, city) and combat state.

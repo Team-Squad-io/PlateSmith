@@ -90,7 +90,7 @@ PS._CreatePlateFactory = function(context)
         local family = _G.SystemFont_Outline or _G.SystemFont_NamePlate
         local familyPath, familyHeight, familyFlags = ReadFont(family)
         if not path and family and fontString.SetFontObject and flags == "OUTLINE" then
-            fontString:SetFontObject(family)
+            PS.Media.SetFontObject(fontString, family)
             local taken = not fontString.plateSmithOwnFace
             if not taken and familyPath then
                 local nowPath, nowHeight, nowFlags = ReadFont(fontString)

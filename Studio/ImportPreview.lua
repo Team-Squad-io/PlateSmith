@@ -15,10 +15,11 @@ local CopyLayout = assert(Options.editorBlueprint).CopyLayout
 local ImportPreview = {}
 Options.ImportPreview = ImportPreview
 
-local PLATE_LABELS = { enemy = L["Enemies"], friendlyPlayer = L["Players"], friendlyNPC = L["Friendly NPCs"] }
+local PLATE_LABELS = { enemy = L["Enemies"], friendlyPlayer = L["Players"], friendlyNPC = L["Friendly NPCs"],
+    object = L["Objects"] }
 -- Every design a plate can be drawn with, in the order the preview lists them.
 local DESIGNS = {}
-for _, plateType in ipairs({ "enemy", "friendlyPlayer", "friendlyNPC" }) do
+for _, plateType in ipairs({ "enemy", "friendlyPlayer", "friendlyNPC", "object" }) do
     DESIGNS[#DESIGNS + 1] = { plateType = plateType, context = "world" }
     for _, context in ipairs(Designs.CONTEXTS) do DESIGNS[#DESIGNS + 1] = { plateType = plateType, context = context } end
 end
@@ -74,9 +75,9 @@ for key in pairs(S.ENEMY_ALIASES) do NOT_GENERAL[key] = true end
 -- Where plates show has them outdoors (Blizzard's plates: the full one), and in dungeons & raids
 -- their names layout.
 local function LayoutField(plateType, context, live)
-    if plateType == "enemy" or plateType == "enemyPlayer" then return "layout" end
+    if plateType == "enemy" or plateType == "enemyPlayer" or plateType == "object" then return "layout" end
     if context == "dungeon" then return "dungeonNamesLayout" end
-    return live.friendly == "names" and "namesLayout" or "layout"
+    return S.FRIENDLY.Mode(live, plateType) == "names" and "namesLayout" or "layout"
 end
 
 -- As Settings' GetLayout: normalized against a full design's World, else the plate type's defaults.

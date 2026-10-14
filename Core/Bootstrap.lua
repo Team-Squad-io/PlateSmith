@@ -2,7 +2,7 @@ local addonName, PS = ...
 
 PS = PS or {}
 _G.PlateSmith = PS
-PS.RUNTIME_BUILD = "1.2.0"
+PS.RUNTIME_BUILD = "1.3.0"
 
 -- The two clients the TOC targets: Forever (1.x interface) and retail (Midnight).
 function PS.ClientFlavor()
@@ -58,3 +58,7 @@ end)
 PS._Diagnostics = {
     HandleBlockedAction = HandleBlockedAction,
 }
+
+-- What the developer addon (Dev/PlateSmith_Dev, never packaged) needs and nothing player-facing offers:
+-- its /ps commands (Commands' RegisterCommand) and the plates' test hooks (Lifecycle's).
+PS._Dev = {}

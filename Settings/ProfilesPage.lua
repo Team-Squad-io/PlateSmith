@@ -61,6 +61,11 @@ function Options:BuildAutoProfileSection(kit, flow)
     local section = Options.SettingsSection(kit, flow, L["Automatic switching"])
     kit.Add(section, kit.ControlHelp(section, L["This character can change profile by itself when it enters other content "
         .. "or changes specialization. It waits until combat ends and until unsaved changes are saved or reverted."]))
+    -- Audit #7: designs per place are the one route for a look; switching is for whole setups. Both read the place
+    -- through NamePolicy.InstanceType, so a scenario is open world to each.
+    kit.Add(section, kit.ControlHelp(section, L["To change how plates look in a kind of place, give them a design "
+        .. "there in Studio (the Design menu). Switch profiles for whole different setups, such as per specialization. "
+        .. "Scenarios and delves count as open world, as they do for designs."]))
     local dropdowns = {}
     local function RuleRow(key, label)
         local row, dropdown = kit.DropdownRow(section, label, {

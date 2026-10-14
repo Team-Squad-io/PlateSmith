@@ -76,7 +76,7 @@ local function SelectTab(window, key)
     ShowTextBox(window, not window.importing or key == "paste")
     -- Review pages with the arrow keys (ImportPreview.Key); every other key, and every key elsewhere, passes on.
     local keys = window.importing and key == "review" or false
-    if window.EnableKeyboard and not PS.Secret.InCombat() then pcall(window.EnableKeyboard, window, keys) end
+    Window.TakeKeyboard(window, keys)
 end
 
 local function RefreshReview(window)
@@ -322,7 +322,7 @@ local function EnsureWindow()
     -- the window keeps only those (in combat the client keeps the choice it had; Escape always passes on).
     window:SetScript("OnKeyDown", function(frame, key)
         local kept = window.importing and window.importTab == "review" and Options.ImportPreview.Key(window, key) or false
-        if frame.SetPropagateKeyboardInput then pcall(frame.SetPropagateKeyboardInput, frame, not kept) end
+        Window.KeepKey(frame, kept)
     end)
     local action = chrome.CreateStudioButton(reviewPage, L["Import selected"], 150, 28, "primary")
     action:SetScript("OnClick", function() Import(window) end)

@@ -1,5 +1,6 @@
--- Blizzard's plate stacking, managed: its stacking, distance, scale and fade CVars, the plate size
--- its stacking spaces plates by, and the target and focus overlays drawn over the rest.
+-- Blizzard's plate stacking: the stacking, distance, scale and fade CVars a profile sets (each one on
+-- its own; the rest stay the game's), the plate size its stacking spaces plates by, and the target
+-- and focus overlays drawn over the rest.
 -- docs/STACKING.md describes the rules; the Studio page calls the API at the end of this file.
 local _, PS = ...
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
@@ -25,8 +26,14 @@ Stacking.GROUPS = {
 local groupLabels = {}
 for _, group in ipairs(Stacking.GROUPS) do groupLabels[group.id] = group.label end
 
+-- Stack Nameplates' two bits (12.x clients): they replace nameplateMotion where the client has them.
+local STACK_ENEMY, STACK_FRIENDLY = "nameplateStackingTypes.Enemy", "nameplateStackingTypes.Friendly"
+
 local LABELS = {
     nameplateMotion = L["Plate arrangement"],
+    [STACK_ENEMY] = L["Stack enemy plates"],
+    [STACK_FRIENDLY] = L["Stack friendly plates"],
+    nameplateShowOffscreen = L["Show offscreen plates"],
     nameplateMotionSpeed = L["Movement speed"],
     nameplateOverlapV = L["Vertical spacing"],
     nameplateOverlapH = L["Horizontal spacing"],
@@ -51,15 +58,14 @@ local LABELS = {
     nameplateNotSelectedAlpha = L["Non-target opacity"],
     nameplateOccludedAlphaMult = L["Behind walls opacity"],
 }
+-- A bitfield's bits are one row, as in Blizzard's options (Stack Nameplates: a multi-select of Enemy Units
+-- and Friendly Units): the row's label, and each bit's name in its menu.
+local BITFIELD_LABELS = { nameplateStackingTypes = L["Stack plates"] }
+local BIT_LABELS = { [STACK_ENEMY] = L["Enemy Units"], [STACK_FRIENDLY] = L["Friendly Units"] }
 local CHOICE_LABELS = {
     nameplateMotion = { [0] = L["Overlapping"], [1] = L["Stacking"] },
     nameplateTargetRadialPosition = { [0] = L["Off"], [1] = L["Target only"], [2] = L["All plates in combat"] },
 }
-
--- Names a client could use for separate friendly and enemy stacking. Neither Retail nor Classic
--- is known to have them; they are probed so a client that does is reported (MotionShared).
-local SEPARATE_MOTION_CVARS = { "nameplateMotionFriendly", "nameplateMotionEnemy", "nameplateOverlapVFriendly",
-    "nameplateOverlapVEnemy" }
 
 local function Settings()
     local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
@@ -71,9 +77,10 @@ local function Options()
     return settings and type(settings.stacking) == "table" and settings.stacking or nil
 end
 
-local function Managed(stacking)
+-- A disabled PlateSmith sets nothing of Blizzard's.
+local function Active(stacking)
     local settings = Settings()
-    return stacking and stacking.managed == true and settings and settings.enabled ~= false
+    return stacking ~= nil and settings ~= nil and settings.enabled ~= false
 end
 
 -- A number as a CVar value: at most four decimals, no trailing zeros ("41", "0.025").
@@ -105,19 +112,47 @@ local function ClientCVar(name)
     return NamePolicy.Read(name) ~= nil, nil
 end
 
-local catalogue, present, motionShared
+-- One bit of a bitfield CVar, when the client has the CVar, the bitfield API and the bit's enum value:
+-- registered with NamePolicy, which then reads and writes it as a CVar of its own.
+local function ClientBit(key, spec)
+    local cvar = C_CVar
+    local enum = type(Enum) == "table" and Enum[spec.enum]
+    local index = type(enum) == "table" and enum[spec.bit] or nil
+    if type(index) ~= "number" or type(cvar) ~= "table" or type(cvar.GetCVarBitfield) ~= "function"
+        or type(cvar.SetCVarBitfield) ~= "function" or not ClientCVar(spec.bitfield) then
+        NamePolicy.RegisterBit(key, nil)
+        return false
+    end
+    NamePolicy.RegisterBit(key, spec.bitfield, index)
+    if NamePolicy.Read(key) ~= nil then return true end
+    NamePolicy.RegisterBit(key, nil)
+    return false
+end
+
+-- motionKey: the setting that makes enemy plates stack (Stack enemy plates, else nameplateMotion), which
+-- the presets, combat stacking and the preview use.
+local catalogue, present, motionKey
 
 local function Detect()
     if catalogue then return catalogue end
     catalogue, present = {}, {}
     for _, spec in ipairs(S.STACKING_CVARS) do
         local key = spec[1]
-        local exists, clientDefault = ClientCVar(key)
+        local exists, clientDefault
+        if spec.bitfield then
+            exists = ClientBit(key, spec)
+        else
+            exists, clientDefault = ClientCVar(key)
+        end
         if exists then
             local default = S.StackingValue(key, clientDefault)
             if default == nil then default = spec.default end
             local entry = { key = key, label = LABELS[key] or key, group = spec[2], groupLabel = groupLabels[spec[2]],
-                kind = spec[3], default = default }
+                kind = spec[3], default = default, ignored = spec.ignored == true, bitfield = spec.bitfield }
+            if spec.bitfield then
+                entry.bitLabel = BIT_LABELS[key] or entry.label
+                entry.bitfieldLabel = BITFIELD_LABELS[spec.bitfield] or spec.bitfield
+            end
             if spec.choices then
                 entry.choices = {}
                 for index, value in ipairs(spec.choices) do
@@ -131,15 +166,21 @@ local function Detect()
             present[key] = entry
         end
     end
-    motionShared = true
-    for _, name in ipairs(SEPARATE_MOTION_CVARS) do
-        if ClientCVar(name) then motionShared = false end
+    -- One way to choose stacking: where the client has the per-type bits, Plate arrangement is not offered.
+    if present[STACK_ENEMY] and present.nameplateMotion then
+        for index, entry in ipairs(catalogue) do
+            if entry.key == "nameplateMotion" then table.remove(catalogue, index) break end
+        end
+        present.nameplateMotion = nil
     end
+    motionKey = present[STACK_ENEMY] and STACK_ENEMY or present.nameplateMotion and "nameplateMotion" or nil
     return catalogue
 end
 
--- The CVars this client has, in UI order: { key, label, group, groupLabel, kind (choice or
--- number), min, max, step, default (the client's), choices = { { value, label } } }. Read only.
+-- The CVars this client has, in UI order: { key, label, group, groupLabel, kind (choice, toggle or
+-- number), min, max, step, default (the client's), choices = { { value, label } }, ignored (the game no
+-- longer reads it: shown, never written), bitfield (a bit of that CVar), and for a bit bitLabel (its name in
+-- the bitfield's menu, Blizzard's) and bitfieldLabel (the one row its bitfield's bits share) }. Read only.
 function Stacking.Catalogue() return Detect() end
 
 function Stacking.Entry(key)
@@ -147,10 +188,17 @@ function Stacking.Entry(key)
     return present[key]
 end
 
--- True: friendly and enemy plates share one set of stacking CVars on this client.
+-- True: one setting (Plate arrangement) stacks friendly and enemy plates alike on this client; false
+-- where they are chosen apart (Stack enemy plates, Stack friendly plates) or there is none.
 function Stacking.MotionShared()
     Detect()
-    return motionShared
+    return present.nameplateMotion ~= nil
+end
+
+-- The setting that makes enemy plates stack on this client (nil: none).
+function Stacking.MotionKey()
+    Detect()
+    return motionKey
 end
 
 -- Plate size -----------------------------------------------------------------------------------
@@ -233,8 +281,9 @@ end
 -- The plate sizes the shown layouts draw: { enemy = { w, h }, friendly = { w, h } | nil,
 -- friendlyLocked = true in a dungeon or raid, where Blizzard owns friendly plates }. Each plate type
 -- uses its design for where the player is (PlateContext); enemy plates the Enemies' and Enemy
--- players' (one size covers both), friendly plates the names-only or full layouts (players' and
--- NPCs'), whichever is larger, or none while friendly plates are off.
+-- players' (one size covers both), friendly plates Players' and Friendly NPCs' names-only or full
+-- layout as each shows (Schema's FRIENDLY.Mode), whichever is larger. Blizzard has one friendly size for
+-- both, so while either shows Blizzard's own plates none is set: those keep Blizzard's size.
 local function DesignHere(settings, plateType)
     local context = PS.PlateContext
     local design = context and context.DesignFor(plateType, settings) or "world"
@@ -253,11 +302,14 @@ function Stacking.FrameSizes(settings)
     local result = { enemy = Union(enemySizes) }
     if inInstance then
         result.friendlyLocked = true
-    elseif settings.friendly ~= "off" then
-        local field = settings.friendly == "full" and "layout" or "namesLayout"
-        local player, npc = DesignHere(settings, "friendlyPlayer"), DesignHere(settings, "friendlyNPC")
-        result.friendly = Union({ { LayoutBounds(player, player and player[field], settings.textScale) },
-            { LayoutBounds(npc, npc and npc[field], settings.textScale) } })
+    elseif not S.FRIENDLY.Any(settings, "off") then
+        local friendlySizes = {}
+        for _, plateType in ipairs(S.FRIENDLY.TYPES) do
+            local design = DesignHere(settings, plateType)
+            local field = S.FRIENDLY.Mode(settings, plateType) == "full" and "layout" or "namesLayout"
+            friendlySizes[#friendlySizes + 1] = { LayoutBounds(design, design and design[field], settings.textScale) }
+        end
+        result.friendly = Union(friendlySizes)
     end
     return result
 end
@@ -331,7 +383,7 @@ end
 
 ApplySizes = function()
     local stacking = Options()
-    if not (Managed(stacking) and stacking.matchFrameSize) or (PS.ExternalProvider and PS.ExternalProvider()) then
+    if not (Active(stacking) and stacking.matchFrameSize) or (PS.ExternalProvider and PS.ExternalProvider()) then
         RestoreSizes()
         return
     end
@@ -500,53 +552,100 @@ function Stacking.RaisedPlate(role) return onTop.raised[role] end
 
 -- CVars ----------------------------------------------------------------------------------------
 
--- Combat switch: nil until tried, then "allowed" or "refused" (the client would not take
--- nameplateMotion as combat began). combatSwitched: stacking is on for this fight.
+-- Combat switch: nil until tried, then "allowed" or "refused" (the client would not take the
+-- stacking switch, MotionKey, as combat began). combatSwitched: stacking is on for this fight.
 local combat = { probe = nil, switched = false }
 local wanted = {}
 
+-- A value the profile keeps that PlateSmith writes: the client has the CVar and the game still reads it.
+local function Settable(key)
+    Detect()
+    local entry = present[key]
+    return entry ~= nil and not entry.ignored
+end
+
+-- A setting the profile sets that was changed outside PlateSmith (Blizzard's Options, another addon): the
+-- outside value becomes the original to give back and PlateSmith's goes back on top, once. Written over
+-- again within KEEP_INTERVAL (an addon that writes it back at once), PlateSmith's waits that long, so the
+-- two are not fought every pass. kept: when PlateSmith last put a setting back over an outside change;
+-- told: the settings chat has named this session.
+local KEEP_INTERVAL = 2
+local kept, told = {}, {}
+
+local function Now()
+    return type(GetTime) == "function" and GetTime() or nil
+end
+
+-- Said once a session per setting, so a change made in Blizzard's Options does not seem to be ignored.
+local function TellKept(key, outside, value)
+    if told[key] or not (PS.Chat and PS.Chat.Print) then return end
+    told[key] = true
+    local entry = present[key]
+    local number = tonumber(outside)
+    local text = number and CVarText(number) or tostring(outside)
+    PS.Chat.Print(string.format(L["%s was changed outside PlateSmith, to %s. This profile sets it to %s, so PlateSmith "
+        .. "put that back; give it back to the game (Studio › Settings › Stacking & distance) to use %s."],
+        entry and entry.label or key, text, CVarText(value), text))
+end
+
 -- Writes the wanted CVars (each original captured once) and puts back any captured CVar that is
--- no longer wanted. During combat NamePolicy queues the writes for PLAYER_REGEN_ENABLED.
+-- no longer wanted. During combat NamePolicy queues the writes for PLAYER_REGEN_ENABLED, and one given back keeps its
+-- record until then (NamePolicy.Release), so a value queued is what counts as the CVar's now. A record
+-- of an ignored CVar (written by an older PlateSmith) is put back like any other; one changed outside
+-- PlateSmith since its last write is left as it is (NamePolicy.RestoreGroup).
 local function ApplyCVars(stacking)
-    if not Managed(stacking) then
-        NamePolicy.RestoreGroup(GROUP)
+    if not Active(stacking) then
+        NamePolicy.Release(GROUP)
         return
     end
     Detect()
     for key in pairs(wanted) do wanted[key] = nil end
     for key, value in pairs(stacking.values) do
-        if present[key] then wanted[key] = value end
+        if Settable(key) then wanted[key] = value end
     end
-    if combat.switched then wanted.nameplateMotion = 1 end
+    if combat.switched and motionKey then wanted[motionKey] = 1 end
     for key in pairs(NamePolicy.GroupNames(GROUP)) do
-        if wanted[key] == nil then NamePolicy.RestoreGroup(GROUP, key) end
+        if wanted[key] == nil then NamePolicy.Release(GROUP, key) end
     end
+    local now, again = Now(), false
     for key, value in pairs(wanted) do
-        if not SameValue(NamePolicy.Read(key), value) then NamePolicy.WriteCaptured(GROUP, key, CVarText(value)) end
+        local outside, new = NamePolicy.Adopt(GROUP, key)
+        if SameValue(NamePolicy.Pending(key) or NamePolicy.Read(key), value) then
+            NamePolicy.Held(GROUP, key)
+        elseif outside ~= nil and now and kept[key] and now - kept[key] < KEEP_INTERVAL then
+            again = true
+        else
+            if outside ~= nil then
+                kept[key] = now
+                if new then TellKept(key, outside, value) end
+            end
+            NamePolicy.WriteCaptured(GROUP, key, CVarText(value))
+        end
     end
+    return again
 end
 
 -- Once a session, before the first write: when every CVar the profile sets without a record already
 -- holds the profile's value, PlateSmith most likely left them there (the saved file lost its record,
 -- or the game closed before logout put them back; after a normal logout they hold the player's own).
 -- Each one not at the client's default is marked lost and the default stands in for its original,
--- so turning management off restores Blizzard's default. Only a numeric value tells: a switch such
--- as nameplateMotion = 1 alone is as likely the player's own.
+-- so giving it back to the game restores Blizzard's default. Only a numeric value tells: a switch
+-- such as nameplateMotion = 1 alone is as likely the player's own.
 local checked = false
 local function CheckOriginals(stacking)
     if checked then return end
     checked = true
-    if not Managed(stacking) then return end
+    if not Active(stacking) then return end
     Detect()
     local record = NamePolicy.CapturedGroup(GROUP) or {}
     local lost, telling = {}, false
     for key, value in pairs(stacking.values) do
-        if present[key] and record[key] == nil then
+        if Settable(key) and record[key] == nil then
             if not SameValue(NamePolicy.Read(key), value) then return end
             local default = NamePolicy.Default(key)
             if default == nil or not SameValue(default, value) then
                 lost[#lost + 1] = key
-                telling = telling or present[key].kind ~= "choice"
+                telling = telling or present[key].kind == "number"
             end
         end
     end
@@ -554,13 +653,27 @@ local function CheckOriginals(stacking)
     for _, key in ipairs(lost) do NamePolicy.MarkLost(GROUP, key) end
 end
 
--- True while a managed CVar's original was lost: turning management off restores Blizzard's
--- default for it (the Studio page says so, and /ps diagnose lists it).
+-- True while the original of a CVar PlateSmith sets was lost: giving it back to the game restores
+-- Blizzard's default for it (the Studio page says so, and /ps diagnose lists it).
 function Stacking.OriginalsMissing()
     return NamePolicy.OriginalsMissing(GROUP)
 end
 
--- For diagnostics: { managed, originals = "missing" (lost, see above), "recorded" or "none" }.
+-- How many of this client's settings the profile sets (PlateSmith writes them); 0 while PlateSmith is
+-- disabled, when it sets none.
+function Stacking.OwnedCount()
+    local stacking = Options()
+    if not Active(stacking) then return 0 end
+    Detect()
+    local count = 0
+    for key in pairs(stacking.values) do
+        if Settable(key) then count = count + 1 end
+    end
+    return count
+end
+
+-- For diagnostics: { owned (how many settings PlateSmith sets), originals = "missing" (lost, see
+-- above), "recorded" or "none" }.
 function Stacking.Report()
     local originals = "none"
     if Stacking.OriginalsMissing() then
@@ -568,10 +681,12 @@ function Stacking.Report()
     elseif NamePolicy.CapturedGroup(GROUP) then
         originals = "recorded"
     end
-    return { managed = Managed(Options()) and true or false, originals = originals }
+    return { owned = Stacking.OwnedCount(), originals = originals }
 end
 
-local dirty = false
+-- live: a stacking CVar may have changed outside PlateSmith (CVAR_UPDATE, the page opening), so the next
+-- pass also shows the live values on Studio's page.
+local dirty, live = false, false
 
 -- Brings the client in line with the settings: CVars, plate sizes and the raised plates. Safe to
 -- call at any time; nothing is written that already holds.
@@ -581,9 +696,15 @@ function Stacking.Apply()
     local stacking = Options()
     if not stacking or not (PS.Profiles and PS.Profiles.State()) then return false end
     CheckOriginals(stacking)
-    ApplyCVars(stacking)
+    local again = ApplyCVars(stacking)
     ApplySizes()
     SyncOnTop()
+    if again then Stacking.Invalidate() end
+    if live then
+        live = false
+        local options = PS.Options
+        if options and type(options.RefreshEditorStacking) == "function" then options:RefreshEditorStacking() end
+    end
     return true
 end
 
@@ -600,6 +721,25 @@ PS.Ticker.Register(TICKER, 0.2, function()
 end)
 PS.Ticker.SetEnabled(TICKER, false)
 
+-- A stacking CVar may have changed outside PlateSmith (CVAR_UPDATE; Studio's page opening, for a client that
+-- sends none): checked on the next pass. A setting the profile sets keeps its value, the outside one becoming
+-- its original (ApplyCVars); any other is only read, and the open page shows it.
+function Stacking.LiveChanged()
+    live = true
+    Stacking.Invalidate()
+end
+
+-- The catalogue's CVars by lower-case name (a bitfield under its own name), for CVAR_UPDATE.
+local watched
+local function Watched(name)
+    if not Secret.IsReadable(name) or type(name) ~= "string" then return true end
+    if not watched then
+        watched = {}
+        for _, entry in ipairs(Detect()) do watched[string.lower(entry.bitfield or entry.key)] = true end
+    end
+    return watched[string.lower(name)] == true
+end
+
 -- Puts every captured stacking CVar and plate size back (logout).
 function Stacking.RestoreAll(immediate)
     NamePolicy.RestoreGroup(GROUP, nil, immediate)
@@ -611,12 +751,13 @@ end
 -- turns the option off for the session (CanCombatSwitch).
 function Stacking.CombatStarted()
     local stacking = Options()
-    if not (Managed(stacking) and stacking.combatStacking) or combat.probe == "refused" then return end
-    if not Stacking.Entry("nameplateMotion") then return end
+    if not (Active(stacking) and stacking.combatStacking) or combat.probe == "refused" then return end
+    local key = Stacking.MotionKey()
+    if not key then return end
     if PS.Profiles and PS.Profiles.State() then CheckOriginals(stacking) end
-    if SameValue(NamePolicy.Read("nameplateMotion"), 1) then return end
-    local ok, written = pcall(NamePolicy.WriteCaptured, GROUP, "nameplateMotion", "1", true)
-    if ok and written and SameValue(NamePolicy.Read("nameplateMotion"), 1) then
+    if SameValue(NamePolicy.Read(key), 1) then return end
+    local ok, written = pcall(NamePolicy.WriteCaptured, GROUP, key, "1", true)
+    if ok and written and SameValue(NamePolicy.Read(key), 1) then
         combat.probe, combat.switched = "allowed", true
     else
         combat.probe = "refused"
@@ -637,20 +778,24 @@ function Stacking.CanCombatSwitch()
 end
 
 local eventFrame = CreateFrame("Frame")
-for _, event in ipairs({ "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_LOGOUT" }) do
+for _, event in ipairs({ "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_LOGOUT",
+    "CVAR_UPDATE" }) do
     PS._RegisterEvent(eventFrame, event, "platesmith.stacking")
 end
-eventFrame:SetScript("OnEvent", function(_, event)
+eventFrame:SetScript("OnEvent", function(_, event, name)
     if not Settings() then return end
-    if event == "PLAYER_REGEN_DISABLED" then
+    if event == "CVAR_UPDATE" then
+        if Watched(name) then Stacking.LiveChanged() end
+    elseif event == "PLAYER_REGEN_DISABLED" then
         Stacking.CombatStarted()
     elseif event == "PLAYER_REGEN_ENABLED" then
         Stacking.CombatEnded()
     elseif event == "PLAYER_LOGOUT" then
         Stacking.RestoreAll(true)
     else
-        -- After the zone's own handlers (the instance check), and again if the client reset a CVar.
-        Stacking.Invalidate()
+        -- After the zone's own handlers (the instance check); a CVar changed while loading (the client, another
+        -- addon at login) is caught as any outside change.
+        Stacking.LiveChanged()
     end
 end)
 
@@ -671,7 +816,7 @@ local function MatchesPreset(stacking, name)
     local preset = S.STACKING_PRESETS[name]
     if not preset then return false end
     for key, value in pairs(preset) do
-        if present[key] then
+        if Settable(key) then
             local current = stacking.values[key]
             if current == nil or math.abs(current - value) >= EPSILON then return false end
         end
@@ -679,23 +824,50 @@ local function MatchesPreset(stacking, name)
     return true
 end
 
--- A CVar's value: what the profile sets ("setting"), else the client's ("client"), else its
--- default ("default"). nil for a CVar this client does not have.
+-- A CVar's value: what the profile sets ("setting": PlateSmith writes it), else the client's live value
+-- ("client": the game's own, read each time, so a change in Blizzard's Options shows), else its default
+-- ("default", only when the client's cannot be read). nil for a CVar this client does not have. An
+-- ignored CVar always reads the client's: a value the profile kept is not used. A client number outside
+-- PlateSmith's range is shown as it is (Forever ships nameplateMinAlphaDistance -100000 and
+-- nameplateNotSelectedAlpha -1, "not used"), never clamped into a value the game does not hold.
 function Stacking.Get(key)
     local entry = Stacking.Entry(key)
     if not entry then return nil end
-    local stacking = Options()
-    local value = stacking and stacking.values[key]
+    local stacking, value = Options(), nil
+    if stacking and not entry.ignored then value = stacking.values[key] end
     if value ~= nil then return value, "setting" end
-    value = S.StackingValue(key, NamePolicy.Read(key))
+    local text = NamePolicy.Read(key)
+    if entry.kind == "number" then
+        value = tonumber(text)
+        if value ~= value then value = nil end
+    else
+        value = S.StackingValue(key, text)
+    end
     if value ~= nil then return value, "client" end
     return entry.default, "default"
 end
 
--- Sets a CVar's value (nil: back to the client's own). False for a CVar this client lacks or a
--- value it cannot take. A value that leaves the chosen preset makes it "custom".
+-- Whether Blizzard stacks plates now: "stacking" while any kind of plate stacks, "overlapping", or
+-- nil on a client without a stacking setting. values (optional) override the current ones.
+function Stacking.Arrangement(values)
+    Detect()
+    local found
+    for _, key in ipairs({ "nameplateMotion", STACK_ENEMY, STACK_FRIENDLY }) do
+        if present[key] then
+            local value = values and values[key]
+            if value == nil then value = Stacking.Get(key) end
+            if value == 1 then return "stacking" end
+            found = "overlapping"
+        end
+    end
+    return found
+end
+
+-- Sets a CVar's value: PlateSmith writes it from now on (nil: it is the game's own again, put back
+-- as it was). False for a CVar this client lacks or the game ignores, or a value it cannot take. A
+-- value that leaves the chosen preset makes it "custom".
 function Stacking.Set(key, value)
-    if not Stacking.Entry(key) then return false end
+    if not Settable(key) then return false end
     local valid
     if value ~= nil then
         valid = S.StackingValue(key, value)
@@ -713,7 +885,7 @@ function Stacking.ApplyPreset(name)
     Detect()
     return Mutate(function(stacking)
         for key, value in pairs(S.STACKING_PRESETS[name] or {}) do
-            if present[key] then stacking.values[key] = value end
+            if Settable(key) then stacking.values[key] = value end
         end
         stacking.preset = name
     end)
@@ -724,45 +896,35 @@ function Stacking.Preset()
     return stacking and stacking.preset or S.stackingDefaults.preset
 end
 
--- Off: every captured CVar and plate size goes back and nothing more is written.
-function Stacking.SetManaged(managed)
-    if type(managed) ~= "boolean" then return false end
-    return Mutate(function(stacking) stacking.managed = managed end)
-end
-
-function Stacking.IsManaged()
-    local stacking = Options()
-    return stacking ~= nil and stacking.managed == true
-end
-
--- Every catalogued CVar back to the client's default, managed or not (the Studio page's reset).
--- The defaults become the recorded originals and the profile's values are cleared (preset custom);
--- while managed, each default PlateSmith's range can hold becomes the profile's value, so it sticks.
--- The writes go through Apply, so in combat they wait for PLAYER_REGEN_ENABLED. Returns true and
--- the CVars the client reports no default for (left as they are), or false without settings.
+-- Every catalogued CVar to the client's default, and every one the game's own again (the Studio
+-- page's reset): the defaults become the recorded originals, the profile's values are cleared
+-- (preset custom) and Apply puts each back to its default. A bitfield has no default per bit: its
+-- whole CVar is written with the client's default once its bits are back. An ignored CVar is left.
+-- The writes queue in combat for PLAYER_REGEN_ENABLED. Returns true and the CVars the client reports
+-- no default for (left as they are), or false without settings.
 function Stacking.ResetToDefaults()
     if not (Settings() and PS.Profiles and PS.Profiles.State()) then return false, {} end
     Detect()
-    local defaults, left = {}, {}
+    local left, fields, order = {}, {}, {}
     for _, entry in ipairs(catalogue) do
-        local default = NamePolicy.Default(entry.key)
-        if default == nil then
-            left[#left + 1] = entry.key
-        else
-            defaults[entry.key] = default
-            NamePolicy.SetOriginal(GROUP, entry.key, default)
-        end
-    end
-    local done = Mutate(function(stacking)
-        local values = {}
-        if stacking.managed then
-            for key, default in pairs(defaults) do
-                local value = S.StackingValue(key, default)
-                if value ~= nil and SameValue(default, value) then values[key] = value end
+        if entry.bitfield then
+            if not fields[entry.bitfield] then
+                fields[entry.bitfield], order[#order + 1] = true, entry.bitfield
+            end
+        elseif not entry.ignored then
+            local default = NamePolicy.Default(entry.key)
+            if default == nil then
+                left[#left + 1] = entry.key
+            else
+                NamePolicy.SetOriginal(GROUP, entry.key, default)
             end
         end
-        stacking.values, stacking.preset = values, "custom"
-    end)
+    end
+    local done = Mutate(function(stacking) stacking.values, stacking.preset = {}, "custom" end)
+    for _, cvar in ipairs(order) do
+        local default = NamePolicy.Default(cvar)
+        if default == nil then left[#left + 1] = cvar else NamePolicy.Write(cvar, default) end
+    end
     return done, left
 end
 
@@ -788,7 +950,8 @@ end
 -- Preview ----------------------------------------------------------------------------------------
 
 -- The CVars the preview model reads, in catalogue order: a change to any of them moves the diagram.
-Stacking.PREVIEW_KEYS = { "nameplateMotion", "nameplateMotionSpeed", "nameplateOverlapV", "nameplateOverlapH",
+-- Its units are enemies, so Stack enemy plates (where the client has it) is their arrangement.
+Stacking.PREVIEW_KEYS = { "nameplateMotion", STACK_ENEMY, "nameplateMotionSpeed", "nameplateOverlapV", "nameplateOverlapH",
     "nameplateMaxDistance", "nameplateMinScale", "nameplateMaxScale", "nameplateMinScaleDistance",
     "nameplateMaxScaleDistance", "nameplateSelectedScale", "nameplateMinAlpha", "nameplateMaxAlpha",
     "nameplateMinAlphaDistance", "nameplateMaxAlphaDistance", "nameplateSelectedAlpha", "nameplateNotSelectedAlpha" }
@@ -827,9 +990,9 @@ end
 -- - alpha: the distance fade the same way (nameplateMaxAlpha, nameplateMinAlpha and their distances),
 --   times nameplateSelectedAlpha for the target and nameplateNotSelectedAlpha for the others;
 -- - a unit beyond nameplateMaxDistance has no plate;
--- - Overlapping (nameplateMotion 0): each plate stays on its unit. Stacking: each plate moves up until
---   it is overlapV times the two plates' mean height from any plate within overlapH times their mean
---   width of it; Blizzard's stacking moves plates up only.
+-- - Overlapping (Stack enemy plates off, else nameplateMotion 0): each plate stays on its unit.
+--   Stacking: each plate moves up until it is overlapV times the two plates' mean height from any
+--   plate within overlapH times their mean width of it; Blizzard's stacking moves plates up only.
 -- values (optional) override the current CVars (the keys in PREVIEW_KEYS) and may carry width, height
 -- and targetOnTop; otherwise the client's values, the matched enemy size and the option. Returns
 -- { motion, speed, width, height, overlapV, overlapH, viewDistance, targetOnTop,
@@ -858,7 +1021,8 @@ function Stacking.PreviewModel(values)
     end
     local targetOnTop = values.targetOnTop
     if type(targetOnTop) ~= "boolean" then targetOnTop = Stacking.GetOption("targetOnTop") == true end
-    local motion = Value("nameplateMotion") == 1 and "stacking" or "overlapping"
+    local arrangement = (values[STACK_ENEMY] ~= nil or Stacking.Entry(STACK_ENEMY)) and STACK_ENEMY or "nameplateMotion"
+    local motion = Value(arrangement) == 1 and "stacking" or "overlapping"
     local overlapV, overlapH = Value("nameplateOverlapV"), Value("nameplateOverlapH")
     local viewDistance = Present("nameplateMaxDistance") and Value("nameplateMaxDistance") or nil
     local rampEnd = viewDistance or schemaDefault.nameplateMaxDistance
@@ -928,8 +1092,8 @@ end
 -- For the suites: detection again (a new mocked client) and the combat probe forgotten; newSession
 -- also runs the login check for lost originals again.
 function Stacking._Reset(newSession)
-    if newSession then checked = false end
-    catalogue, present, motionShared = nil, nil, nil
+    if newSession then checked, kept, told = false, {}, {} end
+    catalogue, present, motionKey, watched, live = nil, nil, nil, nil, false
     combat.probe, combat.switched = nil, false
     sizes.applied, sizes.originals, sizes.pending, sizes.hooked = {}, {}, nil, false
     onTop.wanted, onTop.raised, onTop.casting = {}, {}, {}

@@ -120,9 +120,19 @@ local function Sources()
             IndexPage(panel, "studio", { category = key, panel = panel, pageLabel = info and info.label or key })
         end
     end
+    -- The Modules group's pages (Studio/Modules.lua), built the same way: "Modules › Threat › Your role".
+    for _, category in ipairs(Options.ModuleSettingsCategories and Options:ModuleSettingsCategories() or {}) do
+        local key = category.key
+        sources[#sources + 1] = function()
+            local panel = Options:EditorSettingsPage(key)
+            if not panel then return end
+            IndexPage(panel, "studio", { category = key, panel = panel, pagePath = L["Modules"], pageLabel = category.label,
+                module = category.module })
+        end
+    end
+    -- Game Options' pages with settings of their own (a module's page there only opens Studio).
     local blizzard = {
         { Options.panel, Options.category, "PlateSmith" },
-        { Options.threatPanel, Options.moduleSettings and Options.moduleSettings.threat, L["Threat"] },
         { Options.profilesPanel, Options.moduleSettings and Options.moduleSettings.profiles, L["Profiles"] },
     }
     for _, spec in ipairs(blizzard) do
@@ -132,6 +142,14 @@ local function Sources()
                 IndexPage(page.settingsFlow, "blizzard", { page = page, categoryObject = category,
                     pagePath = L["Settings"], pageLabel = title })
             end
+        end
+    end
+    -- A module's own Game Options page (RegisterModuleSettings) is hand-built, so it is found by its title.
+    for _, legacy in ipairs(Options.legacyModulePages or {}) do
+        sources[#sources + 1] = function()
+            index.entries[#index.entries + 1] = Prepare({ place = "blizzard", page = legacy.page, frame = legacy.page,
+                categoryObject = legacy.category, label = legacy.title, pageLabel = legacy.title,
+                path = Path(L["Settings"], legacy.title) })
         end
     end
     return sources
@@ -178,7 +196,7 @@ end
 -- The parts this plate type's tree lists, as entries (built for each search: plate types differ),
 -- each one's Display rows (Font, Font size, Font style, Shadow; an aura row's Timed only and Text
 -- position too) as "Part › Display" rows, Blizzard's name rows on Players › Dungeons & raids, and the
--- Plate row's Target highlight rows.
+-- Plate row's Target highlight and Friendly plates rows.
 local function PartEntries()
     local entries, settings = {}, PS.GetSettings and PS.GetSettings()
     local order = #index.entries
@@ -205,6 +223,14 @@ local function PartEntries()
         entries[#entries + 1] = Prepare({ place = "plateRow", label = row.label, help = row.help, shown = row.shown,
             path = Path(L["Plate settings"], L["Target highlight"]), order = order })
     end
+    -- Friendly plates (Players and Friendly NPCs › Plate settings), from any tab.
+    for _, row in ipairs(Options.EditorFriendlyRows and Options:EditorFriendlyRows() or {}) do
+        order = order + 1
+        local where = row.plateType and Options:EditorPlateLabel(row.plateType) or nil
+        entries[#entries + 1] = Prepare({ place = "friendlyRow", id = row.id, label = row.label, help = row.help,
+            plateType = row.plateType, path = Path(where, L["Plate settings"], row.id ~= "section" and L["Friendly plates"] or nil),
+            order = order })
+    end
     -- Blizzard's name rows on Players › Dungeons & raids (names only, class colours, its font) while another
     -- view is open. With the overlay test on, that tab shows the overlay's parts instead.
     if not Options:IsEditorBlizzardNames(settings) and not (settings and settings.experimentalDungeonFriendlyText == true)
@@ -227,12 +253,18 @@ local function Available(entry, categories)
     end
     -- A Target highlight row its style hides (the glow's rows under Gold edge) is not offered.
     if entry.place == "plateRow" then return not entry.shown or entry.shown() and true or false end
+    if entry.place == "friendlyRow" then return true end
     if entry.place == "studio" and not categories[entry.category] then return false end
+    -- A module's page that was turned off (its fifth error) offers nothing.
+    if entry.module and entry.module.state == "disabled" then return false end
     local frame, kit = entry.frame, entry.place == "studio" and Options.settingsKit or entry.page and entry.page.settingsKit
     if frame.IsShown and not frame:IsShown() then
         local section = entry.section
         local folded = section and section ~= frame and kit and kit.IsFolded(section.foldKey)
         if not folded then return false end
+        -- Folded, a row its page would hide anyway (an interact key row this client has no CVar for) stays out.
+        local item = entry.item
+        if item and item.visible and not item.visible() then return false end
     end
     return true
 end
@@ -266,6 +298,7 @@ end
 -- A frame's distance below stop, following its TOPLEFT anchors (the kit places every flow item by
 -- its TOPLEFT), else from the two frames' tops; nil when neither says.
 local function OffsetIn(frame, stop)
+    if not stop then return nil end
     local y, node = 0, frame
     for _ = 1, 32 do
         if node == stop then return y end
@@ -342,21 +375,34 @@ local function RevealStudioSetting(entry)
     Flash(target)
 end
 
--- Blizzard's Settings panel sits under Studio and is protected in combat: Studio closes (asking
--- about unsaved changes, as its close button does) and the page opens at the setting.
+-- Blizzard's Settings panel sits under Studio and is protected in combat: Studio steps aside while the
+-- page opens at the setting, and comes back as it was when the panel closes; its unsaved changes stay in
+-- play meanwhile, so it does not ask about them. Where the panel cannot be followed, Studio closes as its
+-- close button does (asking about unsaved changes).
 local function RevealBlizzardSetting(entry)
     if PS.Secret.InCombat() then
         PS.Chat.Print(L["Blizzard's Settings panel opens only out of combat."])
         return false
     end
-    if Options.editor then Options.editor:Hide() end
+    local Window, editor = PS.UI.Window, Options.editor
+    local stepAside = editor ~= nil and editor:IsShown() and Window.WatchSettingsPanel()
+    if editor then
+        Options.editorSteppingAside = stepAside or nil
+        editor:Hide()
+        Options.editorSteppingAside = nil
+    end
     if PS.OpenOptions then PS.OpenOptions() end
+    if stepAside and not Window.WhenSettingsPanelCloses(function()
+        if not editor:IsShown() then PS.OpenVisualEditor() end
+    end) then
+        PS.OpenVisualEditor() -- the panel did not open: nothing to step aside for
+    end
     local category = entry.categoryObject
     if category and category ~= Options.category and Settings and Settings.OpenToCategory and category.GetID then
         pcall(Settings.OpenToCategory, category:GetID())
     end
     local page = entry.page
-    Unfold(page.settingsKit, entry.section)
+    if page.settingsKit then Unfold(page.settingsKit, entry.section) end
     if page.Relayout then page:Relayout() end
     local scroll = page.settingsScroll
     local offset = OffsetIn(entry.frame, page.settingsFlow)
@@ -431,27 +477,52 @@ function Search.RevealTargetHighlight(label)
     if not (Options.editor and Options.editor:IsShown()) and not (PS.OpenVisualEditor and PS.OpenVisualEditor()) then
         return false
     end
-    -- Blizzard's own dungeon plate and the Enemy players gate have no Plate row: World's has.
-    if Options.editorPlayersGated then
+    -- Blizzard's own dungeon plate and the Enemy players gate have no Plate row: World's has. Objects have no
+    -- target highlight: the Enemies' instead.
+    if Options.editorPlayersGated or Options:IsEditorObject() then
         Options:OpenEditorDesign("enemy", "world")
     elseif Options:IsEditorBlizzardNames() then
         Options:OpenEditorDesign(Options.editorProfile, "world")
     end
+    return Search.RevealPlateRow("target", "label", label)
+end
+
+-- Plate settings' sections (built with the Plate row): the section and its rows.
+local PLATE_SECTIONS = {
+    target = function() return Options.editorTargetHighlightSection, Options:EditorTargetHighlightRows() end,
+    friendly = function() return Options.editorFriendlySection, Options:EditorFriendlyRows() end,
+}
+
+-- With Studio open on the right tab and design: the Plate row selected, the section (PLATE_SECTIONS' which)
+-- unfolded, scrolled to its row whose field is value (else the section) and flashed.
+function Search.RevealPlateRow(which, field, value)
     Options:SetEditorInspectorPage("components")
     Options:SelectEditorPlate()
-    local section = Options.editorTargetHighlightSection
+    local section, rows = PLATE_SECTIONS[which]()
     if not section then return false end
     Unfold(Options.inspectorKit, section)
     Options:LayoutEditorInspector()
     local target = section
-    for _, row in ipairs(Options:EditorTargetHighlightRows()) do
-        if label and row.label == label and row.frame and row.frame:IsShown() then target = row.frame end
+    for _, row in ipairs(rows) do
+        if value and row[field] == value and row.frame and row.frame:IsShown() then target = row.frame end
     end
     local offset = OffsetIn(target, Options.editorComponentContent)
     local bar = Options.editorComponentScrollBar
     if offset and bar and bar.ScrollToOffset then bar:ScrollToOffset(math.max(0, offset - REVEAL_MARGIN)) end
     Flash(target)
     return true
+end
+
+-- Plate settings › Friendly plates (Settings' link, a search result): on the open friendly tab, else plateType's
+-- (default Players), at its World design (Dungeons & raids is Blizzard's, with no Plate row), at the row id.
+function Search.RevealFriendlyPlates(id, plateType)
+    if not (Options.editor and Options.editor:IsShown()) and not (PS.OpenVisualEditor and PS.OpenVisualEditor()) then
+        return false
+    end
+    local open = Options.editorProfile
+    plateType = plateType or ((open == "friendlyPlayer" or open == "friendlyNPC") and open or "friendlyPlayer")
+    if plateType ~= open or Options.editorDesign == "dungeon" then Options:OpenEditorDesign(plateType, "world") end
+    return Search.RevealPlateRow("friendly", "id", id)
 end
 
 -- Goes to a result: its category, section unfolded, scrolled to and flashed.
@@ -468,6 +539,8 @@ function Search.Pick(entry)
         RevealDungeonNameRow(entry)
     elseif entry.place == "plateRow" then
         return Search.RevealTargetHighlight(entry.label)
+    elseif entry.place == "friendlyRow" then
+        return Search.RevealFriendlyPlates(entry.id, entry.plateType)
     elseif entry.place == "blizzard" then
         return RevealBlizzardSetting(entry)
     else
@@ -512,19 +585,14 @@ local function Heading(kit, parent)
     return frame
 end
 
--- A pooled group: a heading over one section's matches (or all its rows, when the section matched),
--- and a blocker over them while that section blocks its rows (Stacking while unmanaged).
+-- A pooled group: a heading over one section's matches (or all its rows, when the section matched).
+-- A row that cannot be changed carries its own dimming and disabled control, lent or not.
 local function Group(position)
     local group = results.groups[position]
     if group then return group end
     local kit, page = Options.settingsKit, results.page
     group = kit.Group(page.columns)
     group.heading = Heading(kit, group)
-    group.blocker = CreateFrame("Frame", nil, group)
-    group.blocker:EnableMouse(true)
-    group.blocker:SetPoint("TOPLEFT", group.heading, "BOTTOMLEFT", 0, 0)
-    group.blocker:SetPoint("BOTTOMRIGHT", group, "BOTTOMRIGHT", 0, 0)
-    group.blocker:Hide()
     group:Hide()
     results.groups[position] = group
     return group
@@ -570,7 +638,9 @@ local function LineText(entry)
     if entry.place == "dungeonNameRow" then
         return string.format(L["Select part in Studio › %s"], Path(entry.path, entry.label))
     end
-    if entry.place == "plateRow" then return string.format(L["Open in Studio › %s"], Path(entry.path, entry.label)) end
+    if entry.place == "plateRow" or entry.place == "friendlyRow" then
+        return string.format(L["Open in Studio › %s"], Path(entry.path, entry.label))
+    end
     return string.format(L["Open in Blizzard Settings › %s"], Path(entry.pageLabel, entry.sectionTitle, entry.label))
 end
 
@@ -619,7 +689,7 @@ local function Restore()
     if not page then return end
     page.columns.flowItems = {}
     for _, group in ipairs(results.groups) do
-        group.flowItems, group.source = {}, nil
+        group.flowItems = {}
         group:Hide()
     end
 end
@@ -663,7 +733,7 @@ local function Place(found)
                 Lend(entry.frame, group)
             end
         end
-        group.flowItems, group.source = items, record.section
+        group.flowItems = items
         page.columns.flowItems[position] = { frame = group }
         results.pages[record.panel] = true
     end
@@ -679,7 +749,6 @@ local function Place(found)
 end
 
 -- Chrome's LayoutEditorSettingsPanels while results show: the page at width (shown with Settings).
--- A group follows its section's blocker and dimmed title (they change with the settings).
 function Search.LayoutResults(width, shown)
     local page = results.page
     if not page then return 0 end
@@ -687,13 +756,6 @@ function Search.LayoutResults(width, shown)
     page:SetPoint("TOPLEFT", Options.editorSettingsContent, "TOPLEFT", 0, 0)
     page:SetShown(shown and results.active)
     if not results.active then return 0 end
-    for _, group in ipairs(results.groups) do
-        local source = group.source
-        local blocked = source ~= nil and source.stackingDimmed == true
-        group.blocker:SetFrameLevel(group:GetFrameLevel() + 60)
-        group.blocker:SetShown(blocked)
-        group.heading:SetAlpha(blocked and source.band and source.band:GetAlpha() or 1)
-    end
     return page:Relayout(width)
 end
 

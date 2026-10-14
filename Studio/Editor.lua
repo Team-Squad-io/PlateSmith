@@ -14,6 +14,12 @@ local editorProfiles = {
     { key = "friendlyPlayer", label = L["Players"], sampleName = L["Your Character"] },
     { key = "friendlyNPC", label = L["Friendly NPCs"], sampleName = L["Innkeeper Allison"] },
     { key = "enemyPlayer", label = L["Enemy players"], sampleName = L["Arena Challenger"] },
+    -- Objects: a book on the ground; with Test values' Quest unit, a quest object (questSampleName).
+    { key = "object", label = L["Objects"], sampleName = L["Arathor and the Troll Wars"],
+        questSampleName = L["Shipment of Iron"],
+        -- With a Type open (Designs' object types): an object of that type (quest objects: questSampleName).
+        typeSampleNames = { herb = L["Peacebloom"], ore = L["Tin Vein"], loot = L["Battered Chest"],
+            book = L["Arathor and the Troll Wars"], service = L["Mailbox"], other = L["Campfire"] } },
 }
 -- The inspector's controls for each part (Inspector's contexts); parts with none of their own
 -- (shown, hidden and moved from the tree and the preview) use "other".
@@ -22,6 +28,7 @@ local editorContextForKey = {
     health = "health", power = "power", cast = "cast", quest = "quest", questLoot = "questLoot",
     raidIcon = "raidIcon", relationshipIcon = "relationshipIcon", pvpIcon = "pvpIcon", classification = "classification",
     buffs = "buffs", debuffs = "debuffs", threat = "threat", combo = "combo", targetedBy = "targetedBy", tagged = "tagged",
+    actionIcon = "actionIcon", statusText = "statusText", looseMark = "looseMark", backdrop = "backdrop",
 }
 for index = 1, VALUE_SLOT_COUNT do editorContextForKey["value" .. index] = "value" end
 -- Settings search finds a part's Display rows through it (Search.lua).
@@ -52,6 +59,11 @@ local editorDescriptions = {
     debuffs = L["Debuffs on this unit."],
     combo = L["Your combo points on your target's plate, in any form; an empty row only while you can build them."],
     targetedBy = L["Which group members target this enemy: a class-coloured badge each, where the game says."],
+    actionIcon = L["The game's own icon for what you can do here: gather, mine, open, read, talk, train."],
+    looseMark = L["Shows while the mob is loose: attacking someone who is not a tank, as the Tank window's LOOSE."],
+    statusText = L["What the object needs and your skill, such as Mining 65 in your skill's colour, once you have hovered one like it."],
+    backdrop = L["A box behind the parts you choose, like the game's tooltip: it fits round them as they show, or has a size of "
+        .. "its own."],
 }
 for index = 1, VALUE_SLOT_COUNT do
     editorDescriptions["value" .. index] = L["A custom part: choose what it shows, then anchor and place it."]
@@ -72,11 +84,24 @@ Options.editorPreviewFit = true
 Options.editorSnap = true
 
 -- Friendly plates keep two layouts outdoors: names only and full plate (positions differ; styles
--- and rules are shared). Studio edits the one the plates use unless the preview's switch picks
--- the other (editorFriendlyView, for this session).
-function Options:EditorLiveFriendlyView()
+-- and rules are shared). Studio edits the one the plates use (the plate type's Show as) unless the
+-- preview's switch picks the other (editorFriendlyView, for this session; a new Show as clears it).
+-- A friendly plate type's Show as (Schema's FRIENDLY.Mode; default: the open tab's): names, full or off.
+function Options:EditorShowAs(plateType)
     local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
-    return settings and settings.friendly == "names" and "names" or "full"
+    return Schema.FRIENDLY.Mode(settings, plateType or self.editorProfile)
+end
+
+function Options:EditorLiveFriendlyView()
+    return self:EditorShowAs() == "names" and "names" or "full"
+end
+
+-- Plate settings › Friendly plates › Show as for the open tab: the preview's Editing switch and its
+-- remembered view (zoom and pan, per layout) follow the new choice at once.
+function Options:SetEditorShowAs(mode)
+    if not PS.SetFriendlyMode(self.editorProfile, mode) then return false end
+    self.editorFriendlyView = nil
+    return self:SetEditorProfile(self.editorProfile)
 end
 
 function Options:EditorFriendlyView()
@@ -94,18 +119,31 @@ function Options:IsEditorEnemy()
     return self.editorProfile == "enemy" or self.editorProfile == "enemyPlayer"
 end
 
+-- Objects (books, chests): one names-only layout, the name and the quest mark.
+function Options:IsEditorObject()
+    return self.editorProfile == "object"
+end
+
 function Options:CurrentEditorVariant()
-    if self:IsEditorEnemy() then return "full" end
+    if self:IsEditorEnemy() or self:IsEditorObject() then return "full" end
     if self.editorDesign == "dungeon" then return "dungeon" end
     return self:EditorFriendlyView()
 end
 
 -- The edit target every PS.Set* and PS.Get* call in Studio passes (Core/Settings.lua): the plate
--- type for its World design, else "<type>@<design>".
+-- type for its World design, else "<type>@<design>"; on the Objects tab with a Type chosen
+-- (editorObjectType, Core/Designs.lua's object types), that type's layer over the design: "/<type>" after it.
 function Options:EditorTarget()
-    local design = self.editorDesign
-    if not design or design == "world" then return self.editorProfile end
-    return self.editorProfile .. "@" .. design
+    local design, target = self.editorDesign, self.editorProfile
+    if design and design ~= "world" then target = target .. "@" .. design end
+    local objectType = self:EditorObjectType()
+    if objectType then target = target .. "/" .. objectType end
+    return target
+end
+
+-- The open object type (nil: All objects); only on the Objects tab.
+function Options:EditorObjectType()
+    return self:IsEditorObject() and self.editorObjectType or nil
 end
 
 -- The profile the preview draws (the edited design's); the import preview's plates draw their own.
@@ -120,7 +158,8 @@ local modeChoices = {
     { value = "own", label = L["PlateSmith"],
         help = L["PlateSmith always draws its own plates, even beside another nameplate addon."] },
     { value = "overlay", label = L["Blizzard, with PlateSmith extras"],
-        help = L["Blizzard's plates (or another addon's) stay; PlateSmith adds its quest markers and threat to them."] },
+        help = L["Blizzard draws its own plates; PlateSmith adds its extras to them (Extras on Blizzard's plates) and "
+            .. "still draws objects. Beside another addon's plates, its quest markers and threat text."] },
 }
 
 local friendlyChoices = {
@@ -129,14 +168,30 @@ local friendlyChoices = {
     { value = "off", label = L["Blizzard plates"] },
 }
 
+-- The Elite / rare mark's styles (Schema's classificationStyle; Nameplates/Identity.lua's ClassificationMark).
 local classificationStyleChoices = {
-    { value = "icon", label = L["Blizzard icons"] },
-    { value = "words", label = L["Words (Elite, Rare, Boss)"] },
-    { value = "letters", label = L["Letters (+, R, R+, BOSS)"] },
+    { value = "icon", label = L["Blizzard icons"],
+        help = L["Blizzard's small winged icon beside the bar: gold elite, silver rare, a skull for a boss."] },
+    { value = "dragon", label = L["Classic dragon"],
+        help = L["The classic gold or silver dragon round the level, which moves to the bar's right end; a boss's skull."] },
+    { value = "beforeName", label = L["Before the name"],
+        help = L["The small winged icon right before the name, at its height, with the level before it."] },
+    { value = "suffix", label = L["Level suffix"],
+        help = L["No icon: the level reads 60+ (gold), 60R (silver), 60R+, or ?? in red for a boss."] },
+    { value = "frame", label = L["Bar frame"],
+        help = L["No icon: a thin gold or silver frame round the health bar, two for a rare elite, dark red for a boss."] },
+    { value = "words", label = L["Words"], help = L["Elite, Rare, Rare elite or Boss beside the bar."] },
+    { value = "letters", label = L["Letters"], help = L["+, R, R+ or BOSS beside the bar."] },
+}
+-- The mark's icon size (classificationIconSize), for the styles that draw Blizzard's icon.
+local classificationIconSizeChoices = {
+    { value = "auto", label = L["Auto"], help = L["18 px beside the bar; the name's text height before the name."] },
+    { value = "standard", label = L["18 px"], help = L["Blizzard's own size, at the plate's scale."] },
+    { value = "text", label = L["Text height"], help = L["As tall as the name's text."] },
 }
 local friendlyPvpChoices = {
     { value = "off", label = L["Off"] },
-    { value = "colour", label = L["Name colour"] },
+    { value = "colour", label = L["Colour"] },
     { value = "icon", label = L["Faction icon"] },
     { value = "both", label = L["Colour and icon"] },
 }
@@ -144,7 +199,7 @@ local friendlyPvpChoices = {
 -- Selected target: Gold edge stands for both stored styles, "border" (steady) and "halo" (pulsing);
 -- the Target section's Pulse slowly box picks between them (Inspector).
 local targetHighlightChoices = {
-    { value = "off", label = L["Off"], help = L["No extra glow. The health bar keeps its gold target edge."] },
+    { value = "off", label = L["Off"], help = L["No highlight: no glow and no gold target edge."] },
     { value = "border", label = L["Gold edge"],
         help = L["Gold light on the selected plate's text and bar edges, steady or pulsing."] },
     { value = "glow", label = L["Soft glow behind"],
@@ -156,6 +211,18 @@ local targetGlowColourChoices = {
     { value = "reaction", label = L["Reaction"], help = L["Red for hostile, yellow for neutral, green for friendly."] },
     { value = "threat", label = L["Threat"],
         help = L["Threat: your threat colour on this target while you're in combat with it; your custom colour otherwise."] },
+}
+-- The soft glow's wrap (targetGlowWrap) and the parts Fit to parts may wrap (targetGlowParts; Schema's GLOW_PARTS).
+local targetGlowWrapChoices = {
+    { value = "parts", label = L["Fit to parts"],
+        help = L["Follows the parts picked below as they show and hide; Width and Height add room around them."] },
+    { value = "fixed", label = L["Fixed size"], help = L["A box of Width by Height, centred on the health bar."] },
+}
+local targetGlowPartChoices = {
+    { value = "name", label = L["Name"] },
+    { value = "health", label = L["Health bar"] },
+    { value = "power", label = L["Power bar"] },
+    { value = "cast", label = L["Cast bar"] },
 }
 
 local namesOnlyCastTextChoices = {
@@ -398,9 +465,17 @@ function Options:RefreshEditorComponentList(settings, revealKey)
     end
     for _, header in pairs(self.editorCustomGroupHeaders) do header:Hide() end
     for _, button in pairs(self.editorComponentButtons or {}) do button:Hide() end
+    -- The tree's working tables (its index, counts, rows' lists and records) are its own, filled again on each
+    -- refresh: read them, never keep one.
+    local work = self.editorTreeWork
+    if not work then
+        work = { tops = {}, rows = {}, headers = {}, records = {}, children = {}, roots = {}, index = {},
+            counts = { all = {}, used = {}, shown = {} } }
+        self.editorTreeWork = work
+    end
     -- Who sits under whom, and each group's parts (all, and shown), worked out once.
-    local tree = self:EditorTreeIndex(settings)
-    local counts = self:EditorTreeCounts(settings)
+    local tree = self:EditorTreeIndex(settings, work.index)
+    local counts = self:EditorTreeCounts(settings, work.counts)
     -- The search field narrows the tree to parts whose name contains its text, with their parents.
     local query = self.editorSearchText and self.editorSearchText:lower() or ""
     local matched
@@ -417,8 +492,19 @@ function Options:RefreshEditorComponentList(settings, revealKey)
             end
         end
     end
-    local width, y, revealTop, tops, rows = content:GetWidth(), 0, nil, {}, {}
-    local headers = {}
+    local width, y, revealTop, tops, rows = content:GetWidth(), 0, nil, work.tops, work.rows
+    local headers, records = work.headers, work.records
+    for index = #tops, 1, -1 do tops[index] = nil end
+    for index = #rows, 1, -1 do rows[index] = nil end
+    for index = #headers, 1, -1 do headers[index] = nil end
+    -- A row's record: { frame, top, height, key, partKey, parentKey, depth, isGroup }.
+    local function Row(frame, top, height, key, partKey, parentKey, depth, isGroup)
+        local record = records[#rows + 1] or {}
+        records[#rows + 1] = record
+        record.frame, record.top, record.height, record.key, record.partKey = frame, top, height, key, partKey
+        record.parentKey, record.depth, record.isGroup = parentKey, depth, isGroup
+        rows[#rows + 1] = record
+    end
     -- Blizzard's own friendly plate (dungeons): its name is the one part; nothing can be added,
     -- grouped, hidden or placed.
     local native = self:IsEditorBlizzardNames(settings)
@@ -433,7 +519,7 @@ function Options:RefreshEditorComponentList(settings, revealKey)
         plateRow:SetShown(query == "" and not native)
         if query == "" and not native then
             tops[#tops + 1] = 0
-            rows[#rows + 1] = { frame = plateRow, top = 0, height = HEADER_HEIGHT - 2 }
+            Row(plateRow, 0, HEADER_HEIGHT - 2)
             y = HEADER_HEIGHT + 2
         end
     end
@@ -450,7 +536,10 @@ function Options:RefreshEditorComponentList(settings, revealKey)
     local function Node(key, parentKey, depth, last)
         local isGroup = key:match("^group%.%d+$") ~= nil
         local indent = depth * TREE_INDENT
-        local children = {}
+        -- One list per depth: a node's list is read again after its children (one deeper) are laid out.
+        local children = work.children[depth] or {}
+        work.children[depth] = children
+        for index = #children, 1, -1 do children[index] = nil end
         for _, child in ipairs(self:EditorTreeChildren(key, settings, tree)) do
             if Visible(child) then children[#children + 1] = child end
         end
@@ -466,8 +555,7 @@ function Options:RefreshEditorComponentList(settings, revealKey)
             header.label:SetText(self:EditorNodeLabel(key))
             header:Show()
             tops[#tops + 1] = y
-            rows[#rows + 1] = { frame = header, top = y, height = HEADER_HEIGHT - 4, key = key, parentKey = parentKey,
-                depth = depth, isGroup = true }
+            Row(header, y, HEADER_HEIGHT - 4, key, nil, parentKey, depth, true)
             -- Three states: all shown, none shown, or mixed (the eye's half-lit look).
             local total, shown = counts.used[key] or 0, counts.shown[key] or 0
             local tick = header.visibility
@@ -487,8 +575,7 @@ function Options:RefreshEditorComponentList(settings, revealKey)
             -- Without its eye (Blizzard's own name), the label takes the eye's place.
             button.label:SetPoint("LEFT", button, "LEFT", native and 35 or 70, 0)
             tops[#tops + 1] = y
-            rows[#rows + 1] = { frame = button, top = y, height = ROW_HEIGHT - 1, key = key, partKey = key,
-                parentKey = parentKey, depth = depth }
+            Row(button, y, ROW_HEIGHT - 1, key, key, parentKey, depth)
             -- The connector from the parent's eye: none at the top level; it stops at the last child.
             if button.connectors then
                 local bright = self:StudioAccess().highContrast
@@ -525,7 +612,8 @@ function Options:RefreshEditorComponentList(settings, revealKey)
         end
         if isGroup then y = y + GROUP_GAP end
     end
-    local roots = {}
+    local roots = work.roots
+    for index = #roots, 1, -1 do roots[index] = nil end
     for _, key in ipairs(self:EditorTreeChildren(nil, settings, tree)) do
         if Visible(key) then roots[#roots + 1] = key end
     end
@@ -617,6 +705,7 @@ end
 -- A slot free in every design of the plate type (Settings' FreeValueSlot), so a part added in one
 -- design never lands on a slot another design uses.
 function Options:EditorFreeValueSlot()
+    if self:IsEditorObject() then return nil, "plate" end
     if not self:IsEditorEnemy() and self.editorDesign ~= "dungeon"
         and self:EditorFriendlyView() ~= "full" then return nil, "plate" end
     if type(PS.FreeValueSlot) ~= "function" then return nil, "plate" end
@@ -707,11 +796,12 @@ end
 -- The + Add menu: { text, func, disabled, children } entries. Parts by type; one that is on the
 -- plate (or not used by this plate type) is listed but off, with the reason.
 local ADD_MENU = {
-    { label = L["Text"], keys = { "name", "level", "guild", "threat", "tagged", "targetName" } },
+    { label = L["Text"], keys = { "name", "level", "guild", "threat", "tagged", "targetName", "statusText" } },
     { label = L["Bars"], keys = { "health", "power", "cast" } },
     { label = L["Icons"], keys = { "quest", "questLoot", "raidIcon", "relationshipIcon", "pvpIcon", "classification", "combo",
-        "targetedBy" } },
+        "targetedBy", "actionIcon", "looseMark" } },
     { label = L["Auras"], keys = { "buffs", "debuffs" } },
+    { label = L["Boxes"], keys = { "backdrop" } },
 }
 
 function Options:EditorAddMenuEntries()
@@ -875,7 +965,12 @@ function Options:RefreshEditorInspectorContext()
     local selectedContext = group and "group" or plate and "plate" or key and (self:EditorPartContext(key) or "other")
     local native = selectedContext == "blizzardName"
     if self.editorComponentDescription then
+        local friendly = self.editorProfile == "friendlyPlayer" or self.editorProfile == "friendlyNPC"
         self.editorComponentDescription:SetText(group and L["A group of parts."]
+            or plate and self:IsEditorObject() and L["A look's Objects style and the way to the object settings, then "
+                .. "the whole plate: its scale and a quick layout, for this design."]
+            or plate and friendly and L["How and where these plates show, then the whole plate: its scale, a quick layout "
+                .. "and how your target is highlighted, for this plate type and design."]
             or plate and L["The whole plate: its scale, a quick layout and how your target is highlighted, for this "
                 .. "plate type and design."]
             or native and L["Blizzard draws friendly plates in dungeons and raids. It allows names only, class "
@@ -885,15 +980,19 @@ function Options:RefreshEditorInspectorContext()
     end
     local movable = key and not native and self:IsEditorComponentRelevant(key)
         and editorDefinitions[key] and editorDefinitions[key].movable ~= false and not self:IsEditorPlacedByStyle(key)
-    -- What the inspector shows (Inspector's sections read it as they lay out).
-    self.editorInspectorSelection = { key = key, group = group and groupKey or nil, plate = plate,
-        context = selectedContext, movable = movable and true or false }
+    -- What the inspector shows (Inspector's sections read it as they lay out): one table, filled again.
+    local selection = rawget(self, "editorInspectorSelection") or {}
+    selection.key, selection.group, selection.plate = key, group and groupKey or nil, plate
+    selection.context, selection.movable = selectedContext, movable and true or false
+    self.editorInspectorSelection = selection
     -- A part's own rows are built the first time it is selected.
     if self.BuildEditorContext then self:BuildEditorContext(selectedContext) end
     if group and self.groupControlsRefresh then self.groupControlsRefresh() end
     for contextKey, frame in pairs(self.editorContextFrames or {}) do
         frame:SetShown(contextKey == selectedContext)
     end
+    -- The selected context's rows, if a refresh passed them by while another was selected.
+    if self.editorStaleControls then self:RefreshEditorStaleControls() end
     if self.editorSurnameControl then
         self.editorSurnameControl:SetShown(key == "name" and self.editorProfile == "friendlyPlayer")
     end
@@ -944,24 +1043,107 @@ function Options:IsEditorStackGhost(key)
     return false
 end
 
--- Four edges, each one texture of 5 px dashes 3 px apart tiled along it (Media/StudioB/ghost-dash-*.png,
--- 8 px a period), in a soft light colour.
-local GHOST = { period = 8, colour = { 0.85, 0.82, 0.7, 0.6 },
+-- Four edges of 5 px dashes 3 px apart tiled along them (Media/StudioB/ghost-dash-*.png, 8 px a period).
+-- Quiet at rest (grey, faint), lit when pointed at or selected. The strength is the outline frame's alpha:
+-- the edges' vertex colour stays opaque. An edge leaves out what lies under a drawn part (by `margin`), so
+-- no dash crosses a live bar or text; a leftover shorter than `minimum` is dropped.
+local GHOST = { period = 8, margin = 1, minimum = 4,
+    rest = { 0.6, 0.6, 0.6 }, lit = { 0.88, 0.84, 0.72 },
+    alpha = { rest = 0.28, hover = 0.65, selected = 0.75 },
     h = "Interface\\AddOns\\PlateSmith\\Media\\StudioB\\ghost-dash-h.png",
     v = "Interface\\AddOns\\PlateSmith\\Media\\StudioB\\ghost-dash-v.png" }
 Options.EDITOR_GHOST = GHOST
--- The dashed outline round component, its size in its parent's units (the component's drawn scale).
-local function GhostOutline(component, level)
+
+-- A pair from a kept list (list[index], made the first time), set to a, b: the ghost outlines' working
+-- lists are kept between refreshes, so a refresh makes no tables for them.
+local function Pair(list, index, a, b)
+    local pair = list[index]
+    if not pair then
+        pair = {}
+        list[index] = pair
+    end
+    pair[1], pair[2] = a, b
+    return pair
+end
+local function ByStart(left, right) return left[1] < right[1] end
+
+-- The stretches of from..to that no cover ({ a, b }, in any order, may overlap) reaches, each at least
+-- minimum long, in order: { { start, stop }, ... }. into: { stretches = list, sorted = list } kept by the
+-- caller, filled again (the result is into.stretches); without it every table is new.
+function Options.EditorGhostStretches(from, to, covers, minimum, into)
+    local sorted, stretches = into and into.sorted or {}, into and into.stretches or {}
+    local count, found = 0, 0
+    for _, cover in ipairs(covers or {}) do
+        local a, b = math.min(cover[1], cover[2]), math.max(cover[1], cover[2])
+        if b > from and a < to then
+            count = count + 1
+            Pair(sorted, count, a, b)
+        end
+    end
+    for index = #sorted, count + 1, -1 do sorted[index] = nil end
+    table.sort(sorted, ByStart)
+    local cursor = from
+    minimum = minimum or 0
+    for _, cover in ipairs(sorted) do
+        if cover[1] > cursor and cover[1] - cursor >= minimum then
+            found = found + 1
+            Pair(stretches, found, cursor, cover[1])
+        end
+        cursor = math.max(cursor, cover[2])
+    end
+    if cursor < to and to - cursor >= minimum then
+        found = found + 1
+        Pair(stretches, found, cursor, to)
+    end
+    for index = #stretches, found + 1, -1 do stretches[index] = nil end
+    return stretches
+end
+
+-- The boxes ({ left, right, bottom, top }, stage units) of the parts drawn on the stage other than key:
+-- what key's dashed outline must not cross. into: a list kept by the caller, filled again (else a new one).
+function Options:EditorGhostCovers(key, into)
+    local covers, count = into or {}, 0
+    for other, part in pairs(self.editorComponents or {}) do
+        if other ~= key and part:IsShown() and self:IsEditorPartDrawn(other) then
+            local x, y, halfWidth, halfHeight = self:EditorComponentBounds(other)
+            if x then
+                count = count + 1
+                local cover = covers[count] or {}
+                covers[count] = cover
+                cover[1], cover[2], cover[3], cover[4] = x - halfWidth, x + halfWidth, y - halfHeight, y + halfHeight
+            end
+        end
+    end
+    for index = #covers, count + 1, -1 do covers[index] = nil end
+    return covers
+end
+
+-- side: { anchor point, horizontal }; pieces are made as an edge is first cut into more stretches.
+local GHOST_SIDES = { top = { "TOPLEFT", true }, bottom = { "BOTTOMLEFT", true },
+    left = { "TOPLEFT", false }, right = { "TOPRIGHT", false } }
+local function GhostPiece(outline, side, index)
+    local pieces = outline.pieces[side]
+    local piece = pieces[index]
+    if not piece then
+        piece = outline:CreateTexture(nil, "ARTWORK")
+        piece:SetTexture(GHOST_SIDES[side][2] and GHOST.h or GHOST.v, "REPEAT", "REPEAT")
+        pieces[index] = piece
+    end
+    return piece
+end
+
+-- The dashed outline round key's component, its size in its parent's units (the component's drawn scale),
+-- each edge cut round the covers. Piece 1 of each side is outline.edges[side].
+local function GhostOutline(self, key, component, level)
     local outline = component.ghostOutline
     if not outline then
         outline = CreateFrame("Frame", nil, component:GetParent())
+        -- Presses go through to the part (it stays where it is for selecting and dragging).
         outline:EnableMouse(false)
-        outline.edges = {}
-        for index, side in ipairs({ "top", "bottom", "left", "right" }) do
-            local edge = outline:CreateTexture(nil, "ARTWORK")
-            edge:SetTexture(index <= 2 and GHOST.h or GHOST.v, "REPEAT", "REPEAT")
-            edge:SetVertexColor(GHOST.colour[1], GHOST.colour[2], GHOST.colour[3], GHOST.colour[4])
-            outline.edges[side] = edge
+        outline.pieces, outline.edges = {}, {}
+        for side in pairs(GHOST_SIDES) do
+            outline.pieces[side] = {}
+            outline.edges[side] = GhostPiece(outline, side, 1)
         end
         component.ghostOutline = outline
     end
@@ -972,22 +1154,73 @@ local function GhostOutline(component, level)
     outline:SetPoint("TOPLEFT", component, "TOPLEFT", 0, 0)
     outline:SetSize(width, height)
     outline:SetFrameLevel(level)
-    local edges = outline.edges
-    for side, point in pairs({ top = "TOPLEFT", bottom = "BOTTOMLEFT", left = "TOPLEFT", right = "TOPRIGHT" }) do
-        local edge = edges[side]
-        local along = (side == "top" or side == "bottom") and width or height
-        edge:ClearAllPoints()
-        edge:SetPoint(point, outline, point, 0, 0)
-        if side == "top" or side == "bottom" then
-            edge:SetSize(width, 1)
-            edge:SetTexCoord(0, along / GHOST.period, 0, 1)
-        else
-            edge:SetSize(1, height)
-            edge:SetTexCoord(0, 1, 0, along / GHOST.period)
+    local x, y = self:EditorDrawnCentre(key)
+    local left, top = x - width / 2, y + height / 2
+    -- The working lists are the outline's, kept between refreshes.
+    local work = outline.work
+    if not work then
+        work = { covers = {} }
+        for side in pairs(GHOST_SIDES) do work[side] = { cut = {}, sorted = {}, stretches = {} } end
+        outline.work = work
+    end
+    local covers = self:EditorGhostCovers(key, work.covers)
+    local margin = GHOST.margin
+    for side, spec in pairs(GHOST_SIDES) do
+        local point, horizontal = spec[1], spec[2]
+        -- Where the edge's line lies across it, and what each cover hides along it (from its start).
+        local across = side == "top" and top or side == "bottom" and top - height or side == "left" and left
+            or left + width
+        local own = work[side]
+        local along, cut, count = horizontal and width or height, own.cut, 0
+        for _, cover in ipairs(covers) do
+            local low, high = horizontal and cover[3] or cover[1], horizontal and cover[4] or cover[2]
+            if across >= low - margin and across <= high + margin then
+                count = count + 1
+                if horizontal then
+                    Pair(cut, count, cover[1] - margin - left, cover[2] + margin - left)
+                else
+                    Pair(cut, count, top - cover[4] - margin, top - cover[3] + margin)
+                end
+            end
         end
+        for index = #cut, count + 1, -1 do cut[index] = nil end
+        local stretches = Options.EditorGhostStretches(0, along, cut, GHOST.minimum, own)
+        for index, stretch in ipairs(stretches) do
+            local piece = GhostPiece(outline, side, index)
+            local length = stretch[2] - stretch[1]
+            piece:ClearAllPoints()
+            -- Each piece's texture starts where its stretch does, so the dashes keep one rhythm round the cut.
+            if horizontal then
+                piece:SetPoint(point, outline, point, stretch[1], 0)
+                piece:SetSize(length, 1)
+                piece:SetTexCoord(stretch[1] / GHOST.period, stretch[2] / GHOST.period, 0, 1)
+            else
+                piece:SetPoint(point, outline, point, 0, -stretch[1])
+                piece:SetSize(1, length)
+                piece:SetTexCoord(0, 1, stretch[1] / GHOST.period, stretch[2] / GHOST.period)
+            end
+            piece:Show()
+        end
+        local pieces = outline.pieces[side]
+        for index = #stretches + 1, #pieces do pieces[index]:Hide() end
     end
     outline:Show()
     return outline
+end
+
+-- A ghost outline's look: rest, pointed at (component.ghostHover) or selected.
+function Options:PaintEditorGhost(key)
+    local component = self.editorComponents and self.editorComponents[key]
+    local outline = component and component.ghostOutline
+    if not outline then return false end
+    local state = self.selectedComponent == key and "selected" or component.ghostHover and "hover" or "rest"
+    local colour = state == "rest" and GHOST.rest or GHOST.lit
+    for _, pieces in pairs(outline.pieces) do
+        for _, piece in ipairs(pieces) do piece:SetVertexColor(colour[1], colour[2], colour[3], 1) end
+    end
+    outline:SetAlpha(GHOST.alpha[state])
+    outline.ghostState = state
+    return true
 end
 
 function Options:RefreshEditorComponentLayers()
@@ -996,13 +1229,17 @@ function Options:RefreshEditorComponentLayers()
     -- The same drawing order as the plates (Schema's DrawOrder); the selection outline and its
     -- handles draw above it all.
     local base = self.editorPreviewStage:GetFrameLevel()
-    local rank, count = Schema.DrawOrder(self.editorLayout or {})
+    -- Worked out into the view's own tables (a refresh asks three times).
+    local into = rawget(self, "editorDrawOrderInto") or {}
+    self.editorDrawOrderInto = into
+    local rank, count = Schema.DrawOrder(self:EditorDrawnLayout(), into)
     local function Level(key) return 2 + count - (rank[key] or count) end
     -- Combo points on the health bar's edge draw in front of both bars, as on the plates (Styles.LayerLevel).
     local onEdge = self.editorComponents.health and Schema.ComboOnBarEdge(profile, self.editorLayout)
     for key, component in pairs(self.editorComponents) do
         local slot = key:match("^value%d+$") and profile and profile.valueSlots[key] or nil
-        local level = slot and slot.layer ~= "front" and 1 or Level(key)
+        -- The Backdrop sits under every part, as on the plates (Backdrop.lua).
+        local level = (slot and slot.layer ~= "front" or key == "backdrop") and 1 or Level(key)
         if key == "combo" and onEdge then level = math.max(level, Level("health") + 1, Level("cast") + 1) end
         -- A faint ghost (turned off, hidden by a rule, an unlit sample) sits under every drawn
         -- part, so a press over a drawn part never picks the ghost.
@@ -1013,7 +1250,8 @@ function Options:RefreshEditorComponentLayers()
             if not component.ghostApplied then component.ghostAlpha, component.ghostApplied = component:GetAlpha(), true end
             component:SetAlpha(0)
             level = 0
-            GhostOutline(component, base)
+            GhostOutline(self, key, component, base)
+            self:PaintEditorGhost(key)
         else
             if component.ghostApplied then
                 component:SetAlpha(component.ghostAlpha or 1)
@@ -1199,12 +1437,47 @@ end
 -- and kept until the layout copy is replaced or InvalidateEditorTransforms is called: after an
 -- entry of the copy changes in place, and after the preview's sizes change (its refresh).
 local NO_LAYOUT = {}
-function Options:EditorTransforms()
+
+-- The layout the preview draws: the edited copy, with an Enemies design's Elite / rare mark style placing the mark
+-- and the level over it (Schema's MARK.Build, as on the plates; the copy itself is never changed). Made again
+-- whenever the transforms are (the copy changes in place while a part is dragged).
+function Options:EditorDrawnLayout()
     local layout = self.editorLayout or NO_LAYOUT
+    if not self:IsEditorEnemy() then return layout end
+    local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
+    local style = settings and settings.classificationStyle
+    local drawn = self.editorDrawn
+    if drawn and self.editorDrawnFor == layout and self.editorDrawnStyle == style then return drawn end
+    drawn = Schema.MARK.Build(layout, style)
+    self.editorDrawn, self.editorDrawnFor, self.editorDrawnStyle = drawn, layout, style
+    return drawn
+end
+
+-- The style the preview's mark is drawn in, as an Enemies plate draws it (ClassificationMark.StyleFor).
+function Options:EditorMarkStyle(settings)
+    settings = settings or (type(PS.GetSettings) == "function" and PS.GetSettings())
+    return PS.ClassificationMark.StyleFor(settings, self:EditorDrawnLayout())
+end
+
+function Options:EditorTransforms()
+    local layout = self:EditorDrawnLayout()
     if self.editorTransforms and self.editorTransformsLayout == layout then return self.editorTransforms end
-    self.editorMeasureFunction = self.editorMeasureFunction or function(key) return self:EditorMeasure(key) end
-    self.editorAbsentFunction = self.editorAbsentFunction or function(key) return self:IsEditorPartAbsent(key) end
-    self.editorTransforms = Schema.LayoutTransforms(layout, self.editorMeasureFunction, self.editorAbsentFunction)
+    -- Each view's own (rawget): a view's fields fall back to Studio's methods (ImportPreview's viewMeta), and
+    -- Studio's closures would measure Studio's own parts.
+    self.editorMeasureFunction = rawget(self, "editorMeasureFunction") or function(key) return self:EditorMeasure(key) end
+    self.editorAbsentFunction = rawget(self, "editorAbsentFunction") or function(key) return self:IsEditorPartAbsent(key) end
+    -- Worked out into the view's own tables, refilled each time (a refresh works them out several times, a
+    -- group's drag every frame). Never twice at once: a measure that asked for them mid-way gets new ones.
+    local into = rawget(self, "editorTransformsInto")
+    if into == nil or into.busy then
+        into = {}
+        if rawget(self, "editorTransformsInto") == nil then self.editorTransformsInto = into end
+    end
+    into.busy = true
+    local ok, transforms = pcall(Schema.LayoutTransforms, layout, self.editorMeasureFunction, self.editorAbsentFunction, into)
+    into.busy = nil
+    if not ok then error(transforms, 0) end
+    self.editorTransforms = transforms
     self.editorTransformsLayout = layout
     return self.editorTransforms
 end
@@ -1213,7 +1486,8 @@ end
 -- or a part this plate type does not use): what is pinned to it takes its place, as on the plates.
 function Options:IsEditorPartAbsent(key)
     local component = self.editorComponents and self.editorComponents[key]
-    return component ~= nil and not component.targetPreviewVisible
+    -- A mark with nothing to show (the sample is not elite, rare or a boss) passes its place on too.
+    return component ~= nil and (not component.targetPreviewVisible or component.previewEmpty == true)
 end
 
 local function Showing(region)
@@ -1227,7 +1501,7 @@ function Options:IsEditorPartDrawn(key)
     local component = self.editorComponents and self.editorComponents[key]
     if not (component and component.previewFitVisible and not component.previewRuleHidden) then return false end
     if not Showing(component) or component.previewIdle then return false end
-    if component.previewBar or component.previewTexture or component.auraIcons then return true end
+    if component.previewBar or component.previewTexture or component.previewBox or component.auraIcons then return true end
     if Showing(component.previewIcon) then return true end
     local text = component.previewText
     if not text then return true end
@@ -1237,19 +1511,36 @@ end
 
 -- The part key's pin meets in the preview (Schema's PinTarget), or nil when it is not pinned.
 function Options:EditorPinTarget(key)
-    self.editorAbsentFunction = self.editorAbsentFunction or function(part) return self:IsEditorPartAbsent(part) end
-    return Schema.PinTarget(self.editorLayout or NO_LAYOUT, key, self.editorAbsentFunction)
+    self.editorAbsentFunction = rawget(self, "editorAbsentFunction") or function(part) return self:IsEditorPartAbsent(part) end
+    return Schema.PinTarget(self:EditorDrawnLayout(), key, self.editorAbsentFunction)
 end
 
 function Options:InvalidateEditorTransforms()
-    self.editorTransforms = nil
+    self.editorTransforms, self.editorDrawn = nil, nil
 end
 
--- A fresh working copy of the edited layout (after Settings changed it).
+-- A fresh working copy of the edited layout (after Settings changed it). Every refresh asks for one, and most
+-- change no layout: while the stored layout and its fallback are the same tables (Settings' GetLayoutSource; a
+-- stored layout is replaced, never changed in place) its normalized copy is kept, and while the working copy
+-- still matches it (no unsaved change made in place, such as a group dragged) the copy is kept too. The drawn
+-- places are worked out again either way (sizes may have changed).
 function Options:ReloadEditorLayoutCopy()
-    self.editorLayout = CopyEditorLayout(type(PS.GetLayout) == "function"
-        and PS.GetLayout(self:EditorTarget(), self:CurrentEditorVariant()) or nil)
-    self.editorTransforms = nil
+    local target, variant = self:EditorTarget(), self:CurrentEditorVariant()
+    local normalized
+    if type(PS.GetLayoutSource) == "function" then
+        local source, fallback = PS.GetLayoutSource(target, variant)
+        local kept = self.editorLayoutSource
+        if kept and kept.source == source and kept.fallback == fallback then
+            normalized = kept.layout
+        else
+            normalized = PS.GetLayout(target, variant)
+            self.editorLayoutSource = { source = source, fallback = fallback, layout = normalized }
+        end
+    elseif type(PS.GetLayout) == "function" then
+        normalized = PS.GetLayout(target, variant)
+    end
+    if not editorBlueprint.LayoutMatches(self.editorLayout, normalized) then self.editorLayout = CopyEditorLayout(normalized) end
+    self.editorTransforms, self.editorDrawn = nil, nil
     return self.editorLayout
 end
 
@@ -1271,7 +1562,7 @@ function Options:IsEditorStacked(key)
 end
 
 function Options:EditorPlacement(key)
-    local layout = self.editorLayout or {}
+    local layout = self:EditorDrawnLayout()
     local position = type(key) == "string" and layout[key]
     if not position then return 0, 0, 1, 1 end
     local transforms = self:EditorTransforms()
@@ -1622,17 +1913,27 @@ function Options:PlaceEditorOutline(frame, edges, pixels)
     local top, bottom = frame.GetTop and frame:GetTop(), frame.GetBottom and frame:GetBottom()
     local l, r, t, b = 0, 0, 0, 0
     if pixel and type(left) == "number" and type(right) == "number" and type(top) == "number" and type(bottom) == "number" then
-        local function Snap(value) return math.floor(value / pixel + 0.5) * pixel - value end
-        l, r, t, b = Snap(left), Snap(right), Snap(top), Snap(bottom)
+        l, r = math.floor(left / pixel + 0.5) * pixel - left, math.floor(right / pixel + 0.5) * pixel - right
+        t, b = math.floor(top / pixel + 0.5) * pixel - top, math.floor(bottom / pixel + 0.5) * pixel - bottom
     end
-    local spots = { { "TOPLEFT", l, t, "TOPRIGHT", r, t }, { "BOTTOMLEFT", l, b, "BOTTOMRIGHT", r, b },
-        { "TOPLEFT", l, t, "BOTTOMLEFT", l, b }, { "TOPRIGHT", r, t, "BOTTOMRIGHT", r, b } }
+    -- Edge by edge (no table per call: the selection's outline is placed again as it moves).
     for index, edge in ipairs(edges) do
-        local spot = spots[index]
-        edge:ClearAllPoints()
-        edge:SetPoint(spot[1], frame, spot[1], spot[2], spot[3])
-        edge:SetPoint(spot[4], frame, spot[4], spot[5], spot[6])
-        if index <= 2 then edge:SetHeight(width) else edge:SetWidth(width) end
+        local first, x1, y1, second, x2, y2
+        if index == 1 then
+            first, x1, y1, second, x2, y2 = "TOPLEFT", l, t, "TOPRIGHT", r, t
+        elseif index == 2 then
+            first, x1, y1, second, x2, y2 = "BOTTOMLEFT", l, b, "BOTTOMRIGHT", r, b
+        elseif index == 3 then
+            first, x1, y1, second, x2, y2 = "TOPLEFT", l, t, "BOTTOMLEFT", l, b
+        elseif index == 4 then
+            first, x1, y1, second, x2, y2 = "TOPRIGHT", r, t, "BOTTOMRIGHT", r, b
+        end
+        if first then
+            edge:ClearAllPoints()
+            edge:SetPoint(first, frame, first, x1, y1)
+            edge:SetPoint(second, frame, second, x2, y2)
+            if index <= 2 then edge:SetHeight(width) else edge:SetWidth(width) end
+        end
     end
     return width
 end
@@ -1765,7 +2066,7 @@ function Options:UpdateEditorSelectionHandles()
         end
     end
     -- Blizzard's own name: the outline only, as nothing on its plate can be resized.
-    local fixed = target ~= nil and target.previewNative
+    local fixed = target ~= nil and (target.previewNative or (key == "backdrop" and self:IsEditorBackdropFitted()))
     if not target then
         handles:Hide()
         self:UpdateEditorFamilyOutline(nil)
@@ -1848,14 +2149,101 @@ end
 
 -- Whether key's style places it instead of its layout (combo points on the health bar): then its
 -- Placement rows, drag and nudges would do nothing, so they are unavailable.
+-- Likewise a part the Elite / rare mark's style places, or whose anchor it moved away (Schema's MARK.Placed: the
+-- mark and the level with Classic dragon or Before the name, what was pinned to them).
 function Options:IsEditorPlacedByStyle(key)
-    return key == "combo" and self:EditorComboOnBar() ~= nil
+    if key == "combo" then return self:EditorComboOnBar() ~= nil end
+    if key == "backdrop" then return self:IsEditorBackdropFitted() end
+    return type(key) == "string" and Schema.MARK.Placed(self:EditorDrawnLayout())[key] == true
+end
+
+-- The open design's Backdrop style (Nameplates/Backdrop.lua), and whether it fits round parts (Fit to parts) rather
+-- than being placed as any part (Fixed size).
+function Options:EditorBackdropStyle()
+    local profile = self:EditorProfileSettings()
+    return profile and profile.styles and profile.styles.backdrop or nil
+end
+
+function Options:IsEditorBackdropFitted()
+    return not PS.Backdrop.Fixed(self:EditorBackdropStyle())
+end
+
+-- Fit to parts in the preview, as the plates fit it (Backdrop.Fit): round the parts it wraps that the sample draws now,
+-- from their places (EditorTransforms) and drawn sizes, Padding at the design's scale. With none drawn it waits faintly
+-- on its own place, so it can still be found and selected.
+local backdropEntries = {}
+function Options:PlaceEditorBackdrop()
+    local components = self.editorComponents
+    local component = components and components.backdrop
+    if not (component and component:IsShown() and self:EditorDrawnLayout().backdrop and self:IsEditorBackdropFitted()) then
+        return
+    end
+    local Backdrop, ReadNumber = PS.Backdrop, PS.Secret.ReadNumber
+    local style = self:EditorBackdropStyle()
+    local scale = (self:EditorProfileSettings() or {}).scale or 1
+    local parts, transforms, count = Backdrop.Parts(style), self:EditorTransforms(), 0
+    for _, key in ipairs(Schema.BACKDROP.PARTS) do
+        local part = components[key]
+        local at = parts[key] and part and transforms[key]
+        if at and self:IsEditorComponentRelevant(key) and self:IsEditorPartDrawn(key) then
+            count = count + 1
+            local entry = backdropEntries[count] or {}
+            backdropEntries[count] = entry
+            local text = part.previewText
+            local width = text and ReadNumber(text, "GetStringWidth") or ReadNumber(part, "GetWidth")
+            local height = text and (ReadNumber(text, "GetStringHeight") or ReadNumber(text, "GetHeight"))
+                or ReadNumber(part, "GetHeight")
+            Backdrop.Entry(entry, part, at.x, at.y, part.GetScale and part:GetScale() or 1, width, height)
+        end
+    end
+    component:SetScale(1)
+    Backdrop.Unfit(component)
+    component.previewBox:SetAlpha(count > 0 and 1 or 0.3)
+    if count == 0 or not Backdrop.Fit(component, backdropEntries, count, Backdrop.Padding(style) * scale) then
+        local width, height = Backdrop.Size(style)
+        local at = transforms.backdrop
+        component:ClearAllPoints()
+        component:SetPoint("CENTER", self.editorPreviewStage or self.editorCanvas, "CENTER", at and at.x or 0, at and at.y or 0)
+        component:SetSize(width * scale, height * scale)
+        component:Show()
+    end
+    for index = 1, count do backdropEntries[index].region = nil end
+end
+
+-- Why Placement cannot change key (IsEditorPlacedByStyle), for its unavailable rows.
+function Options:EditorPlacedByStyleTip(key)
+    if key == "combo" then
+        return L["Style › Position puts the combo points on the health bar. Choose Where placed there to place them here."]
+    end
+    if key == "backdrop" then
+        return L["Fit to parts places it round the parts it wraps: move those. Choose Fixed size under Style to place it here."]
+    end
+    return L["The Elite / rare mark's style places this part (Classic dragon, Before the name). Choose another style "
+        .. "there to place it here; your own placement is kept."]
+end
+
+-- The Classic dragon round the level, as Placement draws it on the plates (its PlaceDragon): the level centred a
+-- curl past the health bar's right end, the mark's dragon on it. True when key was placed so.
+function Options:PlaceEditorDragon(key, component)
+    local components = self.editorComponents
+    local mark = components and components.classification
+    local dragon = mark and mark.previewDragon
+    if not dragon or (key ~= "level" and key ~= "classification") or self:EditorMarkStyle() ~= "dragon" then return false end
+    local D = PS.ClassificationMark.DRAGON
+    if key == "level" then
+        return components.health ~= nil
+            and pcall(component.SetPoint, component, "CENTER", components.health, "RIGHT", D.GAP + D.CURL_X * dragon, 0)
+    end
+    return components.level ~= nil
+        and pcall(component.SetPoint, component, "TOPLEFT", components.level, "CENTER", -D.CURL_X * dragon, D.CURL_Y * dragon)
 end
 
 function Options:PositionEditorComponent(key)
     local component = self.editorComponents and self.editorComponents[key]
-    local position = self.editorLayout and self.editorLayout[key]
+    local position = self:EditorDrawnLayout()[key]
     if not component or not position then return end
+    -- Fit to parts: the Backdrop wraps the parts once they are placed (PlaceEditorBackdrop).
+    if key == "backdrop" and self:IsEditorBackdropFitted() then return self:PlaceEditorBackdrop() end
     component:ClearAllPoints()
     local originX, originY, positionScale, scale = self:EditorPlacement(key)
     -- Blizzard's own dungeon names: no PlateSmith layout applies (an old layout's scale would draw
@@ -1867,6 +2255,8 @@ function Options:PositionEditorComponent(key)
     if onBar and pcall(component.SetPoint, component, onBar[1], self.editorComponents.health, onBar[2], 0, onBar[3]) then
         return
     end
+    if self:PlaceEditorDragon(key, component) then return end
+    component:ClearAllPoints()
     -- Pinned to a parent's edge: anchored to the parent's drawn text or frame, as on the plates,
     -- so it meets the name exactly however wide it renders.
     local edge = position.attach and Schema.ATTACH_EDGES[position.attach]
@@ -1919,9 +2309,31 @@ end
 -- children in order. The tree shows groups and the parts this plate type uses; a part under one
 -- it does not use shows at the top level.
 local TREE_ROOT, NO_CHILDREN = {}, {}
-function Options:EditorTreeIndex(settings)
-    local layout, rank, shown, tree = self.editorLayout or {}, {}, {}, {}
-    for position, key in ipairs(editorOrder) do rank[key] = position end
+-- Each part's place in editorOrder (kept; made again if the order grows).
+local orderRank = { count = 0, rank = {} }
+-- into: { shown, tree, lists } kept by the caller (the tree's refresh), whose tables are filled again; the
+-- result is then into.tree. Without it every table is new.
+local function Recycled(into, field)
+    local map = into[field] or {}
+    into[field] = map
+    return map
+end
+function Options:EditorTreeIndex(settings, into)
+    if orderRank.count ~= #editorOrder then
+        for position, key in ipairs(editorOrder) do orderRank.rank[key] = position end
+        orderRank.count = #editorOrder
+    end
+    local layout, rank, shown, tree = self.editorLayout or {}, orderRank.rank, {}, {}
+    local lists
+    if into then
+        shown, tree, lists = Recycled(into, "shown"), Recycled(into, "tree"), Recycled(into, "lists")
+        for key in pairs(shown) do shown[key] = nil end
+        for parent, list in pairs(tree) do
+            for index = #list, 1, -1 do list[index] = nil end
+            lists[#lists + 1] = list
+            tree[parent] = nil
+        end
+    end
     local buttons = self.editorComponentButtons
     -- Blizzard's own name stands alone: no groups.
     local groups = not self:IsEditorBlizzardNames(settings)
@@ -1934,8 +2346,13 @@ function Options:EditorTreeIndex(settings)
     for key in pairs(shown) do
         local parent = layout[key].parent
         if not (parent and shown[parent]) then parent = TREE_ROOT end
-        tree[parent] = tree[parent] or {}
-        table.insert(tree[parent], key)
+        local list = tree[parent]
+        if not list then
+            list = lists and lists[#lists] or {}
+            if lists then lists[#lists] = nil end
+            tree[parent] = list
+        end
+        list[#list + 1] = key
     end
     local function Before(left, right)
         local a, b = layout[left].order or 99, layout[right].order or 99
@@ -1957,9 +2374,15 @@ end
 
 -- Per ancestor key: how many parts sit under it at any depth (all), how many this plate type
 -- uses (used), and how many of those are shown (shown, as the eye shows them).
-function Options:EditorTreeCounts(settings)
+-- into: a { all, used, shown } kept by the caller, filled again (else a new one).
+function Options:EditorTreeCounts(settings, into)
     local layout = self.editorLayout or {}
-    local counts = { all = {}, used = {}, shown = {} }
+    local counts = into or { all = {}, used = {}, shown = {} }
+    if into then
+        for _, map in pairs(into) do
+            for key in pairs(map) do map[key] = nil end
+        end
+    end
     for key, position in pairs(layout) do
         if type(position) == "table" and not key:match("^group%.%d+$") then
             local used = self:IsEditorComponentRelevant(key, settings)
@@ -2682,9 +3105,9 @@ end
 -- How many pins key's anchor chain has above it (0: placed from the stage); nil when the chain
 -- leads back to key or runs deeper than a layout can nest.
 function Options:EditorPinDepth(key)
-    local depth, node = 0, key
+    local depth, node, layout = 0, key, self:EditorDrawnLayout()
     for _ = 1, Schema.MAX_DEPTH + 1 do
-        local position = self.editorLayout and self.editorLayout[node]
+        local position = layout[node]
         local edge = position and position.attach and Schema.ATTACH_EDGES[position.attach]
         local target = edge and self:EditorPinTarget(node)
         if not (target and self.editorComponents and self.editorComponents[target]) then return depth end
@@ -2713,6 +3136,7 @@ function Options:RefreshEditorLayout()
     end
     table.sort(order, function(left, right) return depthScratch[left] < depthScratch[right] end)
     for _, key in ipairs(order) do self:PositionEditorComponent(key) end
+    self:PlaceEditorBackdrop()
     -- A selected group's box is measured from its members, so it follows every change.
     if self.editorSelectedGroup and not self.selectedComponent then self:UpdateEditorSelectionHandles() end
 end
@@ -2721,7 +3145,7 @@ function Options:ResetEditorLayout()
     local defaults = type(PS.GetDefaultLayout) == "function"
         and PS.GetDefaultLayout(self:EditorTarget(), self:CurrentEditorVariant()) or editorDefaults
     self:ApplyEditorLayout(defaults)
-    self:SelectEditorComponent((self:CurrentEditorVariant() == "names"
+    self:SelectEditorComponent((self:CurrentEditorVariant() == "names" or self:IsEditorObject()
         or self:CurrentEditorVariant() == "dungeon") and "name" or "health")
 end
 
@@ -2731,8 +3155,11 @@ Options.studioModel = {
     friendlyChoices = friendlyChoices,
     friendlyPvpChoices = friendlyPvpChoices,
     classificationStyleChoices = classificationStyleChoices,
+    classificationIconSizeChoices = classificationIconSizeChoices,
     targetHighlightChoices = targetHighlightChoices,
     targetGlowColourChoices = targetGlowColourChoices,
+    targetGlowWrapChoices = targetGlowWrapChoices,
+    targetGlowPartChoices = targetGlowPartChoices,
     namesOnlyCastTextChoices = namesOnlyCastTextChoices,
     auraSourceChoices = auraSourceChoices,
     AddLabel = AddLabel,
@@ -2747,10 +3174,21 @@ Options.settingsPanelModel = {
 -- Everything from the settings: the layout copy, every control, the preview (which lays the
 -- parts out) and Studio's look. light: a value changed, so the look (ApplyEditorTheme, a pass
 -- over all of Studio's art) is left as it is; Studio opening, accessibility and the preview's
--- plain background take the full refresh.
+-- plain background take the full refresh. Measured as the studio.refresh action (/ps diagnose's
+-- performance.memory).
 function Options:Refresh(light)
+    local Performance = PS.Performance
+    if Performance and Performance.RunAction then
+        return Performance.RunAction(Performance.ACTIONS.refresh, self._RefreshNow, self, light)
+    end
+    return self:_RefreshNow(light)
+end
+
+function Options:_RefreshNow(light)
     local settings = PS.GetSettings()
     if not settings then return end
+    -- How many refreshes ran (one action asks once: SaveBar's Revert, perf_smoke's counts).
+    self.refreshes = (self.refreshes or 0) + 1
     if self.CheckEditorDesign then self:CheckEditorDesign(settings) end
     if type(PS.GetLayout) == "function" then self:ReloadEditorLayoutCopy() end
     if self.RefreshEditorDesignRow then self:RefreshEditorDesignRow(settings) end
@@ -2758,9 +3196,21 @@ function Options:Refresh(light)
     -- silently stop saving until /reload.
     self.refreshing = true
     local failure
+    -- Controls out of sight (another Settings page, another part's rows) wait until they show
+    -- (Inspector's IsEditorControlAway).
+    local away = self.IsEditorControlAway
     for _, control in ipairs(self.controls) do
-        local ok, message = pcall(control.Refresh, control, settings)
-        if not ok and not failure then failure = message end
+        if away and (control.studioPage or control.studioContext or control.settingsPage) and away(self, control) then
+            -- A page of Blizzard's Settings refreshes all when it shows: only Studio's wait as stale.
+            if not control.settingsPage then
+                control.studioStale = true
+                self.editorStaleControls = true
+            end
+        else
+            control.studioStale = nil
+            local ok, message = pcall(control.Refresh, control, settings)
+            if not ok and not failure then failure = message end
+        end
     end
     self.refreshing = false
     if failure then PS.Chat.ReportError("options refresh", failure) end

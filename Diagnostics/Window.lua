@@ -472,7 +472,7 @@ PS.Ticker.SetEnabled(Performance.LIVE_TICKER, false)
 function UI.SelectTab(tab)
     -- Opened on Performance (or History), the window has no report until a report tab is chosen.
     if REPORT_TABS[tab] and not window.report and UI._buildReport then
-        return UI.ShowReport(UI._buildReport(), "manual", tab)
+        return UI.ShowReport(UI._buildReport(true), "manual", tab)
     end
     window.tab = tab
     window.tabs:Select(tab)
@@ -490,12 +490,16 @@ function UI.SelectTab(tab)
     SetLive(tab == "performance")
     if tab == "performance" then UI.RefreshPerformance() end
     Window.RefreshScroll(window.panes[tab])
+    -- The short summary opens selected, ready for Ctrl+C. The full report (thousands of lines) opens
+    -- unselected and unfocused, at its top, for reading and scrolling; Select all selects it, as Copy
+    -- full report does the one-line code. A box on a hidden tab gives the keyboard back.
     if tab == "summary" then
         SelectText(window.summaryBox, window.summaryText)
-    elseif tab == "report" then
-        window.editBox:SetFocus()
-        window.editBox:HighlightText()
+    else
+        window.summaryBox:ClearFocus()
+        window.codeBox:ClearFocus()
     end
+    if tab ~= "report" then window.editBox:ClearFocus() end
 end
 local SelectTab = UI.SelectTab
 
@@ -508,11 +512,19 @@ local function HistoryExtras(savedEntry)
         now = type(time) == "function" and time() or nil, entry = savedEntry }
 end
 
+-- A saved capture's issue count never changes, so it is counted once per entry (weak keys: a
+-- cleared entry takes its count with it). Counting every saved report on each refresh ran too long.
+local issueCounts = setmetatable({}, { __mode = "k" })
 local function HistoryLabel(entry)
     local report = type(entry.report) == "table" and entry.report or {}
     local target = type(report.target) == "table" and type(report.target.names) == "table"
         and report.target.names.display or nil
-    local _, issueCount = Summary.Build(report)
+    local issueCount = issueCounts[entry]
+    if issueCount == nil then
+        local _, counted = Summary.Build(report)
+        issueCount = counted
+        issueCounts[entry] = counted
+    end
     local parts = { Format.Clock(entry.time), tostring(entry.reason or "manual") }
     local build = History.Build(entry)
     if build then parts[#parts + 1] = string.format(L["build %s"], build) end

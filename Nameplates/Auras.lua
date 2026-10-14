@@ -39,10 +39,7 @@ local COUNTDOWN_POINTS = {
 local COUNTDOWN_FONT = "Fonts\\FRIZQT__.TTF"
 local OUTLINE_FLAGS = { none = "", outline = "OUTLINE", thick = "THICKOUTLINE" }
 local function CountdownFont(layout, settings)
-    local share = (tonumber(layout.timeSize) or 45) / 100
-    -- Its Font size in points, or Auto: the row's share of the icon (timeSize, 45% unless an early
-    -- 1.1.1 build set it).
-    local size = tonumber(layout.timeFontSize) or math.max(8, math.floor((tonumber(layout.size) or 18) * share))
+    local size = PS.ProfileSchema.AuraCountdownSize(layout)
     local textScale = settings and settings.textScale
     if textScale and textScale ~= 1 then size = PS.ProfileSchema.ScaledFontSize(size, textScale) end
     local path = PS.Media.FontPath(layout.timeFont or (settings and settings.font)) or COUNTDOWN_FONT
@@ -68,6 +65,9 @@ PS._CreatePlateAuras = function(context)
     local Secret = PS.Secret
     local IsReadable, HasValue, SameUnit = Secret.IsReadable, Secret.HasValue, Secret.SameUnit
     local GetSettings, Counters = context.GetSettings, context.Counters
+    -- The plate runtime's aura work (Lifecycle's auraWork): its frame count, and auraEvents, the UNIT_AURA
+    -- events it has had (ReserveRow's first aura stands for the round's first read only while neither moved).
+    local Work = context.Work
 
     -- A row holds up to this many icons; each plate type's auraLayouts says how many show and how.
     local AURA_ICON_COUNT = 8
@@ -394,12 +394,39 @@ PS._CreatePlateAuras = function(context)
         return IsReadable(duration) and not (type(duration) == "number" and duration > 0)
     end
 
+    -- The first aura a timed add's reserve read (ReserveRow) for the row, kept for the frame's aura round:
+    -- the same unit, filter and frame with no UNIT_AURA since, it is the round's first read, not a second
+    -- table from the client. Used once (false after; a field kept, not removed, so setting it adds nothing).
+    local function KeepFirstAura(row, unit, filter, aura)
+        if not (Work and row) then return end
+        row.plateSmithFirstAura = aura or false
+        if aura then
+            row.plateSmithFirstUnit, row.plateSmithFirstFilter = unit, filter
+            row.plateSmithFirstFrame, row.plateSmithFirstEvents = Work.frame, Work.auraEvents
+        end
+    end
+    local function FirstAura(row, unit, filter)
+        local aura = row and row.plateSmithFirstAura
+        if not aura then return nil end
+        row.plateSmithFirstAura = false
+        if row.plateSmithFirstUnit == unit and row.plateSmithFirstFilter == filter and row.plateSmithFirstFrame == Work.frame
+            and row.plateSmithFirstEvents == Work.auraEvents then
+            return aura
+        end
+    end
+
     local function PopulateAuraIconsByIndex(api, unit, filter, icons, limit, row, timedOnly)
         if type(api) ~= "function" then return 0, "missing" end
         local shown = 0
+        local first = FirstAura(row, unit, filter)
         for index = 1, timedOnly and AURA_SCAN_LIMIT or limit do
             if shown >= limit then break end
-            local ok, aura = pcall(api, unit, index, filter)
+            local ok, aura
+            if index == 1 and first then
+                ok, aura = true, first
+            else
+                ok, aura = pcall(api, unit, index, filter)
+            end
             if not ok then return shown, "error" end
             if not IsReadable(aura) then return shown, "protected" end
             if aura == nil then break end
@@ -1004,6 +1031,9 @@ PS._CreatePlateAuras = function(context)
         local found, native = false, false
         for index = 1, timedOnly and AURA_SCAN_LIMIT or 1 do
             local ok, aura = pcall(api, data.unit, index, filter)
+            if index == 1 then
+                KeepFirstAura(data[kind], data.unit, filter, ok and IsReadable(aura) and type(aura) == "table" and aura or nil)
+            end
             -- A protected or failing first read falls back to the client's aura container, whose row
             -- shows whatever it holds (UpdateAuraRow): shown ahead too.
             if index == 1 and (not ok or not IsReadable(aura)) then

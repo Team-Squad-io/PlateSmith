@@ -57,6 +57,14 @@ local function Answer(ok, value)
     return nil
 end
 
+-- Whether one spell reaches unit (Rescue's range fade): true, false, or nil when the client has no answer, a
+-- protected one, or no such API.
+function Range.SpellInRange(spell, unit)
+    local api = C_Spell and C_Spell.IsSpellInRange
+    if type(api) ~= "function" then return nil end
+    return Answer(pcall(api, spell, unit))
+end
+
 -- true, false, or nil when nothing readable answered.
 function Range.Check(unit)
     local api = C_Spell and C_Spell.IsSpellInRange

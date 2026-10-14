@@ -5,23 +5,11 @@ local ThreatColours = assert(PS.ThreatColours, "PlateSmith ThreatColours missing
 local L = PS.L
 local WidgetName = model.WidgetName
 
--- Studio's Threat colours controls (Nameplates/ThreatColours.lua). Settings › Behaviour & display ›
--- Threat colours holds the switch, this character's tank role, the shared colours and Apply to, where each part can
--- have its own colours (their swatches show only while it does). The Health bar's and Name's
+-- Studio's Threat colours controls (Nameplates/ThreatColours.lua). Settings › Modules › Threat (Settings/ThreatPage.lua)
+-- holds them: Your role's fixed-role line and legend, then Threat colours' switch, the shared colours and Apply to,
+-- where each part can have its own colours (their swatches show only while it does). The Health bar's and Name's
 -- inspectors have the same Apply to box, so it is found from the part too.
-local STATE_LABELS = {
-    holding = L["Holding"], losing = L["Losing it"], offtank = L["Other tank has it"], other = L["Someone else has it"],
-    safe = L["Safe"], pulling = L["Pulling"], aggro = L["Aggro"],
-}
-local STATE_HELP = {
-    holding = L["You hold its threat."],
-    losing = L["You hold it, but someone is close to taking it."],
-    offtank = L["Another tank in your group holds it."],
-    other = L["Someone who is not a tank holds it."],
-    safe = L["A tank or someone else holds it, and you are not close."],
-    pulling = L["You are close to taking it from whoever holds it."],
-    aggro = L["You hold its threat."],
-}
+local STATE_LABELS, STATE_HELP = ThreatColours.STATE_LABELS, ThreatColours.STATE_HELP
 local PART_LABELS = { health = L["Health bar"], name = L["Name text"], border = L["Health bar edge"] }
 -- The role a profile can fix (threatColourRole; "auto" follows This character tanks and is never named).
 local ROLE_LABELS = { tank = L["Tank"], dps = L["DPS & healer"] }
@@ -69,26 +57,9 @@ function Options.ThreatColourSummary()
     return role == "auto" and L["On"] or LabelOf(role)
 end
 
--- Settings › Behaviour & display › Threat colours (Inspector's plate page builds the section).
-function Options.BuildThreatColourSettings(SK, section, Bind)
-    local get, set = Options.BindSetting("colourByThreat")
-    Check(SK, section, Bind, "colourByThreat", L["Colour by threat"], get, set)
-    SK.Add(section, SK.ControlHelp(section, L["Colours an enemy's health bar and name by who holds its threat, while it "
-        .. "is in combat with you or your group. Where the game withholds that, a part keeps its own colour; a part's "
-        .. "colour rule always wins."]))
-    -- Who counts as a tank: this character's choice, as on Settings › Threat › Your role (saved at once).
-    local tankRow, tank = SK.DropdownRow(section, L["This character tanks"], {
-        choices = Options.tankRoleChoices or {}, name = WidgetName("editor_tankRole", "Dropdown"),
-        get = function() return PS.GetCharacterSettings().tankRole end,
-        set = function(value)
-            local ok = PS.SetCharacterOption("tankRole", value)
-            Options:Refresh(true)
-            return ok
-        end })
-    SK.Add(section, tankRow, On)
-    SK.Add(section, SK.ControlHelp(section, L["When threat colours, rules and the threat windows treat you "
-        .. "as a tank. Saved for this character only."]))
-    Bind("plate.tankRole", tank)
+-- Modules › Threat › Your role, after This character tanks (Settings/ThreatPage.lua): what a profile fixes, and whom
+-- the plates colour as now.
+function Options.BuildThreatRoleSettings(SK, section)
     -- A profile can still fix the role (threatColourRole: older profiles, Blueprints). Then a line says
     -- so, with a button back to following this character's role. Its text is set as it is laid out.
     local fixed = SK.Note(section, "")
@@ -108,6 +79,24 @@ function Options.BuildThreatColourSettings(SK, section, Bind)
         .. "in this profile."] })
     SK.Add(section, followRow, Fixed)
     Options.editorThreatRoleNote, Options.editorThreatFollowRole = fixed, follow
+    -- Whom the plates (and the threat windows) treat you as now, and why, with what each of that role's colours means.
+    -- Its text is set as it is laid out (each refresh), from the same answer the plates use.
+    local legend = SK.Note(section, "")
+    SK.Add(section, legend, function()
+        legend.text:SetText(ThreatColours.RoleLegendText(Settings()))
+        return true
+    end)
+    Options.editorThreatLegend, Options.threatRoleLegend = legend, legend
+end
+
+-- Modules › Threat › Threat colours (Settings/ThreatPage.lua builds the section): the switch, the colours, Apply to
+-- and the tank warning.
+function Options.BuildThreatColourSettings(SK, section, Bind)
+    local get, set = Options.BindSetting("colourByThreat")
+    Check(SK, section, Bind, "colourByThreat", L["Colour by threat"], get, set)
+    SK.Add(section, SK.ControlHelp(section, L["Colours an enemy's health bar and name by who holds its threat, while it "
+        .. "is in combat with you or your group. Where the game withholds that, a part keeps its own colour; a part's "
+        .. "colour rule always wins. Who counts as a tank: Your role, above."]))
     SK.Add(section, SK.SubHeader(section, L["Tank"]), On)
     for _, state in ipairs(ThreatColours.TANK_STATES) do Swatch(SK, section, Bind, state, nil, On) end
     SK.Add(section, SK.SubHeader(section, L["DPS & healer"]), On)
@@ -139,13 +128,30 @@ function Options.BuildThreatColourSettings(SK, section, Bind)
         end
         for _, state in ipairs(ThreatColours.STATES) do Swatch(SK, section, Bind, state, part, Own) end
     end
+    -- The tank warning's red edge, the health bar edge's other writer (audit #5). Not a threat colour: it shows with
+    -- Colour by threat off too. While Apply to › Health bar edge is on, the edge takes the threat colours instead, so
+    -- the box is unavailable and a line says why.
+    local warnGet, warnSet = Options.BindSetting("tankWarning")
+    local _, warn = Check(SK, section, Bind, "tankWarning", L["Warn when you lose a mob you tank"], warnGet, warnSet)
+    local function EdgeTakesThreat() return On() and Settings()[ThreatColours.PART_SETTINGS.border] == true end
+    local refresh = warn.Refresh
+    function warn:Refresh()
+        refresh(self)
+        local available = not EdgeTakesThreat()
+        PS.SaveBar.SetAvailable(self, available)
+        if self.label then self.label:SetAlpha(available and 1 or 0.45) end
+    end
+    SK.Add(section, SK.ControlHelp(section, L["While you tank, an enemy's health bar edge turns red when you stop "
+        .. "holding its threat."]))
+    SK.Add(section, SK.Note(section, L["The edge takes the threat colours (Apply to › Health bar edge)."]), EdgeTakesThreat)
+    Options.editorTankWarning = warn
 end
 
 -- A part's inspector box for its Apply to (the Health bar's and the Name's), on the enemy plate types
 -- only: friendly units hold no threat on you. While Colour by threat is off the box reads unticked and
 -- is unavailable (it would do nothing), and its tooltip says where to turn the colours on.
 local function EnemyPlate() return Options:IsEditorEnemy() end
-local OFF_TIP = L["Threat colours are off. Turn on Colour by threat in Settings › Behaviour & display › Threat colours."]
+local OFF_TIP = L["Threat colours are off. Turn on Colour by threat in Settings › Modules › Threat › Threat colours."]
 function Options.ThreatColourPartCheck(K, section, part)
     local key = ThreatColours.PART_SETTINGS[part]
     local get, set = Options.BindSetting(key)
@@ -171,7 +177,7 @@ function Options.ThreatColourPartCheck(K, section, part)
     Options.editorThreatPartChecks = Options.editorThreatPartChecks or {}
     Options.editorThreatPartChecks[part] = checkbox
     if K.AttachHelp then
-        K.AttachHelp(row, L["Takes the threat colours while Colour by threat is on (Settings › Behaviour & display › "
+        K.AttachHelp(row, L["Takes the threat colours while Colour by threat is on (Settings › Modules › Threat › "
             .. "Threat colours, with the role and colours). A colour rule on this part wins."])
     end
     checkbox.sharedNote = Options.SharedSettingNote(K, section, EnemyPlate)

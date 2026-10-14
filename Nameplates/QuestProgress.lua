@@ -50,12 +50,37 @@ local function FromText(text)
     if have then return have, need end
 end
 
+-- The client makes a new table of tables on every GetQuestObjectives call, and a quest marker refresh
+-- and every quest mob's add ask for the same quests: each quest's answer is kept until a QUEST_LOG_UPDATE
+-- (the event frame below empties it; objectives change only with the quest log). No answer (an error or a
+-- protected value) is kept for the frame only (at: GetTime), as before, and asked again on the next; so is
+-- every answer while QUEST_LOG_UPDATE is not registered (watched false).
+local objectiveCache = { at = {}, ok = {}, objectives = {}, watched = false }
+QuestProgress._objectiveCache = objectiveCache
+local function ForgetObjectives()
+    for key in pairs(objectiveCache.ok) do
+        objectiveCache.ok[key], objectiveCache.objectives[key], objectiveCache.at[key] = nil, nil, nil
+    end
+end
+
 local function QuestObjectives(questID)
     local api = C_QuestLog and C_QuestLog.GetQuestObjectives
     if type(api) ~= "function" then return false end
+    local now = type(GetTime) == "function" and GetTime() or nil
+    local cacheable = now ~= nil and IsReadable(questID) and type(questID) == "number"
+    if cacheable then
+        local known = objectiveCache.ok[questID]
+        if known ~= nil and (objectiveCache.at[questID] == now or known and objectiveCache.watched) then
+            return known, objectiveCache.objectives[questID]
+        end
+    end
     local ok, objectives = pcall(api, questID)
-    if not ok or not IsReadable(objectives) then return false end
-    return true, type(objectives) == "table" and objectives or nil
+    local answered, kept = false, nil
+    if ok and IsReadable(objectives) then answered, kept = true, type(objectives) == "table" and objectives or nil end
+    if cacheable then
+        objectiveCache.at[questID], objectiveCache.ok[questID], objectiveCache.objectives[questID] = now, answered, kept
+    end
+    return answered, kept
 end
 
 -- The quest log's objective (index) of questID, while it is unfinished.
@@ -300,9 +325,21 @@ function QuestProgress.Outstanding(unit)
     local source, route, fresh
     route, fresh = "none", true
     local npcID, name = MobKeys(unit)
-    if ScanTooltip(unit) then
+    -- A tooltip read for the same creature since the last quest log change (another plate of the same mob,
+    -- this plate's own marker and progress, or the mob's last add) shows the same quest lines: kept, not
+    -- read again (each read is a new table of tables from the client). A read that named a quest but no
+    -- objective line of the player's is kept for its frame only, as is every read while QUEST_LOG_UPDATE
+    -- is not registered (objectiveCache.watched).
+    local now = type(GetTime) == "function" and GetTime() or nil
+    local seen = npcID and byKey[npcID]
+    if seen and now ~= nil and seen.scannedAt ~= nil and seen.generation == generation
+        and (seen.scannedAt == now or seen.count > 0 and objectiveCache.watched) then
+        source, route = seen, "tooltip"
+    elseif ScanTooltip(unit) then
         source, route = scan, "tooltip"
         Remember(npcID, name)
+        local entry = npcID and byKey[npcID]
+        if entry then entry.scannedAt = now end
     else
         local proxy = Proxy(unit)
         local proxyID, proxyName
@@ -334,28 +371,48 @@ function QuestProgress.Learn(token)
         Forget(name)
         return
     end
+    -- The mob's quest lines were read since the quest log last changed (Outstanding's rule): the same read
+    -- again would change nothing, so the mouse passing over quest mobs reads no tooltip each time.
+    local seen = npcID and byKey[npcID]
+    if seen and seen.generation == generation and seen.count > 0 and objectiveCache.watched then return end
     if ScanTooltip(token) and Remember(npcID, name) and type(PS.RefreshQuestMarkers) == "function" then
         PS.RefreshQuestMarkers()
     end
 end
 
+-- Forgets every mob's tooltip and every quest's objectives (tests: a quest log changed without the event).
 function QuestProgress._Forget()
     for key in pairs(byKey) do byKey[key] = nil end
     keyCount = 0
+    ForgetObjectives()
 end
 
 do
     local frame = CreateFrame("Frame")
     PS._RegisterEvent(frame, "PLAYER_TARGET_CHANGED", "platesmith.quest-progress")
     PS._RegisterEvent(frame, "UPDATE_MOUSEOVER_UNIT", "platesmith.quest-progress")
-    PS._RegisterEvent(frame, "QUEST_LOG_UPDATE", "platesmith.quest-progress")
-    frame:SetScript("OnEvent", function(_, event)
+    objectiveCache.watched = PS._RegisterEvent(frame, "QUEST_LOG_UPDATE", "platesmith.quest-progress")
+    local function Handle(event)
         if event == "QUEST_LOG_UPDATE" then
             generation = generation + 1
+            ForgetObjectives()
         elseif event == "PLAYER_TARGET_CHANGED" then
             QuestProgress.Learn("target")
         else
             QuestProgress.Learn("mouseover")
+        end
+    end
+    -- Timed into /ps diagnose's performance figures (time, and the memory a read of a tooltip allocates) under
+    -- its own names, beside the plate runtime's handlers of the same events.
+    local NAMES = { PLAYER_TARGET_CHANGED = "PLAYER_TARGET_CHANGED (quest progress)",
+        UPDATE_MOUSEOVER_UNIT = "UPDATE_MOUSEOVER_UNIT (quest progress)", QUEST_LOG_UPDATE = "QUEST_LOG_UPDATE (quest progress)" }
+    frame:SetScript("OnEvent", function(_, event)
+        local Performance = PS.Performance
+        local started = Performance and type(debugprofilestop) == "function" and debugprofilestop()
+        local memory = started and Performance.Memory()
+        Handle(event)
+        if started and NAMES[event] then
+            Performance.RecordEvent(NAMES[event], debugprofilestop() - started, Performance.Allocated(memory))
         end
     end)
 end
@@ -377,6 +434,30 @@ local function ProviderRelevance(unit)
         end
     end
     return false
+end
+
+-- Whether a quest provider lists a game object (its ID from the game) in a quest, as starter, finisher or objective
+-- (the object.quest fact): true when one says so, false when one answers and none says so, nil when none answers (no
+-- provider has GetObjectRelevance, as without the PlateSmith_QuestieDB companion). Independent of the client's own
+-- quest relation (UnitIsRelatedToActiveQuest). A provider's answer must be a readable boolean.
+function QuestProgress.ObjectRelevance(objectID)
+    if type(objectID) ~= "number" or type(PS.IterateQuestProviders) ~= "function" then return nil end
+    local answered = nil
+    for id, provider in PS:IterateQuestProviders() do
+        local ask = provider.GetObjectRelevance
+        if type(ask) == "function" and not provider._plateSmithQuestFailed then
+            local ok, related = pcall(ask, provider, objectID)
+            if not ok then
+                provider._plateSmithQuestFailed = tostring(related)
+                PS.Chat.ReportError("quest provider " .. id, related)
+            elseif IsReadable(related) and related == true then
+                return true
+            elseif IsReadable(related) and related == false then
+                answered = false
+            end
+        end
+    end
+    return answered
 end
 
 -- The native signal says only that a unit is related, not how. The player's outstanding objectives

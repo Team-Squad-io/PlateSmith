@@ -165,7 +165,9 @@ PS._CreatePlatePlacement = function(context)
                 for key in pairs(measured) do measured[key] = nil end
                 data.measure = data.measure or function(key) return MeasurePart(data, key) end
                 data.absent = data.absent or function(key) return Absent(data, key) end
-                data.layoutTransforms = S.LayoutTransforms(layout, data.measure, data.absent)
+                -- The plate's own working tables, reused by every relayout (transformScratch).
+                data.transformScratch = data.transformScratch or {}
+                data.layoutTransforms = S.LayoutTransforms(layout, data.measure, data.absent, data.transformScratch)
                 data.layoutTransformsFor = layout
             end
             return data.layoutTransforms
@@ -256,6 +258,27 @@ PS._CreatePlatePlacement = function(context)
         if region.SetScale then region:SetScale(scale) end
     end
 
+    -- The Elite / rare mark's Classic dragon (data.markStyle "dragon", data.markDragon its scale: Lifecycle's
+    -- ApplyAppearance), over where its layout (Schema's MARK.Layout) pinned them: the level centred a curl past the
+    -- health bar's right end, so a boss's skull or a short level sits as a long one does, and the dragon's curl on
+    -- the level. Studio's preview places them alike (Options:PositionEditorComponent).
+    local function PlaceDragon(data, region, key)
+        local scale = data.markStyle == "dragon" and data.markDragon
+        if not scale then return end
+        local D = PS.ClassificationMark.DRAGON
+        if key == "level" then
+            region:ClearAllPoints()
+            if not pcall(region.SetPoint, region, "CENTER", data.health, "RIGHT", D.GAP + D.CURL_X * scale, 0) then
+                PlaceRegion(region, data.layout, key, data)
+            end
+        elseif key == "classification" and region == data.classificationIcon then
+            region:ClearAllPoints()
+            if not pcall(region.SetPoint, region, "TOPLEFT", data.level, "CENTER", -D.CURL_X * scale, D.CURL_Y * scale) then
+                PlaceRegion(region, data.layout, key, data)
+            end
+        end
+    end
+
     -- Combo points on the health bar (ComboOnBar) are anchored there at their placed scale.
     local function AnchorPart(data, region, key)
         if not data.layout[key] then return end
@@ -273,6 +296,7 @@ PS._CreatePlatePlacement = function(context)
             region:ClearAllPoints()
         end
         PlaceRegion(region, data.layout, key, data)
+        PlaceDragon(data, region, key)
     end
 
     -- Hide with the parent: a part under another part (not a group) is hidden while that part is
@@ -411,17 +435,23 @@ PS._CreatePlatePlacement = function(context)
         MarkVisibility(data)
     end
 
-    -- The cast icon, square, level with the bar beside it (or hidden), and which texts show.
-    local function CastIcon(data, size)
+    -- The cast icon, square, level with the bar beside it, inside its left end (inside: the bar's height, over
+    -- its fill), or hidden; and which texts show. beside: the bar is too slim to hold it (a names-only bar with
+    -- its text under it), so inside draws as left. Returns whether it sits inside.
+    local function CastIcon(data, size, beside)
         local profile, cast, icon = data.profile, data.cast, data.castIcon
+        local inside = profile.castIcon == "inside" and not beside
         icon:SetSize(size, size)
         icon:ClearAllPoints()
         if profile.castIcon == "right" then
             icon:SetPoint("LEFT", cast, "RIGHT", 2, 0)
+        elseif inside then
+            icon:SetPoint("LEFT", cast, "LEFT", 0, 0)
         else
             icon:SetPoint("RIGHT", cast, "LEFT", -2, 0)
         end
         if profile.castIcon == "off" then icon:Hide() end
+        return inside
     end
     local function CastTextShown(data)
         local profile, name = data.profile, data.castName
@@ -431,12 +461,13 @@ PS._CreatePlatePlacement = function(context)
         if not data.castTimeWanted then data.castTime:Hide() end
     end
 
-    -- The cast bar's icon (square, the bar's height, beside it), time (inside the right end) and name:
-    -- with the time shown the name runs from the left end to the time and is cut short before it.
-    -- Both the layout's bar (Lifecycle's CastGeometry) and the names-only one (NameCast) draw this way.
+    -- The cast bar's icon (square, the bar's height, beside it or inside its left end), time (inside the right
+    -- end) and name: with the time shown the name runs from the left end (past an icon inside) to the time and is
+    -- cut short before it. Both the layout's bar (Lifecycle's CastGeometry) and the names-only one (NameCast)
+    -- draw this way.
     local function CastLayout(data, height, fontSize)
         local profile, cast, time, name = data.profile, data.cast, data.castTime, data.castName
-        CastIcon(data, height)
+        local inside = CastIcon(data, height)
         -- The spell's name and time in the cast part's Display choices (font, size, outline, shadow).
         Styles.StyledFont(data, "cast", time, fontSize)
         Styles.StyledFont(data, "cast", name, fontSize)
@@ -444,7 +475,7 @@ PS._CreatePlatePlacement = function(context)
         time:SetPoint("RIGHT", cast, "RIGHT", -3, 0)
         time:SetJustifyH("RIGHT")
         name:ClearAllPoints()
-        name:SetPoint("LEFT", cast, "LEFT", 3, 0)
+        if inside then name:SetPoint("LEFT", data.castIcon, "RIGHT", 3, 0) else name:SetPoint("LEFT", cast, "LEFT", 3, 0) end
         if profile.castTime ~= false then
             name:SetPoint("RIGHT", time, "LEFT", -2, 0)
             name:SetJustifyH("LEFT")
@@ -507,7 +538,7 @@ PS._CreatePlatePlacement = function(context)
     local function UnderLayout(data, width)
         local profile, cast, time, name = data.profile, data.cast, data.castTime, data.castName
         cast:SetSize(width, UNDER_HEIGHT)
-        CastIcon(data, UNDER_ICON)
+        CastIcon(data, UNDER_ICON, true)
         -- In the cast part's Display choices, as on the full bar.
         Styles.StyledFont(data, "cast", time, UNDER_FONT)
         Styles.StyledFont(data, "cast", name, UNDER_FONT)
@@ -557,6 +588,15 @@ PS._CreatePlatePlacement = function(context)
         -- Combo points are made only on a plate that shows them (ComboPoints.lua).
         if data.combo then data.combo:ClearAllPoints() end
         if data.targetedBy then data.targetedBy:ClearAllPoints() end
+        if data.actionIcon then data.actionIcon:ClearAllPoints() end
+        if data.statusText then data.statusText:ClearAllPoints() end
+        if data.looseMark then data.looseMark:ClearAllPoints() end
+        -- The Backdrop (Backdrop.lua) wraps parts placed here: let go and hidden until the visibility pass fits it again.
+        if data.backdrop then
+            data.backdrop:ClearAllPoints()
+            data.backdrop:Hide()
+            PS.Backdrop.Unfit(data.backdrop)
+        end
         for index = 1, VALUE_SLOT_COUNT do
             local region = data.values[VALUE_KEYS[index]]
             if region then region:ClearAllPoints() end
@@ -576,6 +616,12 @@ PS._CreatePlatePlacement = function(context)
         for _, key in ipairs(LATE_LAYOUT_PARTS) do AnchorPart(data, data[key], key) end
         if data.combo then AnchorPart(data, data.combo, "combo") end
         if data.targetedBy then AnchorPart(data, data.targetedBy, "targetedBy") end
+        -- The Action icon is made only on a plate that reads it (ActionIcon.lua); a layout without the entry has none.
+        if data.actionIcon and data.layout.actionIcon then AnchorPart(data, data.actionIcon, "actionIcon") end
+        -- Likewise the Status text (ObjectStatus.lua), on an Objects plate that shows it.
+        if data.statusText and data.layout.statusText then AnchorPart(data, data.statusText, "statusText") end
+        -- The Loose mark is made only on a plate that shows it (LooseMark.lua); only Enemies layouts have the entry.
+        if data.looseMark and data.layout.looseMark then AnchorPart(data, data.looseMark, "looseMark") end
         -- The classification's icon is placed like its text, not centred on it: an empty text is
         -- 0 px wide, so an icon on its centre would sit half over the bar it is pinned to.
         if data.classificationIcon then AnchorPart(data, data.classificationIcon, "classification") end

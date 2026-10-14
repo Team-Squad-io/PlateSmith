@@ -3,7 +3,7 @@ if not PS then return end
 -- QuestieDB is optional: the companion ships with PlateSmith for everyone, so without it (or its
 -- library) it stays silent instead of failing to load.
 if type(_G.LibQuestieDB) ~= "table" then return end
-local L = PS.L
+local L = PS:Locale("platesmith.questiedb")
 
 local MAX_QUESTS = 100
 local MAX_OBJECTIVES = 64
@@ -21,10 +21,12 @@ local module = {
     apiMax = 1,
     enabled = false,
     cache = {},
+    -- Object IDs an active quest has an object objective on (rebuilt with the cache).
+    objectObjectives = {},
     stats = { generation = 0, quests = 0, objectives = 0, npcs = 0 },
 }
 
-local IsReadable, ReadNumber = PS.Secret.IsReadable, PS.Secret.Number
+local IsReadable, ReadNumber = PS.IsReadable, PS.ReadNumber
 
 local function CopyDefaults()
     local saved = type(PlateSmithQuestieDBDB) == "table" and PlateSmithQuestieDBDB or {}
@@ -68,6 +70,32 @@ local function NpcIDForUnit(unit)
         npcByGUID[guid], npcCacheSize = npcID, npcCacheSize + 1
     end
     return npcID or nil
+end
+
+-- objectID -> whether QuestieDB lists the object as any quest's starter or finisher (its questStarts and questEnds
+-- rows, static for the session). Read once per ID, through the public Object entity's getters when the installed
+-- QuestieDB has them; bounded like the GUID cache.
+local OBJECT_CACHE_LIMIT = 512
+local objectListed, objectCacheSize = {}, 0
+
+local function ListsQuests(getter, objectID)
+    if type(getter) ~= "function" then return false end
+    local ok, quests = pcall(getter, objectID)
+    return ok and type(quests) == "table" and next(quests) ~= nil
+end
+
+local function ObjectListed(objectID)
+    local listed = objectListed[objectID]
+    if listed == nil then
+        if objectCacheSize >= OBJECT_CACHE_LIMIT then
+            for key in pairs(objectListed) do objectListed[key] = nil end
+            objectCacheSize = 0
+        end
+        local object = type(module.lib.Object) == "table" and module.lib.Object or nil
+        listed = object ~= nil and (ListsQuests(object.questStarts, objectID) or ListsQuests(object.questEnds, objectID))
+        objectListed[objectID], objectCacheSize = listed, objectCacheSize + 1
+    end
+    return listed
 end
 
 local function AddReason(target, npcID, reason)
@@ -168,7 +196,7 @@ end
 
 local function ClearCache(message, suppressRefresh)
     lastSignatureLength = nil
-    module.cache = {}
+    module.cache, module.objectObjectives = {}, {}
     module.lastError = message
     module.stats = {
         generation = module.stats.generation + 1,
@@ -177,7 +205,7 @@ local function ClearCache(message, suppressRefresh)
         npcs = 0,
     }
     module:RefreshPanel()
-    if not suppressRefresh and type(PS.RefreshQuestMarkers) == "function" then PS.RefreshQuestMarkers() end
+    if not suppressRefresh then PS:InvalidateFact("quest") end
     return message == nil
 end
 
@@ -207,7 +235,7 @@ local function RebuildCache(suppressRefresh, force)
     module.lastError = nil
     module.rebuilds = (module.rebuilds or 0) + 1
 
-    local nextCache = {}
+    local nextCache, nextObjects = {}, {}
     local quests, objectiveCount, npcCount = 0, 0, 0
     for logIndex = 1, logCount do
         local questID, nativeObjectives = logQuestIDs[logIndex], logObjectives[logIndex]
@@ -215,6 +243,15 @@ local function RebuildCache(suppressRefresh, force)
         if not databaseOK then
             module.lastError = "QuestieDB quest read failed for " .. tostring(questID)
             questObjectives = nil
+        end
+        -- The quest's object objectives (QuestieDB's second list), finished or not: object.quest lists them.
+        local objectRows = type(questObjectives) == "table" and questObjectives[2] or nil
+        if type(objectRows) == "table" then
+            for rowIndex = 1, math.min(MAX_OBJECTIVES, #objectRows) do
+                local row = objectRows[rowIndex]
+                local objectID = type(row) == "table" and ReadNumber(row[1]) or nil
+                if objectID and objectID > 0 then nextObjects[objectID] = true end
+            end
         end
         if nativeObjectives and type(questObjectives) == "table" then
             quests = quests + 1
@@ -267,7 +304,7 @@ local function RebuildCache(suppressRefresh, force)
         end
     end
 
-    module.cache = nextCache
+    module.cache, module.objectObjectives = nextCache, nextObjects
     module.stats = {
         generation = module.stats.generation + 1,
         quests = quests,
@@ -275,7 +312,7 @@ local function RebuildCache(suppressRefresh, force)
         npcs = npcCount,
     }
     module:RefreshPanel()
-    if not suppressRefresh and type(PS.RefreshQuestMarkers) == "function" then PS.RefreshQuestMarkers() end
+    if not suppressRefresh then PS:InvalidateFact("quest") end
     return true
 end
 
@@ -286,52 +323,48 @@ local function StatusText()
         stats.quests, stats.objectives, stats.npcs)
 end
 
+-- The page's figures follow a rebuild while it shows (the kit refreshes its rows).
 function module:RefreshPanel()
-    if not self.statusText then return end
-    self.statusText:SetText(StatusText())
-    for _, checkbox in ipairs(self.checkboxes or {}) do checkbox:Refresh() end
+    local kit = self.settingsKit
+    if kit and kit.IsShown() then kit.Refresh() end
 end
 
-local function CreateCheckbox(parent, label, y, field)
-    local checkbox = PS.UI.Controls.Checkbox(parent, {
-        label = label, x = 20, y = y,
-        get = function() return module.db and module.db[field] end,
-        set = function(value)
-            module.db[field] = value
+-- Studio › Settings › Modules › QuestieDB (PlateSmith:RegisterStudioSettings). The switches are this companion's own
+-- SavedVariables, so they are saved at once; a change rebuilds the markers.
+function module:CreateSettings()
+    if self.settingsRegistered or type(PS.RegisterStudioSettings) ~= "function" then return end
+    self.settingsRegistered = true
+    local registered, reason = PS:RegisterStudioSettings("platesmith.questiedb", {
+        studioApiMin = 1, studioApiMax = 1,
+        title = L["QuestieDB"], icon = "Interface\\GossipFrame\\AvailableQuestIcon",
+        summary = L["Quest markers from QuestieDB's database, for mobs the game does not mark itself."],
+        OnSettingsChanged = function()
             if module.enabled then RebuildCache(false, true) end
         end,
+        -- PlateSmith holds quest log changes while no plate is up (OnQuestLogChanged waits for one), so the page
+        -- checks the quest log itself when it opens: its figures are the log's now.
+        OnShow = function()
+            if module.enabled and module.db.enabled then RebuildCache(true) end
+        end,
+        build = function(_, kit)
+            module.settingsKit = kit
+            local section = kit.Section(nil, L["QuestieDB markers"], { summary = function()
+                return module.db.enabled and L["On"] or L["Off"]
+            end })
+            kit.Help(section, L["Quest markers from QuestieDB's database, for mobs the game does not mark itself. This page "
+                .. "comes from the optional PlateSmith_QuestieDB companion and shows only while QuestieDB is installed."])
+            kit.Check(section, { label = L["Enable QuestieDB markers"], bind = kit.Own(module.db, "enabled") })
+            local function On() return module.db.enabled == true end
+            kit.Check(section, { label = L["Supplement direct creature objectives"],
+                bind = kit.Own(module.db, "directObjectives"), shown = On,
+                help = L["Marks the mobs your quests ask you to kill when the game does not mark them itself."] })
+            kit.Check(section, { label = L["Show possible item-drop mobs"], bind = kit.Own(module.db, "possibleItemDrops"),
+                shown = On, help = L["Marks the mobs that can drop an item one of your quests needs."] })
+            kit.Text(section, { label = L["Status"], text = StatusText })
+        end,
     })
-    module.checkboxes = module.checkboxes or {}
-    module.checkboxes[#module.checkboxes + 1] = checkbox
-    return checkbox
+    if not registered then PS:ReportError("QuestieDB settings", reason) end
 end
-
-function module:CreateSettings()
-    if self.panel or type(PS.RegisterModuleSettings) ~= "function" then return end
-    local panel = CreateFrame("Frame")
-    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
-    title:SetPoint("TOPLEFT", 20, -20)
-    title:SetText(L["QuestieDB"])
-    local description = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    description:SetPoint("TOPLEFT", 20, -52)
-    description:SetWidth(600)
-    description:SetJustifyH("LEFT")
-    description:SetText(L["Quest markers from QuestieDB's database, for mobs the game does not mark itself. "
-        .. "This page comes from the optional PlateSmith_QuestieDB companion and appears only while QuestieDB is installed."])
-
-    CreateCheckbox(panel, L["Enable QuestieDB markers"], -92, "enabled")
-    CreateCheckbox(panel, L["Supplement direct creature objectives"], -124, "directObjectives")
-    CreateCheckbox(panel, L["Show possible item-drop mobs"], -156, "possibleItemDrops")
-    self.statusText = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    self.statusText:SetPoint("TOPLEFT", 24, -208)
-    self.statusText:SetWidth(590)
-    self.statusText:SetJustifyH("LEFT")
-    panel:SetScript("OnShow", function() module:RefreshPanel() end)
-    self.panel = panel
-    PS.RegisterModuleSettings("questiedb", L["QuestieDB"], panel)
-    self:RefreshPanel()
-end
-
 function module:OnInitialize()
     self.db = CopyDefaults()
     local lib = _G.LibQuestieDB
@@ -365,6 +398,13 @@ function module:OnInitialize()
             -- The quest log objective it matched, for the plate's progress text.
             return true, reasonEntry.kind, detail, reasonEntry.questID, reasonEntry.objectiveIndex
         end,
+        -- Whether QuestieDB lists the object (its ID from the game) in a quest: an objective of a quest in your log,
+        -- or any quest's starter or finisher (PlateSmith's object.quest). No answer while the module is off.
+        GetObjectRelevance = function(_, objectID)
+            if not module.enabled or not module.db.enabled or type(objectID) ~= "number" then return nil end
+            if module.objectObjectives[objectID] then return true end
+            return ObjectListed(objectID)
+        end,
         GetDiagnostics = function()
             return string.format("contract=%s, cache=%d, quests=%d, generation=%d",
                 tostring(lib.contractVersion or "unknown"), module.stats.npcs,
@@ -393,5 +433,5 @@ end
 
 local registered, registrationError = PS:RegisterModule("platesmith.questiedb", module)
 if not registered then
-    PS.Chat.ReportError("QuestieDB", registrationError)
+    PS:ReportError("QuestieDB", registrationError)
 end

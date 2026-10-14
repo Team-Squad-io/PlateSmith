@@ -48,9 +48,17 @@ end
 -- The general settings a Blueprint carries: Schema's validators, except enabled (whether
 -- PlateSmith runs is the player's own, not part of a design) and Where plates show, which, like
 -- stacking, drives account-wide CVars. A document that has them (a 1.2.0 test build wrote them) is
--- read, and they are ignored.
+-- read, and they are ignored. Clicking (the client's click-through switches) is the player's own the same way.
 local IGNORED_SETTINGS = Set("enabled")
 for _, key in ipairs(S.VISIBILITY.KEYS) do IGNORED_SETTINGS[key] = true end
+for _, key in ipairs(S.CLICK.KEYS) do IGNORED_SETTINGS[key] = true end
+-- So are the game's interact key settings (Settings › Objects & interacting: Nameplates/Interaction.lua).
+for _, key in ipairs(S.INTERACT.KEYS) do IGNORED_SETTINGS[key] = true end
+-- And the Objects' hover cursor and tooltip: the player's own behaviour, changing no look (Nameplates/ObjectHover.lua).
+for _, key in ipairs(S.HOVER.KEYS) do IGNORED_SETTINGS[key] = true end
+-- Exported and checked as before, but an import keeps yours: who draws the plates depends on the other
+-- nameplate addons on your computer, not on a look (an imported "own" beside Plater drew two sets).
+local KEPT_ON_IMPORT = Set("mode")
 local booleanSettings, enumSettings = {}, {}
 for _, key in ipairs(S.booleanSettings) do
     if not IGNORED_SETTINGS[key] then booleanSettings[#booleanSettings + 1] = key end
@@ -76,23 +84,50 @@ local sections = { "settings", "layouts", "styles", "values", "contexts", "enemy
 local LEGACY_SECTIONS = { dungeon = "contexts", dungeonFriendly = "contexts" }
 -- General settings new since 1.1.1, which its strict reader refuses: each is exported only away
 -- from the value its absence imports as (its default; colourByThreat's is false, as a code from
--- before Threat colours brings them off), and then the export is version 4. The shared threat colours
+-- before Threat colours brings them off; targetOffKeepsEdge's true, as Highlight Off kept the gold
+-- edge before 1.2.1; greyWhenTagged's false, as a code from before it keeps its bar's colours), and then
+-- the export is version 4. The shared threat colours
 -- (threatColours) likewise, and parts' own threat colours (threatPartColours) whenever there are any.
 local NEW_SETTINGS = {}
 for _, key in ipairs({ "namesOnlyCastText", "colourByThreat", "threatColourRole", "threatColourSafeKeep",
     "threatColourHealth", "threatColourName", "threatColourBorder", "targetGlowColourMode", "targetGlowColour",
-    "targetGlowSpread", "targetGlowOpacity", "targetGlowPulse", "targetGlowOffsetX", "targetGlowOffsetY" }) do
+    "targetGlowSpread", "targetGlowOpacity", "targetGlowPulse", "targetGlowOffsetX", "targetGlowOffsetY",
+    "targetGlowWrap", "targetGlowParts", "targetGlowEven", "targetGlowSpreadY", "targetGlowWidth", "targetGlowHeight",
+    "classificationIconSize", "objectPlates", "objectFadeUnable" }) do
     NEW_SETTINGS[key] = S.defaults[key]
 end
 NEW_SETTINGS.colourByThreat = false
+NEW_SETTINGS.targetOffKeepsEdge = true
+NEW_SETTINGS.greyWhenTagged = false
+-- Extras on Blizzard's plates (1.3.0): a code from before them brings what Blizzard, with PlateSmith extras drew then,
+-- quest markers and threat text (Schema's migration 33).
+NEW_SETTINGS.extrasQuest, NEW_SETTINGS.extrasThreat, NEW_SETTINGS.extrasTarget, NEW_SETTINGS.extrasLoose = true, "text", false,
+    false
+-- General settings new since 1.1.1 with no default: absent while they follow another (a friendly plate type's
+-- own Show as follows friendly; Schema's FRIENDLY). Exported only when present, and then the export is version 4.
+local NEW_OPTIONAL_SETTINGS = Set("friendlyPlayers", "friendlyNPCs")
 -- Choices of older settings and part style fields new since 1.1.1, which its strict reader refuses: an
 -- export using one (in a design or a saved style) is version 4. NEW_TEXTURES: bar textures new since
 -- 1.1.1, as a design's texture (healthTexture) or a part's (style texture).
-local NEW_SETTING_VALUES = { targetHighlightStyle = Set("glow"), targetGlowColourMode = Set("threat") }
-local NEW_STYLE_FIELDS = Set("pipShape", "pipAnchor", "pipClassColour", "pipGlow", "pipFit", "pipShowRow", "boxShape")
+local NEW_SETTING_VALUES = { targetHighlightStyle = Set("glow"), targetGlowColourMode = Set("threat"),
+    classificationStyle = Set("dragon", "beforeName", "suffix", "frame") }
+-- Likewise a design's own (a World design, or the Enemies' dungeonEnemy): the cast icon inside the bar.
+local NEW_PROFILE_VALUES = { castIcon = Set("inside") }
+local NEW_STYLE_FIELDS = Set("pipShape", "pipAnchor", "pipClassColour", "pipGlow", "pipFit", "pipShowRow", "boxShape", "boxHeight",
+    "iconUnable", "looseFor", "looseIcon", "loosePulse", "backdropWrap", "backdropParts", "backdropWidth", "backdropHeight")
 -- The largest pip sizes 1.1.1 accepts (it refuses a larger one): a style past them is version 4.
 local PIP_LIMITS_111 = { pipWidth = 24, pipHeight = 12, pipSpacing = 8 }
 local NEW_TEXTURES = Set("modern")
+-- Plate types new since 1.1.1 (its strict reader refuses their profiles): exported only away from their default
+-- (worked out on first use, in place of true), and then the export is version 4.
+local NEW_PLATE_TYPES = Set("object")
+-- Layout entries new since 1.1.1 in its plate types' layouts (the Action icon on Friendly NPCs, the Loose mark on
+-- Enemies, the Objects' Backdrop, which Studio's copy of any layout holds): one as the default has it (off) is left
+-- out, as 1.1.1 wrote that layout, and an import gives it the default; one changed, or one another entry is pinned
+-- to, is kept and the export is version 4. NEW_LAYOUT_PLATES: the plate types each is drawn on. NEW_LAYOUT_DEFAULTS:
+-- each type's exported defaults.
+local NEW_LAYOUT_ENTRIES, NEW_LAYOUT_DEFAULTS = { "actionIcon", "looseMark", "backdrop" }, {}
+local NEW_LAYOUT_PLATES = { actionIcon = S.ACTION_PLATES, looseMark = { enemy = true }, backdrop = { object = true } }
 
 local moduleFields = {}
 
@@ -309,7 +344,7 @@ local castColourFields = Set("ready", "cooldown", "locked")
 -- One target highlight value of a design (a profile or a sparse design's options), checked as the
 -- general setting of that name is.
 local function CheckHighlight(key, raw, keyPath)
-    if key == "targetGlowPulse" then return CheckBoolean(raw, keyPath) end
+    if HIGHLIGHT.BOOLEAN[key] then return CheckBoolean(raw, keyPath) end
     if S.enumSettings[key] then return CheckEnum(raw, keyPath, S.enumSettings[key]) end
     if settingRanges[key] then return CheckRange(raw, keyPath, settingRanges[key]) end
     return CheckColour(raw, keyPath)
@@ -417,17 +452,18 @@ local function CheckRules(value, path)
     return rules
 end
 
--- Styles: part -> { font, fontSize, outline, shadow, box, boxShape, boxColour, boxBorder, padding, texture,
+-- Styles: part -> { font, fontSize, outline, shadow, box, boxShape, boxHeight, boxColour, boxBorder, padding, texture,
 -- background, border, borderColour, pipFill, pipEmpty, pipWidth, pipHeight, pipSpacing, pipShape,
--- pipAnchor, pipClassColour, pipGlow, pipFit, pipShowRow, badgeSize, badgeSpacing, badgeOrientation, badgeInitial };
--- colours are { r, g, b, a } from 0 to 1. An older Blueprint's gradient (low, mid, high) becomes the
--- part's leading blend rule (profiles only). A context design's (sparse) style may list the fields it
--- clears ("-") and has no gradient.
+-- pipAnchor, pipClassColour, pipGlow, pipFit, pipShowRow, badgeSize, badgeSpacing, badgeOrientation, badgeInitial,
+-- iconUnable, looseFor, looseIcon, loosePulse, backdropWrap, backdropParts, backdropWidth, backdropHeight }; colours are
+-- { r, g, b, a } from 0 to 1. An older Blueprint's gradient (low, mid, high) becomes the part's leading blend rule
+-- (profiles only). A context design's (sparse) style may list the fields it clears ("-") and has no gradient.
 local styleFieldList = { "font", "fontSize", "outline", "shadow", "box", "boxShape", "boxColour", "boxBorder", "padding",
-    "texture",
+    "boxHeight", "texture",
     "background", "border", "borderColour", "pipFill", "pipEmpty", "pipWidth", "pipHeight", "pipSpacing",
     "pipShape", "pipAnchor", "pipClassColour", "pipGlow", "pipFit", "pipShowRow",
-    "badgeSize", "badgeSpacing", "badgeOrientation", "badgeInitial" }
+    "badgeSize", "badgeSpacing", "badgeOrientation", "badgeInitial", "iconUnable", "looseFor", "looseIcon", "loosePulse",
+    "backdropWrap", "backdropParts", "backdropWidth", "backdropHeight" }
 local profileStyleFields, sparseStyleFields = SetOf(styleFieldList), SetOf(styleFieldList)
 profileStyleFields.gradient, sparseStyleFields[CLEAR] = true, true
 local sparseStyleClear = SetOf(styleFieldList)
@@ -459,6 +495,15 @@ local function CheckStyles(value, path, sparse)
             CheckEnum(style.badgeOrientation, stylePath .. ".badgeOrientation", S.STYLE_BADGE_ORIENTATIONS)
         end
         if style.badgeInitial ~= nil then CheckBoolean(style.badgeInitial, stylePath .. ".badgeInitial") end
+        if style.iconUnable ~= nil then CheckEnum(style.iconUnable, stylePath .. ".iconUnable", Set("grey", "hide")) end
+        if style.looseFor ~= nil then CheckEnum(style.looseFor, stylePath .. ".looseFor", Set("all")) end
+        if style.looseIcon ~= nil then CheckEnum(style.looseIcon, stylePath .. ".looseIcon", Set("window")) end
+        if style.loosePulse ~= nil then CheckBoolean(style.loosePulse, stylePath .. ".loosePulse") end
+        if style.backdropWrap ~= nil then CheckEnum(style.backdropWrap, stylePath .. ".backdropWrap", Set("fixed")) end
+        if style.backdropParts ~= nil then CheckEnum(style.backdropParts, stylePath .. ".backdropParts", S.BACKDROP.VALUES) end
+        for _, field in ipairs({ "backdropWidth", "backdropHeight" }) do
+            if style[field] ~= nil then CheckRange(style[field], stylePath .. "." .. field, S.BACKDROP.SIZE) end
+        end
         if style.pipShape ~= nil then CheckEnum(style.pipShape, stylePath .. ".pipShape", S.STYLE_PIP_SHAPES) end
         if style.pipAnchor ~= nil then CheckEnum(style.pipAnchor, stylePath .. ".pipAnchor", S.STYLE_PIP_ANCHORS) end
         if style.pipClassColour ~= nil then CheckBoolean(style.pipClassColour, stylePath .. ".pipClassColour") end
@@ -472,6 +517,7 @@ local function CheckStyles(value, path, sparse)
         if style.shadow ~= nil then CheckBoolean(style.shadow, stylePath .. ".shadow") end
         if style.box ~= nil then CheckBoolean(style.box, stylePath .. ".box") end
         if style.boxShape ~= nil then CheckEnum(style.boxShape, stylePath .. ".boxShape", S.STYLE_BOX_SHAPES) end
+        if style.boxHeight ~= nil then CheckEnum(style.boxHeight, stylePath .. ".boxHeight", S.STYLE_BOX_HEIGHTS) end
         if style.outline ~= nil then CheckEnum(style.outline, stylePath .. ".outline", S.STYLE_OUTLINES) end
         if style.padding ~= nil then CheckRange(style.padding, stylePath .. ".padding", S.STYLE_PADDING) end
         if style.fontSize ~= nil then CheckRange(style.fontSize, stylePath .. ".fontSize", S.STYLE_FONT_SIZE) end
@@ -489,7 +535,8 @@ end
 -- A context design's own profile options (Designs: options), each checked as a profile's is;
 -- castOnNames (false: no cast bar on names-only plates there) and "-" (optional sizes cleared, so
 -- they follow the health bar there) are a design's own.
-local optionFields = Set("healthTexture", "healthColourMode", "healthColour", "castColours", "castOnNames", CLEAR)
+-- plateHidden: an object type's Hide these plates (objectTypes).
+local optionFields = Set("healthTexture", "healthColourMode", "healthColour", "castColours", "castOnNames", "plateHidden", CLEAR)
 for key in pairs(profileNumbers) do optionFields[key] = true end
 for key in pairs(S.optionalProfileRanges) do optionFields[key] = true end
 for key in pairs(S.castOptions) do optionFields[key] = true end
@@ -525,6 +572,8 @@ local function CheckOptions(value, path)
             for name, colour in pairs(raw) do options[key][name] = CheckColour(colour, keyPath .. "." .. name) end
         elseif key == "castOnNames" then
             options[key] = CheckBoolean(raw, keyPath)
+        elseif key == "plateHidden" then
+            options[key] = CheckBoolean(raw, keyPath) or nil
         elseif HIGHLIGHT.SET[key] then
             options[key] = CheckHighlight(key, raw, keyPath)
         end
@@ -682,7 +731,7 @@ end
 
 local flavors = Set("forever", "retail")
 local documentFields = Set("format", "version", "readableFrom", "addon", "client", "flavor", "settings", "profiles",
-    "dungeonEnemy", "contexts", "enemyPlayers", "modules")
+    "dungeonEnemy", "contexts", "enemyPlayers", "objectTypes", "modules")
 -- Font choices: a built-in key or an "lsm:" reference (PS.Media.IsFont).
 local fontSettings = { "font", "blizzardNameFontFace" }
 local settingFields = Set("relationshipColours", "stylePresets", "threatColours", "threatPartColours")
@@ -736,6 +785,7 @@ local function BuildCandidate(document)
     for key, allowed in pairs(enumSettings) do
         if settings[key] ~= nil then candidate[key] = CheckEnum(settings[key], "settings." .. key, allowed) end
     end
+    S.FRIENDLY.Normalize(candidate)
     for key, range in pairs(settingRanges) do
         if settings[key] ~= nil then candidate[key] = CheckRange(settings[key], "settings." .. key, range) end
     end
@@ -788,6 +838,14 @@ local function BuildCandidate(document)
     end
     -- A code from before Threat colours arrives with them off, as a saved profile's migration turns them.
     if settings.colourByThreat == nil then candidate.colourByThreat = false end
+    -- Likewise, a code from before 1.2.1 keeps the gold target edge with Highlight Off, and its health bar's
+    -- colours on a mob someone else tagged (its layouts carry its own TAGGED word).
+    if settings.targetOffKeepsEdge == nil then candidate.targetOffKeepsEdge = true end
+    if settings.greyWhenTagged == nil then candidate.greyWhenTagged = false end
+    -- And a code from before 1.3.0 brings the extras on Blizzard's plates that it drew then (NEW_SETTINGS).
+    for _, key in ipairs({ "extrasThreat", "extrasTarget", "extrasLoose" }) do
+        if settings[key] == nil then candidate[key] = NEW_SETTINGS[key] end
+    end
 
     local profiles = document.profiles == nil and {}
         or CheckObject(document.profiles, "profiles", SetOf(profileOrder))
@@ -838,6 +896,17 @@ local function BuildCandidate(document)
         CheckObject(document.enemyPlayers, "enemyPlayers")
         if document.enemyPlayers.full ~= nil then Reject("enemyPlayers.full", "is not allowed here") end
         PS.Designs.SetPlayers(candidate.plateProfiles.enemy, CheckDesign(document.enemyPlayers, "enemyPlayers", "enemy"))
+    end
+    -- Object types (version 4, new in 1.3.0): a sparse layer each over the Objects' designs; a type this version does
+    -- not know is skipped.
+    if document.objectTypes ~= nil then
+        CheckObject(document.objectTypes, "objectTypes", DESIGN.TYPE_SET)
+        for objectType, record in pairs(document.objectTypes) do
+            local path = "objectTypes." .. objectType
+            CheckObject(record, path)
+            if record.full ~= nil then Reject(path .. ".full", "is not allowed here") end
+            PS.Designs.SetType(candidate.plateProfiles.object, objectType, CheckDesign(record, path, "object"))
+        end
     end
     local legacy = {}
     for _, switch in ipairs(S.PART_SWITCHES) do
@@ -979,16 +1048,49 @@ local function UsesNewStyleField(style)
     return NEW_TEXTURES[style.texture] == true
 end
 
--- Whether an exported profile's texture or styles, or saved styles (presets), use one.
+-- Whether an exported profile's texture, choices (NEW_PROFILE_VALUES) or styles, or saved styles (presets), use one.
+-- (A saved Backdrop preset, kind backdrop, is new since 1.1.1 too: NEW_PRESET_KINDS.)
+local NEW_PRESET_KINDS = Set("backdrop")
 local function UsesNewStyleFields(profile, presets)
     if profile and NEW_TEXTURES[profile.healthTexture] then return true end
+    for key, values in pairs(NEW_PROFILE_VALUES) do
+        if profile and values[profile[key]] then return true end
+    end
     for _, style in pairs(profile and profile.styles or {}) do
         if UsesNewStyleField(style) then return true end
     end
     for _, preset in pairs(presets or {}) do
-        if type(preset) == "table" and UsesNewStyleField(preset.style) then return true end
+        if type(preset) == "table" and (UsesNewStyleField(preset.style) or NEW_PRESET_KINDS[preset.kind]) then return true end
     end
     return false
+end
+
+-- Leaves out of an exported World design the NEW_LAYOUT_ENTRIES still at their default; true when one is kept.
+local function TrimNewEntries(exported, plateType)
+    local defaults = NEW_LAYOUT_DEFAULTS[plateType]
+    if not defaults then
+        defaults = ExportProfile(NormalizeSettings({}).plateProfiles[plateType], profileDefaults[plateType].namesLayout ~= nil)
+        NEW_LAYOUT_DEFAULTS[plateType] = defaults
+    end
+    local kept = false
+    for _, field in ipairs({ "layout", "namesLayout", "dungeonNamesLayout" }) do
+        local layout, default = exported[field], defaults[field]
+        for _, key in ipairs(type(layout) == "table" and NEW_LAYOUT_ENTRIES or {}) do
+            if layout[key] ~= nil then
+                local pinned = false
+                for _, position in pairs(layout) do pinned = pinned or position.parent == key end
+                -- A plate type without the part, or Blizzard's dungeon names (Studio's copy of a layout holds every
+                -- part), never draws it.
+                local unused = not NEW_LAYOUT_PLATES[key][plateType] or field == "dungeonNamesLayout"
+                if not pinned and (unused or (type(default) == "table" and Table.DeepEqual(layout[key], default[key]))) then
+                    layout[key] = nil
+                else
+                    kept = true
+                end
+            end
+        end
+    end
+    return kept
 end
 
 -- A sparse context design as the document holds it: Designs' storage, with colours as hex as
@@ -1059,9 +1161,13 @@ local function IsJsonValue(value, depth)
     return true
 end
 
-local function RegisterBlueprintField(key, descriptor)
-    if type(key) ~= "string" or #key > 64 or not key:match("^[a-z][a-z0-9_]*%.[a-z][a-z0-9_]*$") then
-        return false, "extension fields must use module.field names"
+-- Its key in the module ID grammar ("<module>.<name>", Core/Modules.lua), or the one-dot form with "_" that 1.2.0
+-- accepted. PlateSmith:RegisterBlueprintField and PlateSmith.RegisterBlueprintField alike.
+local function RegisterBlueprintField(...)
+    local key, descriptor = PS._Args(...)
+    if not PS.IsModuleId(key, 2) and not (type(key) == "string" and #key <= PS.MAX_ID_LENGTH
+        and key:match("^[a-z][a-z0-9_]*%.[a-z][a-z0-9_]*$")) then
+        return false, PS._IdReason("blueprint field", 2)
     end
     if moduleFields[key] then return false, "blueprint field is already registered" end
     if type(descriptor) ~= "table" or type(descriptor.export) ~= "function"
@@ -1119,6 +1225,16 @@ local function BuildDocument(db, live, withoutBody)
     local players = PS.Designs.Record(db, "enemyPlayer")
     local enemyPlayers = players and next(players) ~= nil and ExportDesign(players) or nil
     if enemyPlayers then newer = true end
+    -- The object types with a layer (version 4 only; none: left out, so an export without them is as before).
+    local objectTypes
+    for _, objectType in ipairs(DESIGN.TYPES) do
+        local record = PS.Designs.Record(db, "object", objectType)
+        if record and next(record) ~= nil then
+            objectTypes = objectTypes or {}
+            objectTypes[objectType] = ExportDesign(record)
+            newer = true
+        end
+    end
     for key, absent in pairs(NEW_SETTINGS) do
         if Table.DeepEqual(settings[key], S.colourSettings[key] and ColourToHex(absent) or absent) then
             settings[key] = nil
@@ -1126,18 +1242,32 @@ local function BuildDocument(db, live, withoutBody)
             newer = true
         end
     end
+    for key in pairs(NEW_OPTIONAL_SETTINGS) do newer = newer or settings[key] ~= nil end
     for key, values in pairs(NEW_SETTING_VALUES) do newer = newer or values[db[key]] == true end
     newer = newer or UsesNewStyleFields(nil, settings.stylePresets)
-    -- World designs as in version 3.
+    -- World designs as in version 3. Objects (new in 1.3.0, NEW_PLATE_TYPES) only while theirs differs from the
+    -- default, and then the document is version 4; absent, an import gives them the default.
     local profiles = {}
     for _, key in ipairs(profileOrder) do
-        profiles[key] = ExportProfile(db.plateProfiles[key], profileDefaults[key].namesLayout ~= nil)
-        newer = newer or UsesNewStyleFields(profiles[key]) or HIGHLIGHT.Has(profiles[key])
+        local exported = ExportProfile(db.plateProfiles[key], profileDefaults[key].namesLayout ~= nil)
+        if NEW_PLATE_TYPES[key] then
+            local default = NEW_PLATE_TYPES[key]
+            if default == true then
+                default = ExportProfile(NormalizeSettings({}).plateProfiles[key], false)
+                NEW_PLATE_TYPES[key] = default
+            end
+            if Table.DeepEqual(exported, default) then exported = nil else newer = true end
+        elseif TrimNewEntries(exported, key) then
+            newer = true
+        end
+        profiles[key] = exported
+        newer = newer or UsesNewStyleFields(exported) or HIGHLIGHT.Has(exported)
     end
     -- The Enemies' Dungeons & raids design resolved whole, whatever its kind: version 3's place for
     -- it, and in version 4 the body of a full one (contexts.enemy.dungeon = { full = true }).
     local dungeonEnemy = not withoutBody and PS.Designs.HasDesign(db, "enemy", "dungeon")
         and ExportProfile(PS.Designs.For(db, "enemy", "dungeon"), false) or nil
+    if dungeonEnemy and TrimNewEntries(dungeonEnemy, "enemy") then newer = true end
     newer = newer or UsesNewStyleFields(dungeonEnemy) or HIGHLIGHT.Has(dungeonEnemy)
     local build = type(GetBuildInfo) == "function" and select(4, GetBuildInfo()) or nil
     local document = {
@@ -1149,6 +1279,7 @@ local function BuildDocument(db, live, withoutBody)
         dungeonEnemy = dungeonEnemy,
         contexts = newer and contexts or nil,
         enemyPlayers = enemyPlayers,
+        objectTypes = objectTypes,
     }
     for _, key in ipairs(live and SortedModuleKeys() or {}) do
         local ok, value = pcall(moduleFields[key].export)
@@ -1158,6 +1289,11 @@ local function BuildDocument(db, live, withoutBody)
             document.modules = document.modules or {}
             document.modules[key] = value
         end
+    end
+    -- Modules' declared profile settings (Core/ModuleSettings.lua): profile data, only what differs from defaults.
+    for key, values in pairs(PS.ModuleSettings.Export(db) or {}) do
+        document.modules = document.modules or {}
+        document.modules[key] = values
     end
     return document
 end
@@ -1291,6 +1427,8 @@ local function Rebase(record, base, final)
     end
     return result or record
 end
+-- Also for Settings' CopyObjectLook, which puts a look's Objects World under the player's Objects context designs.
+PS._RebaseDesign = Rebase
 
 -- An import's selection: Selected(section), and the selection itself (nil: every section). Only a
 -- table opts into selective import; callers may pass through a gsub count.
@@ -1315,7 +1453,7 @@ end
 local function Parse(text)
     local document, parseError = Json.Decode(text, MAX_JSON_BYTES)
     if document == nil then return nil, "invalid JSON: " .. tostring(parseError) end
-    local parsed = { document = document, modules = {}, disabledRules = 0, overlayOff = false,
+    local parsed = { document = document, modules = {}, moduleSettings = {}, disabledRules = 0, overlayOff = false,
         skipped = { count = 0, paths = {} } }
     skipped = parsed.skipped
     local built, failure = pcall(function()
@@ -1329,6 +1467,11 @@ local function Parse(text)
                     local ok, data, reason = pcall(descriptor.parse, value)
                     if not ok or data == nil then Reject("modules." .. key, tostring(reason or "is invalid")) end
                     parsed.modules[key] = data
+                else
+                    -- A module's declared settings, checked by its declaration (no module code runs).
+                    local values, owner = PS.ModuleSettings.Parse(key, value)
+                    if values == false then Reject("modules." .. key, owner) end
+                    if values then parsed.moduleSettings[owner] = values end
                 end
             end
         end
@@ -1366,12 +1509,15 @@ local function ApplySections(db, parsed, selection, Selected, live)
         end
         if Selected("settings") then
             for _, key in ipairs(booleanSettings) do db[key] = candidate[key] end
-            for key in pairs(enumSettings) do db[key] = candidate[key] end
+            for key in pairs(enumSettings) do
+                if not KEPT_ON_IMPORT[key] then db[key] = candidate[key] end
+            end
             for key in pairs(settingRanges) do db[key] = candidate[key] end
             for _, key in ipairs(fontSettings) do db[key] = candidate[key] end
             for key in pairs(S.colourSettings) do db[key] = candidate[key] end
             db.relationshipColours = candidate.relationshipColours
             db.threatColours, db.threatPartColours = candidate.threatColours, candidate.threatPartColours
+            PS.ModuleSettings.Apply(db, parsed.moduleSettings)
         end
         for _, key in ipairs(profileOrder) do
             local source, target = candidate.plateProfiles[key], profiles[key]
@@ -1414,6 +1560,19 @@ local function ApplySections(db, parsed, selection, Selected, live)
             end
             target.contexts = next(contexts) ~= nil and contexts or nil
         end
+        -- Object types, with the context designs: each type the Blueprint carries replaces yours, your others stay;
+        -- each then drops what no longer means the same over the Objects' World (Rebase, as above).
+        local object, carriedTypes = profiles.object, type(document.objectTypes) == "table" and document.objectTypes or {}
+        local types, source = {}, candidate.plateProfiles.object
+        for key, record in pairs(type(object.types) == "table" and object.types or {}) do types[key] = record end
+        for _, objectType in ipairs(DESIGN.TYPES) do
+            local theirs = carriedTypes[objectType] ~= nil and Selected("contexts")
+            if theirs then types[objectType] = type(source.types) == "table" and source.types[objectType] or nil end
+            if type(types[objectType]) == "table" then
+                types[objectType] = Rebase(types[objectType], theirs and source or before.object, object)
+            end
+        end
+        object.types = next(types) ~= nil and types or nil
         -- The Enemy players layer is replaced whole: a Blueprint without one removes yours.
         local enemy = profiles.enemy
         if Selected("enemyPlayers") then
@@ -1436,7 +1595,9 @@ local function ApplySections(db, parsed, selection, Selected, live)
     return true
 end
 
-local function ImportBlueprint(text, selection)
+-- restored: the caller puts the settings back itself if the import fails (Profiles' New from preset loads the
+-- profile it left), so no copy of them is kept to restore (one profile's size of garbage).
+local function ImportBlueprint(text, selection, restored)
     local db = PS.GetSettings and PS.GetSettings()
     if not db then return false, "settings are not loaded" end
     if type(text) ~= "string" then return false, "blueprint must be text" end
@@ -1450,11 +1611,11 @@ local function ImportBlueprint(text, selection)
 
     -- Module apply callbacks write live state, so any failure restores the
     -- whole pre-import settings rather than leaving a partial Blueprint.
-    local snapshot = Table.DeepCopy(db)
+    local snapshot = not restored and Table.DeepCopy(db) or nil
     local completed, applied, failure = pcall(ApplySections, db, parsed, selection, Selected, true)
     if not completed or not applied then
         -- Other modules hold the live settings table, so it is restored in place.
-        Table.Replace(db, snapshot)
+        if snapshot then Table.Replace(db, snapshot) end
         PS.Refresh()
         return false, completed and failure or ("blueprint apply failed: " .. tostring(applied))
     end
@@ -1541,7 +1702,8 @@ end
 -- "Includes: Enemies › Dungeons & raids, Players › Cities & inns"), and { contexts = { label },
 -- enemyPlayers = true | nil }. nil for text that is not a Blueprint. Read only to describe it: nothing
 -- is checked.
-local PLATE_LABELS = { enemy = L["Enemies"], friendlyPlayer = L["Players"], friendlyNPC = L["Friendly NPCs"] }
+local PLATE_LABELS = { enemy = L["Enemies"], friendlyPlayer = L["Players"], friendlyNPC = L["Friendly NPCs"],
+    object = L["Objects"] }
 local function Describe(text)
     if type(text) ~= "string" then return nil end
     if text:match("^%s*!PSB") then
@@ -1557,6 +1719,13 @@ local function Describe(text)
             if carried[plateType][context] then
                 labels[#labels + 1] = string.format(L["%s › %s"], PLATE_LABELS[plateType], PS.Designs.LABELS[context])
             end
+        end
+    end
+    -- Object types come in with the context designs (ApplySections), so they are named with them.
+    local types = type(document.objectTypes) == "table" and document.objectTypes or {}
+    for _, objectType in ipairs(DESIGN.TYPES) do
+        if type(types[objectType]) == "table" then
+            labels[#labels + 1] = string.format(L["%s › %s"], PLATE_LABELS.object, PS.Designs.TYPE_LABELS[objectType])
         end
     end
     local info = { contexts = labels, enemyPlayers = document.enemyPlayers ~= nil or nil }

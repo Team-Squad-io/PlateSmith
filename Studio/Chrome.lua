@@ -45,8 +45,11 @@ local INSPECTOR = { width = FRAME.inspector, rail = 8, lane = 32 }
 -- The footer's CPU readout: right-aligned, its right end this far from Studio's right edge (just
 -- left of Revert), refreshed every interval seconds while Studio shows.
 local CPU_READOUT = { right = 381, width = 200, height = 22, gap = 16, interval = 3, ticker = "studio.cpu-readout" }
--- Settings' categories panel: the search box across its top, then a row per category.
-local CATEGORIES = { top = 12, searchX = 12, searchH = 34, searchGap = 12, rowStep = 46 }
+-- Settings' categories panel: the search box across its top, then a scrolling list of a row per category, the
+-- Modules group under its heading at the end (headerH), x in from the panel's sides and bottom above its foot.
+local CATEGORIES = { top = 12, searchX = 12, searchH = 34, searchGap = 12, rowStep = 46, rowH = 44, headerH = 34, x = 8,
+    bottom = 12, bar = 26, icon = 22, iconX = 12, labelX = 42 }
+Options.editorSettingsCategoryMetrics = CATEGORIES
 -- The preview panel's rows (canvas units from its top-left): the design row under the tabs, the foot's
 -- controls footY above its bottom, Test values after Snap and its panel panelGap above the foot. The picture
 -- (world or plain dark) fills the panel under the tabs, from pictureTop, pictureInset inside its other edges.
@@ -95,9 +98,14 @@ SetStudioButtonState = function(button, selected)
         end
     end
     if button.studioVariant == "tab" and button.studioSelected then button.label:SetTextColor(1, 0.90, 0.72) end
+    -- An owner's ink (the preview's live layout, gold) outlasts every repaint: hover, a full refresh's theme.
+    local ink = enabled and button.studioInk
+    if ink then button.label:SetTextColor(ink[1], ink[2], ink[3]) end
     button.label:ClearAllPoints()
     local justify = button.studioVariant == "category" and "LEFT" or "CENTER"
-    button.label:SetPoint(justify, button, justify, justify == "LEFT" and 12 or 0, state == "pressed" and -1 or 0)
+    -- studioLabelX: a category row with an icon before its label (a module's).
+    button.label:SetPoint(justify, button, justify, justify == "LEFT" and (button.studioLabelX or 12) or 0,
+        state == "pressed" and -1 or 0)
 end
 
 local function CreateStudioButton(parent, text, width, height, variant)
@@ -509,7 +517,7 @@ function Options:LayoutEditorArt()
     for _, field in ipairs(self.editorKitFields or {}) do field:Layout() end
 end
 
--- Whether the plates use the colour-blind threat palette (Settings › Threat › Palette, or its
+-- Whether the plates use the colour-blind threat palette (Settings › Modules › Threat › Palette, or its
 -- Follow colour-blind mode with the game's option on).
 local function PlatesColourBlind()
     local ThreatText = PS.ThreatText
@@ -793,6 +801,8 @@ end
 -- are the panels built by the inspector (their keys), in the order shown.
 local SETTINGS_CATEGORIES = {
     { key = "plate", label = L["Behaviour & display"], summary = L["Shared settings for the active profile."] },
+    { key = "objects", label = L["Objects & interacting"],
+        summary = L["Object plates, pointing at them, and the game's interact key."] },
     { key = "stacking", label = L["Stacking & distance"],
         summary = L["How Blizzard stacks, spaces, scales and fades plates, and which draws on top."] },
     { key = "auras", label = L["Aura defaults"], summary = L["Which buffs and debuffs the plates show."] },
@@ -806,10 +816,14 @@ local SETTINGS_CATEGORIES = {
     { key = "help", label = L["Help"], summary = L["How Blueprint Studio works, and PlateSmith's commands."] },
 }
 
+-- The built-in categories shown, then the Modules group's (Studio/Modules.lua: category.module is its registration).
 function Options:SettingsCategoryList()
     local list = {}
     for _, category in ipairs(SETTINGS_CATEGORIES) do
         if not category.hidden then list[#list + 1] = category end
+    end
+    for _, category in ipairs(self.ModuleSettingsCategories and self:ModuleSettingsCategories() or {}) do
+        list[#list + 1] = category
     end
     return list
 end
@@ -819,6 +833,9 @@ function Options:SettingsCategoryInfo(key)
     for _, category in ipairs(SETTINGS_CATEGORIES) do
         if category.key == key then return category end
     end
+    for _, category in ipairs(self.ModuleSettingsCategories and self:ModuleSettingsCategories() or {}) do
+        if category.key == key then return category end
+    end
     return nil
 end
 
@@ -826,14 +843,7 @@ function Options:SetSettingsCategory(key)
     -- Picking a category (or leaving Settings) ends a search: its rows go back to their pages.
     local search = self.settingsSearch
     if search and search.IsBusy() then search.Clear() end
-    local found
-    for _, category in ipairs(self:SettingsCategoryList()) do
-        if category.key == key then found = category end
-    end
-    for _, category in ipairs(SETTINGS_CATEGORIES) do
-        if not found and category.key == key then found = category end
-    end
-    found = found or SETTINGS_CATEGORIES[1]
+    local found = self:SettingsCategoryInfo(key) or SETTINGS_CATEGORIES[1]
     -- Another category opens at its top, as Blizzard's Settings do.
     local viewport = self.editorSettingsViewport
     if found.key ~= self.editorSettingsCategory and viewport and viewport.SetVerticalScroll then
@@ -863,6 +873,8 @@ function Options:LayoutEditorSettingsPanels()
     local searching = search and search.IsActive() or false
     -- A page is built the first time it shows.
     if settingsOpen and not searching and self.EditorSettingsPage then self:EditorSettingsPage(current) end
+    -- Its controls (or, searching, any page's), if a refresh passed them by while out of sight.
+    if settingsOpen and self.editorStaleControls then self:RefreshEditorStaleControls() end
     -- The shown page is laid out at the page's width (its sections in one or two columns).
     for _, panel in ipairs(self.editorSettingsPanels or {}) do
         panel:ClearAllPoints()
@@ -878,16 +890,70 @@ function Options:LayoutEditorSettingsPanels()
         if searching then height = found end
     end
     content:SetHeight(math.max(1, height))
-    for index, row in ipairs(self.editorSettingsCategoryRows or {}) do
-        local category = self:SettingsCategoryList()[index]
-        row:SetShown(category ~= nil)
-        if category then
-            row.categoryKey = category.key
-            row.label:SetText(category.label)
-            SetStudioButtonState(row, not searching and category.key == current)
-        end
-    end
+    self:LayoutEditorSettingsCategoryRows(current, searching)
     if self.editorSettingsScrollBar then self.editorSettingsScrollBar:Sync() end
+end
+
+-- The categories' list: a row per category, then the Modules heading over the modules' rows (each with its icon, an
+-- unsaved dot while its profile settings differ from the saved profile, and greyed with the reason in its tooltip
+-- when its page cannot show), scrolling when they outgrow the panel (the bar then takes the rows' right end).
+local GREYED = { 0.50, 0.48, 0.45 }
+function Options:LayoutEditorSettingsCategoryRows(current, searching)
+    local list, content = self.editorSettingsCategoryList, self.editorSettingsCategoryContent
+    if not list or not content then return end
+    local categories = self:SettingsCategoryList()
+    local modules = 0
+    for _, category in ipairs(categories) do if category.module then modules = modules + 1 end end
+    local total = #categories * CATEGORIES.rowStep + (modules > 0 and CATEGORIES.headerH or 0)
+    local width = list:GetWidth() or 0
+    local rowWidth = math.max(1, width - (total > (list:GetHeight() or 0) + 0.5 and CATEGORIES.bar or 0))
+    local header, y, headed = self.editorSettingsModulesHeader, 0, false
+    for index, category in ipairs(categories) do
+        if category.module and not headed then
+            headed = true
+            if header then
+                header:ClearAllPoints()
+                header:SetPoint("TOPLEFT", content, "TOPLEFT", CATEGORIES.iconX, -(y + CATEGORIES.headerH - 24))
+            end
+            y = y + CATEGORIES.headerH
+        end
+        local row = self:EditorSettingsCategoryRow(index)
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+        if row:GetWidth() ~= rowWidth then row:SetWidth(rowWidth) end
+        row.categoryKey, row.categoryModule = category.key, category.module
+        row.label:SetText(category.label)
+        local entry, icon = category.module, row.categoryIcon
+        if entry and entry.icon and not icon then
+            icon = row:CreateTexture(nil, "OVERLAY")
+            icon:SetSize(CATEGORIES.icon, CATEGORIES.icon)
+            icon:SetPoint("LEFT", row, "LEFT", CATEGORIES.iconX, 0)
+            row.categoryIcon = icon
+        end
+        if icon then
+            if entry and entry.icon then icon:SetTexture(entry.icon) end
+            icon:SetShown(entry ~= nil and entry.icon ~= nil)
+        end
+        row.studioLabelX = entry and entry.icon and CATEGORIES.labelX or nil
+        local dot = row.categoryDot
+        if entry and not dot then
+            dot = row:CreateTexture(nil, "OVERLAY")
+            dot:SetSize(10, 10)
+            dot:SetPoint("RIGHT", row, "RIGHT", -14, 0)
+            dot:SetTexture("Interface\\COMMON\\Indicator-Yellow")
+            row.categoryDot = dot
+        end
+        if dot then dot:SetShown(entry ~= nil and self:ModuleSettingsUnsaved(entry)) end
+        row.categoryProblem = entry and self:ModuleSettingsProblem(entry) or nil
+        row.studioInk = row.categoryProblem and GREYED or nil
+        row:Show()
+        SetStudioButtonState(row, not searching and category.key == current)
+        y = y + CATEGORIES.rowStep
+    end
+    for index = #categories + 1, #(self.editorSettingsCategoryRows or {}) do self.editorSettingsCategoryRows[index]:Hide() end
+    if header then header:SetShown(headed) end
+    content:SetSize(math.max(1, width), math.max(1, y))
+    if self.editorSettingsCategoryScrollBar then self.editorSettingsCategoryScrollBar:Sync() end
 end
 
 -- Studio or Settings (the header toggle). "components" is Studio; any settings page opens Settings.
@@ -1059,12 +1125,20 @@ function Options:LayoutEditorPreviewPanel()
         note:SetPoint("TOPRIGHT", canvas, "TOPRIGHT", -PREVIEW.side, -(PREVIEW.rowTop + PREVIEW.rowHeight + 4))
         note:SetWidth(math.max(1, w - 2 * PREVIEW.side))
     end
-    -- The friendly layout switch: the preview's lower left, above its controls.
+    -- The friendly layout switch: the preview's lower left, above its controls, after its "Editing:" label.
+    local editing = self.editorFriendlyViewLabel
+    local switchX = 16
+    if editing then
+        local first = self.editorFriendlyViewButtons and self.editorFriendlyViewButtons.names
+        editing:ClearAllPoints()
+        editing:SetPoint("LEFT", canvas, "TOPLEFT", 16, -(h - 88) - (first and first:GetHeight() or 32) / 2)
+        switchX = 16 + math.ceil(editing:GetStringWidth() or 0) + 8
+    end
     for index, key in ipairs({ "names", "full" }) do
         local button = self.editorFriendlyViewButtons and self.editorFriendlyViewButtons[key]
         if button then
             button:ClearAllPoints()
-            button:SetPoint("TOPLEFT", canvas, "TOPLEFT", 16 + (index - 1) * 108, -(h - 88))
+            button:SetPoint("TOPLEFT", canvas, "TOPLEFT", switchX + (index - 1) * 108, -(h - 88))
         end
     end
     local footY = h - PREVIEW.footY
@@ -1179,9 +1253,18 @@ function Options:LayoutEditorSettingsPage()
         Theme.Place(search.icon, "search-icon-normal", search, 8, 5)
         rowsTop = CATEGORIES.top + CATEGORIES.searchH + CATEGORIES.searchGap
     end
-    for index, row in ipairs(self.editorSettingsCategoryRows or {}) do
-        row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", categories, "TOPLEFT", 8, -(rowsTop + (index - 1) * CATEGORIES.rowStep))
+    local list = self.editorSettingsCategoryList
+    if list and categories then
+        list:ClearAllPoints()
+        list:SetPoint("TOPLEFT", categories, "TOPLEFT", CATEGORIES.x, -rowsTop)
+        list:SetSize(math.max(1, categories:GetWidth() - 2 * CATEGORIES.x),
+            math.max(1, categories:GetHeight() - rowsTop - CATEGORIES.bottom))
+        local bar = self.editorSettingsCategoryScrollBar
+        if bar then
+            bar:ClearAllPoints()
+            bar:SetPoint("TOPLEFT", categories, "TOPLEFT", categories:GetWidth() - 31, -(rowsTop + 25))
+            bar:SetPoint("BOTTOMLEFT", categories, "BOTTOMLEFT", categories:GetWidth() - 31, CATEGORIES.bottom + 25)
+        end
     end
     self:LayoutEditorSettingsPanels()
 end
@@ -1387,7 +1470,7 @@ function Options:BuildEditorCpuReadout(editor, level)
     PS.UI.Controls.AttachTooltip(readout, L["PlateSmith's CPU time"], {
         L["The time PlateSmith's code took per frame, on average over the last few seconds (the client's addon "
             .. "profiler), and that as a share of one frame at your current frame rate."],
-        { string.format(L["Refreshed every %d s while Studio is open. Click for the live Performance view (/ps perf)."],
+        { string.format(L["Refreshed every %d s while Studio is open. Click for the live Performance view."],
             CPU_READOUT.interval), 0.86, 0.86, 0.86 },
     })
     self.editorCpuReadout = readout

@@ -22,7 +22,7 @@ local TITLE_NAME_WIDTH, SUMMARY_MIN_WIDTH = 80, 50
 local BUTTONS = { "close", "menu", "lock", "mode", "new-window" }
 local BUTTON_TIPS = {
     close = L["Hide this window"], menu = L["Window menu"], lock = L["Lock or unlock"],
-    mode = L["Switch between threat meter and tank mode"], ["new-window"] = L["New window"],
+    mode = L["Switch mode: threat meter, tank, rescue"], ["new-window"] = L["New window"],
 }
 local STATE_ICONS = { TANK = "icon-tank", LOSING = "icon-tank", LOOSE = "icon-loose", IDLE = "icon-idle", YOU = "icon-you" }
 -- The hold state spelt out in the STATE column (the service's tokens are never shown raw). UNKNOWN:
@@ -364,9 +364,10 @@ local function CreateRow(meter)
     return row
 end
 
--- An unavailable button keeps its disabled art whatever the mouse does.
+-- An unavailable button keeps its disabled art (or, without one in the kit, its normal art, dimmed) whatever the
+-- mouse does.
 local function SetButtonArt(button, state)
-    if button.unavailable then state = "disabled" end
+    if button.unavailable then state = button.drawsDisabledState and "disabled" or "normal" end
     button.state = state
     local theme = button.meter.theme
     local file = Themes.ButtonFile(theme, button.art, state)
@@ -376,6 +377,8 @@ end
 local function CreateButton(meter, kind)
     local button = CreateFrame("Button", nil, meter.titleBar)
     button.meter, button.kind, button.art = meter, kind, kind
+    -- The kit draws a disabled new-window button; the others are dimmed when unavailable.
+    button.drawsDisabledState = kind == "new-window"
     button:SetSize(BUTTON_SIZE, BUTTON_SIZE)
     button.texture = button:CreateTexture(nil, "ARTWORK")
     button:SetScript("OnEnter", function(owner)
@@ -386,6 +389,9 @@ local function CreateButton(meter, kind)
             if owner.unavailable and owner.kind == "new-window" then
                 GameTooltip:AddLine(string.format(L["At most %d threat windows."], Geometry.MAX_WINDOWS),
                     0.72, 0.72, 0.72)
+            elseif owner.unavailable and owner.kind == "close" then
+                GameTooltip:AddLine(L["A Rescue window cannot hide in combat: its click areas are fixed until combat ends."],
+                    1, 0.82, 0.45, true)
             end
             GameTooltip:Show()
         end
@@ -516,6 +522,12 @@ local function CreateFrames(meter)
             .. "a group and drop it anywhere."], 0.8, 0.8, 0.8, true)
         GameTooltip:AddLine(L["Right-click for the window menu; Detach from group takes it out of its group."],
             0.8, 0.8, 0.8, true)
+        if meter.config.mode == "rescue" then
+            GameTooltip:AddLine(L["A Rescue window holds still in combat: its click areas are fixed until combat ends."],
+                1, 0.82, 0.45, true)
+        end
+        GameTooltip:AddLine(" ")
+        meter.console:AddColouringLines(false)
         GameTooltip:Show()
     end)
     titleBar:SetScript("OnLeave", function(owner)
@@ -545,12 +557,25 @@ function Meter:Bind(config)
     self:ApplyTheme()
 end
 
--- The new-window button at the window limit: disabled art, and a click does nothing.
-function Meter:SetNewWindowAvailable(available)
-    local button = self.buttons["new-window"]
+-- A title button that cannot act now looks unavailable (SaveBar.SetAvailable: its disabled art where the kit draws
+-- one, else dimmed) and a click does nothing.
+function Meter:SetButtonAvailable(kind, available)
+    local button = self.buttons[kind]
+    available = available ~= false
+    if button.unavailable == not available then return end
     button.unavailable = not available
-    if button.SetEnabled then button:SetEnabled(available) end
+    local SaveBar = PS.SaveBar
+    if SaveBar then
+        SaveBar.SetAvailable(button, available)
+    elseif button.SetEnabled then
+        button:SetEnabled(available)
+    end
     SetButtonArt(button, "normal")
+end
+
+-- The new-window button at the window limit.
+function Meter:SetNewWindowAvailable(available)
+    self:SetButtonAvailable("new-window", available)
 end
 
 function Meter:Place()
@@ -797,6 +822,15 @@ function Meter:Layout()
     local innerWidth = width - inset * 2
     local y = inset + self:LayoutTitle(inset, theme.kind == "meter" and width or innerWidth)
     if theme.kind == "meter" then y = theme.title end
+    -- Rescue mode (Threat/Rescue.lua) lays out its own cells below the title.
+    local Rescue = PS.ThreatRescue
+    if config.mode == "rescue" and Rescue then
+        Rescue.Layout(self, inset, y, innerWidth)
+        self.grip:SetShown(not config.locked and Rescue.Resizable(self))
+        self.console:MarkDirty()
+        return
+    end
+    if self.rescue and Rescue then Rescue.HideVisuals(self) end
     local rowHeight = config.rowHeight or theme.rowHeight
     local spacing = theme.spacing or 0
     local roomBelow = height - y - inset
@@ -1064,6 +1098,7 @@ end
 -- group's threat on your target, keeping your own row in view (pinned) when it scrolls off.
 function Meter:Render(service)
     local config, body = self.config, self.body
+    if config.mode == "rescue" and PS.ThreatRescue then return PS.ThreatRescue.Render(self, service) end
     local visible = self.visibleRows
     local count, entries, record, summary, noThreat
     if config.mode == "threat" then

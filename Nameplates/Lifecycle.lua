@@ -32,6 +32,11 @@ local AURA_EVENT_INTERVAL = 0.1
 -- budget and a low one still caps the wait) runs whatever the budget says: ADD_OVERDUE_PER_FRAME such
 -- adds a frame, one if a plate was built in the frame. A frame builds at most half a plate on any path
 -- (a timed build is split over two frames, adds.Half).
+-- Login burst: for LOGIN_BURST_SECONDS after login or a loading screen (adds.StartBurst), a frame that follows
+-- a slow one (LOGIN_BURST_SLOW_MS or longer: the loading period) has LOGIN_BURST_SHARE of that frame's length
+-- as its budget, at most LOGIN_BURST_MAX_MS, and may build more than half a plate within it: the player is not
+-- yet playing, so the first wave of names is drawn in a few frames instead of two frames a plate. At a good
+-- frame rate, and after the burst, the normal budget and half a build a frame hold (a city's hitch guard).
 -- CONTEXT_HOLD: after a resting flip is applied, the next is worked out no sooner (a city's edge).
 -- Spares (PlateParts): SPARE_IDLE_MS, or SPARE_IDLE_SHARE of the last frame's length (up to ADD_BUDGET_MS),
 -- is the most plate work a frame may have done for the spares entry to build in it. Warming (SPARE_WARM_*):
@@ -40,7 +45,8 @@ local AURA_EVENT_INTERVAL = 0.1
 local LIMITS = { STATE_INTERVAL = 0.25, STATE_PLATES_PER_FRAME = 4, NATIVE_PLATES_PER_PASS = 4,
     RELATIONSHIP_INTERVAL = 1, ADD_BUDGET_MS = 3, ADD_OVERDUE_FRAMES = 2, ADD_OVERDUE_MS = 50, ADD_OVERDUE_PER_FRAME = 2,
     RAID_FALLBACK_INTERVAL = 0.25, NATIVE_INTERVAL = 2, CONTEXT_HOLD = 2,
-    SPARE_PLATES = 8, SPARE_MAX = 24, SPARE_CROWD = 64, SPARE_IDLE_MS = 1, SPARE_IDLE_SHARE = 0.05, SPARE_DELAY = 2,
+    LOGIN_BURST_SECONDS = 5, LOGIN_BURST_SLOW_MS = 25, LOGIN_BURST_SHARE = 0.5, LOGIN_BURST_MAX_MS = 50,
+    SPARE_PLATES = 8, SPARE_MAX = 24, SPARE_CROWD = 64, SPARE_IDLE_MS = 1, SPARE_IDLE_SHARE = 0.05,
     SPARE_INTERVAL = 0.1, SPARE_WARM = 16, SPARE_WARM_SECONDS = 30, SPARE_CHURN_ADDS = 8, SPARE_CHURN_SECONDS = 2 }
 
 -- Call counts for the performance guards (PS._Test.Counters); plain integers.
@@ -193,7 +199,9 @@ end
 
 -- pulses: plates whose target halo pulses (the animation entry runs only while one does or a
 -- spotlight dims other plates).
-local rounds = { state = {}, native = {}, stateCursor = 0, nativeCursor = 0, clock = 0, targetDueAt = 0, pulses = {} }
+-- plates: how many units have a plate up (active's entries), so the frame's pass knows it has none without a lookup.
+local rounds = { state = {}, native = {}, stateCursor = 0, nativeCursor = 0, clock = 0, targetDueAt = 0, pulses = {},
+    plates = 0 }
 -- Calls of the hooks on Blizzard's plate frames (Diagnostics/Performance.lua reports them).
 rounds.untimed = PS.Performance and PS.Performance.untimed or { hooks = 0 }
 -- The range pass (Nameplates/Range.lua): each checked plate's data.inRange, while a layout reads it.
@@ -209,10 +217,20 @@ local function RegionVisibleState(region)
     return visible == true
 end
 
-local function OwnsAppearance()
-    if db.mode == "own" then return true end
-    if db.mode == "overlay" then return false end
+-- Whether PlateSmith draws the plates itself (settings: the working copy unless given; NamePolicy asks too).
+local function OwnsAppearance(settings)
+    local mode = (settings or db).mode
+    if mode == "own" then return true end
+    if mode == "overlay" then return false end
     return PS.Conflicts.CachedProvider() == nil
+end
+PS.OwnsAppearance = OwnsAppearance
+
+-- Whether PlateSmith draws this plate: as OwnsAppearance says, and an object's too while Blizzard draws the rest with
+-- PlateSmith's extras (objects have no Blizzard style to keep; Extras.lua). Their own Draw object plates still decides.
+function rounds.Owns(object)
+    if OwnsAppearance() then return true end
+    return object == true and db.mode == "overlay" and PS.Conflicts.CachedProvider() == nil
 end
 
 -- friendly: the unit's friendliness (rounds.Friendly), read once by the caller.
@@ -233,6 +251,14 @@ function rounds.Friendly(unit)
     return nil
 end
 
+-- Whether unit is a game object (Secret.IsGameObject, read before the creature's reaction), and its friendliness.
+-- An object has no reaction: friendly is nil, so enemy-only (friendly == false) and friendly-only (== true) work
+-- passes it by, and data.object (not friendly == nil) says it is drawn.
+function rounds.Kind(unit)
+    if Secret.IsGameObject(unit) then return true, nil end
+    return false, rounds.Friendly(unit)
+end
+
 local function GetSettings() return db end
 
 local PlateIdentity = assert(PS._CreatePlateIdentity, "PlateSmith PlateIdentity missing")({
@@ -248,8 +274,10 @@ local SafeColourForUnit = PlateIdentity.SafeColourForUnit
 -- auraWork.pending/order: plates whose rows are read in the frame's aura round (auraWork.Run), oldest
 -- first: a UNIT_AURA's, and a timed add's own aura pass (deferring, set by adds.Now), which waits for
 -- that round so the add draws the name and bars at once and its auras a frame or so later.
+-- auraEvents: UNIT_AURA events had (Auras.lua: an add's reserve read stands for the round's first only
+-- while none came since).
 local auraWork = { ticker = "plates.auras", polls = {}, pending = {}, order = {}, tickerOn = true, deferring = false,
-    frame = 0 }
+    frame = 0, auraEvents = 0 }
 local AURA_ICON_COUNT, CreateAuraRow, UpdateAuras, AurasNeedPoll, AurasPolled
 -- auraWork.Reserve: a timed add's rows shown ahead (Auras.lua's ReserveRows).
 AURA_ICON_COUNT, CreateAuraRow, UpdateAuras, AurasNeedPoll, AurasPolled, auraWork.Reserve =
@@ -330,15 +358,27 @@ end
 
 -- Half a plate (Factory's StartPlate, or FinishPlate on the partial one), so no frame builds a whole
 -- one. Returns true when a plate was finished: it waits in spares.
+-- builtKb, builtPlates: Lua memory the finished plates' halves allocated (Performance.Memory around each
+-- half; halfKb the waiting first half's), for /ps diagnose's estimate of what a plate holds
+-- (performance.spares). A build leaves little garbage, so it reads about a plate's retained size; a
+-- collection step during a half reads low.
+PlateParts.builtKb, PlateParts.builtPlates, PlateParts.halfKb = 0, 0, 0
 function PlateParts.BuildHalf()
+    local Performance = PS.Performance
+    local memory = Performance and Performance.Memory()
     local partial = PlateParts.partial
     if not partial then
         PlateParts.partial = PlateParts.StartPlate(nil)
+        PlateParts.halfKb = memory and Performance.Allocated(memory) or 0
         return false
     end
     PlateParts.partial = nil
     local spares = PlateParts.spares
     spares[#spares + 1] = PlateParts.FinishPlate(partial)
+    if memory then
+        PlateParts.builtKb = PlateParts.builtKb + PlateParts.halfKb + Performance.Allocated(memory)
+        PlateParts.builtPlates = PlateParts.builtPlates + 1
+    end
     return true
 end
 
@@ -390,18 +430,29 @@ function PlateParts.Churn()
 end
 
 -- /ps diagnose's performance.spares: spares built ahead and taken, plates built for adds (two halves
--- each, one a frame), how many wait now, the target, whether it is warmed and how often it was.
+-- each, one a frame), how many wait now, the target, whether it is warmed and how often it was; and the
+-- memory estimate (BuildHalf's): a plate's KiB (kbPerPlate), the waiting spares' (spareKb) and every plate's,
+-- attached and spare (platesKb). Retained: a full collection (performance.memory.retained) leaves them.
 function PlateParts.Report()
     local now = type(GetTime) == "function" and GetTime() or 0
+    local perPlate = PlateParts.builtPlates > 0 and PlateParts.builtKb / PlateParts.builtPlates or nil
+    local function Kb(plates) return perPlate and math.floor(perPlate * plates + 0.5) or "unmeasured" end
     return { builtAhead = counters.sparesBuilt, used = counters.sparesUsed, builtForAdds = counters.platesBuilt,
         buildHalves = counters.buildHalves, waiting = #PlateParts.spares, attached = PlateParts.attached,
-        target = PlateParts.SpareTarget(now), warm = now < PlateParts.warmUntil, warmed = counters.sparesWarmed }
+        target = PlateParts.SpareTarget(now), warm = now < PlateParts.warmUntil, warmed = counters.sparesWarmed,
+        kbPerPlate = perPlate and math.floor(perPlate * 10 + 0.5) / 10 or "unmeasured", spareKb = Kb(#PlateParts.spares),
+        platesKb = Kb(PlateParts.attached + #PlateParts.spares) }
 end
 if PS.Performance then PS.Performance.SpareFigures = PlateParts.Report end
 
--- Spares are built again SPARE_DELAY after login or a loading screen.
-function PlateParts.WarmLater()
-    PlateParts.warmAt = (type(GetTime) == "function" and GetTime() or 0) + LIMITS.SPARE_DELAY
+-- After login or a loading screen spares are built at once, out of combat. Where a crowd is likely (a city
+-- or an instance) the target is warmed (Warm), so the nameplates that come after the first wave take spares;
+-- in the open world (a quiet zone) it is not, and a crowd's own signals warm it when one comes (a run of adds,
+-- Churn; a change into a city). Each plate is retained memory: 56 warmed for nobody was a quiet zone's cost.
+function PlateParts.WarmNow()
+    local now = type(GetTime) == "function" and GetTime() or 0
+    PlateParts.warmAt = now
+    if PS.PlateContext.Current() ~= "world" then PlateParts.Warm(now) end
     PS.Ticker.SetEnabled("plates.spares", true)
 end
 
@@ -508,13 +559,15 @@ local function HideNative(data)
     KeepNativeHidden(data)
 end
 
+-- The frames' flags are put back to false, not nil: a key set to nil and set again after a collection
+-- makes its table grow again (Blizzard's frames, on every reused add).
 local function RestoreNative(data)
     data.hideNative = false
     ListSet(rounds.native, data, "nativeIndex", false)
     for frame in pairs(data.nativeAlphas or EMPTY) do
-        frame.platesmithNativeHidden, frame.platesmithNativeAlpha, frame.platesmithNativeAlphaKept = nil, nil, nil
+        frame.platesmithNativeHidden, frame.platesmithNativeAlpha, frame.platesmithNativeAlphaKept = false, false, false
     end
-    for _, frame in ipairs(data.nativeFrames or EMPTY) do frame.platesmithNativeHidden = nil end
+    for _, frame in ipairs(data.nativeFrames or EMPTY) do frame.platesmithNativeHidden = false end
     for frame, alpha in pairs(data.nativeAlphas or EMPTY) do
         if frame.SetAlpha then rounds.OwnAlpha(frame, alpha) end
     end
@@ -641,6 +694,12 @@ local function HideOwnedParts(data)
     HideCast(data)
     if data.combo then data.combo:Hide() end
     rounds.targetedBy.Release(data)
+    rounds.actionIcon.Release(data)
+    rounds.objectStatus.Release(data)
+    rounds.objectHover.Release(data)
+    rounds.looseMark.Release(data)
+    rounds.backdrop.Release(data)
+    rounds.extras.Clear(data)
     data.buffs:Hide()
     data.debuffs:Hide()
     data.power:Hide()
@@ -721,7 +780,7 @@ local settingsRevision = 1
 -- per settings revision, so hot paths read two booleans: nothing asks for threat or quests while
 -- no layout shows or reads them.
 local plateNeeds = { revision = 0, threat = true, quest = true, questProgress = false, range = false, combo = false,
-    targetedBy = false }
+    targetedBy = false, actionIcon = false, objectKinds = false, objectStatus = false }
 local function PlateNeeds()
     if plateNeeds.revision ~= settingsRevision and db then
         plateNeeds.revision = settingsRevision
@@ -731,6 +790,9 @@ local function PlateNeeds()
         plateNeeds.range = S.RangeNeeded(db)
         plateNeeds.combo = S.ComboNeeded(db)
         plateNeeds.targetedBy = S.TargetedByNeeded(db)
+        plateNeeds.actionIcon = S.ActionIconNeeded(db)
+        plateNeeds.objectKinds = S.ObjectKindsNeeded(db)
+        plateNeeds.objectStatus = S.StatusNeeded(db)
     end
     return plateNeeds
 end
@@ -750,9 +812,19 @@ local function UpdateQuest(data)
     data.questSource = source
     data.questDetail = detail
     data.questRelated = related and true or false
+    -- An object a quest provider lists (object.quest, read by its rules and text): they follow a change.
+    if data.object and data.reads and (data.reads.rules.quest or data.reads.values.quest) then
+        local objectID, listed = Readers.EntryID(data, true), nil
+        if objectID then listed = PS.QuestProgress.ObjectRelevance(objectID) end
+        if data.objectQuest ~= listed then
+            data.objectQuest = listed
+            MarkValues(data, "quest")
+        end
+    end
     local itemDrop = related and PS.QuestProgress.IsItemDrop(source) or false
     data.questItemDrop = itemDrop
-    local shown = related and not QuestIconsDeferred()
+    -- On a plate PlateSmith does not draw, the marker is one of the extras (Extras on Blizzard's plates' Quest markers).
+    local shown = related and not QuestIconsDeferred() and (data.own or db.extrasQuest ~= false)
     data.quest:SetShown(shown and not itemDrop and data.layout.quest.visible ~= false)
     -- One marker, two looks: the quest mark, or the loot bag when the unit drops a quest item.
     data.questLoot:SetShown(shown and itemDrop and data.layout.quest.visible ~= false)
@@ -761,27 +833,32 @@ local function UpdateQuest(data)
     return nowShown ~= wasShown
 end
 
--- Plates whose TAGGED can show (enemy plates with the part on).
+-- Whether an enemy plate reads its tapped state: for TAGGED (the part on), and for the health bar's grey (Grey
+-- when tagged by others on, the bar on). Two answers, text and grey.
 local function TaggedWanted(data)
-    return data.own and data.friendly == false and not data.namesOnly
-        and data.layout.tagged.visible ~= false or false
+    if not (data.own and data.friendly == false and not data.namesOnly) then return false, false end
+    local layout = data.layout
+    return layout.tagged.visible ~= false, db.greyWhenTagged == true and layout.health.visible ~= false
 end
 
+-- One read of the tapped state (fail closed: protected or unknown is not tapped) for both. data.taggedGrey:
+-- the health bar greys (ApplyPartRules, through ThreatColours.GreyWhenTagged). Returns what changed.
 local function UpdateTaggedState(data)
-    local shown = false
-    if TaggedWanted(data) then shown = Secret.ReadBoolean(UnitIsTapDenied, data.unit) == true end
-    local changed = data.taggedShown ~= shown
+    local text, grey = TaggedWanted(data)
+    local tapped = (text or grey) and Secret.ReadBoolean(UnitIsTapDenied, data.unit) == true
+    local shown = text and tapped or false
+    local greyed = PS.ThreatColours.GreyWhenTagged(db, grey, tapped) ~= nil
+    local changed, greyChanged = data.taggedShown ~= shown, data.taggedGrey ~= greyed
     if changed then data.tagged:SetShown(shown) end
-    data.taggedShown = shown
-    return changed
+    data.taggedShown, data.taggedGrey = shown, greyed
+    return changed, greyChanged
 end
 
--- Rules and stacks follow only a change.
+-- Rules follow only a change (the grey is the health bar's rule colour), stacks only the word's.
 local function UpdateTagged(data)
-    if UpdateTaggedState(data) then
-        MarkRules(data)
-        MarkStacks(data)
-    end
+    local changed, greyChanged = UpdateTaggedState(data)
+    if changed or greyChanged then MarkRules(data) end
+    if changed then MarkStacks(data) end
 end
 
 local relationshipTextures = {
@@ -807,24 +884,20 @@ local function UpdateRelationshipIcon(data)
     data.relationshipIcon:Show()
 end
 
-local pvpTextures = {
-    Alliance = "Interface\\TargetingFrame\\UI-PVP-Alliance",
-    Horde = "Interface\\TargetingFrame\\UI-PVP-Horde",
-    FFA = "Interface\\TargetingFrame\\UI-PVP-FFA",
-}
+local PvPMark = PS.PvPMark
 
--- Returns whether the mark changed (data.pvpState: its texture or "none"; nil after a layout).
+-- Returns whether the mark changed (data.pvpState: its emblem's state or "none"; nil after a layout).
 local function UpdatePvPIcon(data)
-    local texture
+    local state
     if data.own and data.profileKey == "friendlyPlayer" and data.layout.pvpIcon.visible ~= false
         and (db.friendlyPvpStyle == "icon" or db.friendlyPvpStyle == "both") then
-        texture = pvpTextures[PlateIdentity.FriendlyPvPState(data.unit)]
+        state = PlateIdentity.FriendlyPvPState(data.unit)
+        if not PvPMark.TEXTURES[state] then state = nil end
     end
-    local state = texture or "none"
+    state = state or "none"
     if data.pvpState == state then return false end
     data.pvpState = state
-    if texture then
-        data.pvpIcon:SetTexture(texture)
+    if PvPMark.Apply(data.pvpIcon, state) then
         data.pvpIcon:Show()
     else
         data.pvpIcon:Hide()
@@ -832,16 +905,18 @@ local function UpdatePvPIcon(data)
     return true
 end
 
-local function UpdateClassification(data)
-    if not data.own or data.friendly ~= false
-        or data.layout.classification.visible == false or type(UnitClassification) ~= "function" then
+-- The Elite / rare mark in the plate's style (data.markStyle; kind: ClassificationMark.Read's, nil while withheld),
+-- and its Bar frame round the health bar (rounds.MarkFrame).
+local function UpdateClassification(data, kind)
+    local style = data.own and data.friendly == false and data.markStyle or nil
+    if not style then
         data.classification:Hide()
         data.classificationIcon:Hide()
+        rounds.MarkFrame(data, nil)
         return
     end
-    local ok, kind = pcall(UnitClassification, data.unit)
-    PS.ApplyClassificationMark(data.classification, data.classificationIcon,
-        ok and IsReadable(kind) and kind or nil, db.classificationStyle)
+    PS.ClassificationMark.Apply(data.classification, data.classificationIcon, kind, style)
+    rounds.MarkFrame(data, style == "frame" and kind or nil)
 end
 
 -- Target of target: the name of whoever this unit targets, coloured by class. In dungeons the
@@ -877,13 +952,28 @@ local function UpdateTargetName(data)
     end
 end
 
--- The unit's level: "??" for a level the client hides (-1); a protected level goes to the sink.
-local function ApplyLevelText(region, unit)
-    local ok, level = pcall(UnitLevel, unit)
+-- The unit's level: "??" for a level the client hides (-1); a protected level goes to the sink. An enemy's Elite
+-- / rare mark style may change it (ClassificationMark.LevelText: Level suffix's letters, the Classic dragon's boss
+-- skull); a protected level is never joined to anything in Lua: it shows alone, in the mark's colour where the
+-- classification is readable (fail closed: the plain level otherwise).
+local function ApplyLevelText(data, kind, style)
+    local region, Mark = data.level, PS.ClassificationMark
     local SetPlateText = PlateIdentity.SetPlateText
+    if Mark.SkullForLevel(kind, style) then
+        SetPlateText(region, Mark.LevelText(-1, kind, style, data.markSkull))
+        return
+    end
+    local ok, level = pcall(UnitLevel, data.unit)
     if ok and IsReadable(level) and type(level) == "number" then
-        SetPlateText(region, level < 0 and "??" or level)
-    elseif not (ok and HasValue(level) and SetPlateText(region, level)) then
+        SetPlateText(region, Mark.LevelText(level, kind, style))
+        return
+    end
+    local format = ok and HasValue(level) and Mark.ProtectedLevelFormat(kind, style)
+    if format then
+        region.plateSmithText = nil
+        if pcall(region.SetFormattedText, region, format, level) then return end
+    end
+    if not (ok and HasValue(level) and SetPlateText(region, level)) then
         SetPlateText(region, "")
     end
 end
@@ -910,7 +1000,10 @@ local function UpdateIdentity(data)
     elseif not (HasValue(displayName) and SetPlateText(data.name, displayName)) then
         SetPlateText(data.name, "")
     end
-    ApplyLevelText(data.level, unit)
+    -- The Elite / rare mark (an enemy's: one read for its mark and its level).
+    local markStyle = data.own and data.friendly == false and data.markStyle or nil
+    local kind = markStyle and PS.ClassificationMark.Read(unit) or nil
+    ApplyLevelText(data, kind, markStyle)
     -- The guild line: written only when the guild differs from the one shown (plateSmithGuild).
     local guild, guildName = data.guild, nil
     if data.own and data.profileKey == "friendlyPlayer" and data.layout.guild.visible ~= false
@@ -923,11 +1016,21 @@ local function UpdateIdentity(data)
         guild.plateSmithGuild = guildName
     end
     guild:SetShown(guildName ~= nil)
-    local r, g, b = SafeColourForUnit(unit, data.friendly, data.relationship, data.profileKey == "friendlyPlayer")
-    data.name:SetTextColor(r, g, b)
+    local r, g, b = SafeColourForUnit(unit, data.friendly, data.relationship, data.profileKey == "friendlyPlayer",
+        data.object)
+    -- A PvP-flagged ally's colour: on the bar where it shows one in the automatic colour, else on the name.
+    local pvp = data.friendly and not data.object and PlateIdentity.FriendlyPvPColour(unit) or nil
+    local pvpOnBar = pvp ~= nil and PvPMark.ColourOnBar(db, data.profile, not data.namesOnly and not S.TurnedOff(data.layout.health))
+    if pvp and not pvpOnBar then
+        data.name:SetTextColor(pvp.r, pvp.g, pvp.b)
+    else
+        data.name:SetTextColor(r, g, b)
+    end
     if data.profile.healthColourMode == "custom" then
         local colour = data.profile.healthColour
         data.health:SetStatusBarColor(colour.r, colour.g, colour.b)
+    elseif pvpOnBar then
+        data.health:SetStatusBarColor(pvp.r, pvp.g, pvp.b)
     else
         data.health:SetStatusBarColor(r, g, b)
     end
@@ -936,7 +1039,7 @@ local function UpdateIdentity(data)
     addPhases.Stop("quest", questStarted, questNested)
     UpdateRelationshipIcon(data)
     UpdatePvPIcon(data)
-    UpdateClassification(data)
+    UpdateClassification(data, kind)
     UpdateTargetName(data)
     MarkRules(data)
     MarkStacks(data)
@@ -979,6 +1082,35 @@ rounds.targetGlow = assert(PS._CreatePlateTargetGlow, "PlateSmith PlateTargetGlo
 rounds.targetedBy = assert(PS._CreatePlateTargetedBy, "PlateSmith PlateTargetedBy missing")({
     active = active, RunBatch = RunBatch, MarkStacks = MarkStacks, Styles = Styles,
     AnchorPart = Placement.AnchorPart, ApplyNameplateFont = ApplyNameplateFont,
+})
+-- The Action icon and its facts on Objects and Friendly NPCs plates (ActionIcon.lua).
+rounds.actionIcon = assert(PS._CreatePlateActionIcon, "PlateSmith PlateActionIcon missing")({
+    active = active, RunBatch = RunBatch, MarkStacks = MarkStacks, MarkValues = MarkValues, Styles = Styles,
+    AnchorPart = Placement.AnchorPart,
+    -- (rounds.ObjectChanged is defined with ApplyLayout, below.)
+    ObjectChanged = function(data, typeChanged) rounds.ObjectChanged(data, typeChanged) end,
+})
+-- The Objects plate's Status text and its facts (ObjectStatus.lua).
+rounds.objectStatus = assert(PS._CreatePlateObjectStatus, "PlateSmith PlateObjectStatus missing")({
+    active = active, RunBatch = RunBatch, MarkStacks = MarkStacks, MarkValues = MarkValues, Styles = Styles,
+    AnchorPart = Placement.AnchorPart, EntryID = function(data) return Readers.EntryID(data, true) end,
+    -- (rounds.ObjectFade is defined below.)
+    ObjectFade = function(data) rounds.ObjectFade(data) end,
+})
+-- Hovering an Objects plate's name: the interaction cursor and a tooltip (ObjectHover.lua).
+rounds.objectHover = assert(PS._CreatePlateObjectHover, "PlateSmith PlateObjectHover missing")({
+    active = active, GetSettings = GetSettings, EntryID = function(data) return Readers.EntryID(data, true) end,
+})
+-- PlateSmith's extras on Blizzard's own plates (Extras.lua), and the Loose mark (LooseMark.lua): the Enemies part, or
+-- one of those extras.
+rounds.extras = assert(PS._CreatePlateExtras, "PlateSmith PlateExtras missing")({ GetSettings = GetSettings })
+rounds.looseMark = assert(PS._CreatePlateLooseMark, "PlateSmith PlateLooseMark missing")({
+    Styles = Styles, AnchorPart = Placement.AnchorPart, MarkStacks = MarkStacks, PlaceExtra = rounds.extras.PlaceLoose,
+})
+-- The Objects' Backdrop (Backdrop.lua): placed in the flush's visibility pass, after what it wraps.
+rounds.backdrop = assert(PS._CreatePlateBackdrop, "PlateSmith PlateBackdrop missing")({
+    Transforms = Placement.Transforms, SafeSize = Placement.SafeSize, AnchorPart = Placement.AnchorPart,
+    RegionAlpha = Placement.RegionAlpha,
 })
 
 local function UpdateHealth(data)
@@ -1089,6 +1221,11 @@ end
 local ApplyHealthBorder
 do
     local BORDER_COLOURS = { warning = { 1, 0.12, 0.08, 1 }, target = { 1, 0.82, 0.12, 1 }, plain = { 0.05, 0.05, 0.05, 1 } }
+    -- Gold only while the design's target highlight is on (UpdateTarget's targetGlowStyle), or for a
+    -- profile saved before 1.2.1, whose Highlight Off kept the edge (targetOffKeepsEdge).
+    local function TargetEdge(data)
+        return data.targeted == true and (data.targetGlowStyle ~= "off" or db.targetOffKeepsEdge == true)
+    end
     -- With Threat colours on the edge, the threat colour (its table is the state) comes first.
     ApplyHealthBorder = function(data)
         local threat = PS.ThreatColours.ForPlate(data, "border")
@@ -1101,7 +1238,7 @@ do
             end
         end
         local state = "plain"
-        if threat then state = threat elseif data.tankWarning then state = "warning" elseif data.targeted then state = "target" end
+        if threat then state = threat elseif data.tankWarning then state = "warning" elseif TargetEdge(data) then state = "target" end
         if data.borderState == state then return end
         data.borderState = state
         if threat then
@@ -1113,17 +1250,75 @@ do
     end
 end
 
+-- Where the health bar's edges sit: the plate's edge (healthBorder: its dark line, the gold target edge, the red
+-- tank warning or a threat colour) 1 px out, the target's steady edge 1 px and its halo 3 px out (Factory), each
+-- moved outset px further while the Bar frame mark's rings sit round the bar (rounds.MarkFrame). Placed only when
+-- that changes, or when the target glows are made later.
+function rounds.PlaceHealthEdges(data, outset)
+    local glows, was = data.targetBarGlows, data.edgeOutset or 0
+    if was == outset and (outset == 0 or data.edgeGlows == glows) then
+        data.edgeOutset = outset
+        return
+    end
+    data.edgeOutset, data.edgeGlows = outset, glows
+    local Place, health = PS.ClassificationMark.PlaceRing, data.health
+    Place(data.healthBorder, health, 1 + outset)
+    if glows then
+        Place(glows[1].steady, health, 1 + outset)
+        Place(glows[1].pulse, health, 3 + outset)
+    end
+end
+
+-- The Bar frame mark: kind's rings (ClassificationMark.PaintFrame) right outside the health bar and its own border,
+-- or none (kind nil). Precedence: the frame sits inside, next to the bar; the plate's edge and the target's halo
+-- move out past it, so the target, tank warning and threat colours stay the outermost line and neither covers
+-- the other, targeted or not.
+function rounds.MarkFrame(data, kind)
+    local outset = 0
+    if kind or data.markRings then
+        local style = data.profile and data.profile.styles and data.profile.styles.health
+        local border = style and tonumber(style.border) or 0
+        local width = PS.ClassificationMark.PaintFrame(data, data.health, kind, border)
+        if width > 0 then outset = border + width end
+    end
+    rounds.PlaceHealthEdges(data, outset)
+end
+
+-- The Elite / rare mark's sizes in the plate's style: its icon (ClassificationMark.IconSize), or the Classic
+-- dragon drawn at the level's text height (data.markDragon: its scale; data.markSkull: a boss's skull, px).
+function rounds.MarkGeometry(data, levelSize)
+    local Mark, style, icon = PS.ClassificationMark, data.markStyle, data.classificationIcon
+    data.markDragon, data.markSkull = nil, nil
+    if style == "dragon" then
+        local styles = data.profile.styles
+        local height = S.ScaledFontSize(S.StyledFontSize(levelSize, styles and styles.level), db.textScale)
+        local scale = Mark.DragonScale(height)
+        data.markDragon, data.markSkull = scale, height * Mark.DRAGON.SKULL
+        icon:SetSize(Mark.DRAGON.WIDTH * scale, Mark.DRAGON.HEIGHT * scale)
+    else
+        local size = Mark.IconSize(db, data.profile, style)
+        icon:SetSize(size, size)
+    end
+end
+
 local function UpdateTarget(data)
     local targeted = SameUnit(data.unit, "target")
-    -- The plate's own design's highlight (its own values over the general settings).
-    local highlight = targeted and data.own and rounds.targetGlow.Highlight(data, db) or nil
+    -- The plate's own design's highlight (its own values over the general settings); never an object's.
+    local highlight = targeted and data.own and not data.object and rounds.targetGlow.Highlight(data, db) or nil
     local showHighlight = highlight ~= nil and highlight.targetHighlightStyle ~= "off"
     local style = showHighlight and highlight.targetHighlightStyle or "off"
     local changed = data.targeted ~= targeted
     data.targeted = targeted
     if changed then PS.Stacking.PlateTargeted(data, targeted) end
+    -- Blizzard's plate with PlateSmith's extras: the target's glow behind it (Extras.lua).
+    if data.extras then rounds.extras.Target(data, targeted, db) end
     -- The state pass keeps an eye on the highlighted plate (StateTick).
-    if targeted then rounds.targetPlate = data elseif rounds.targetPlate == data then rounds.targetPlate = nil end
+    if targeted then
+        rounds.targetPlate = data
+        rounds.Wake("plates.state")
+    elseif rounds.targetPlate == data then
+        rounds.targetPlate = nil
+    end
     if data.targetGlowStyle ~= style then
         changed = true
         data.targetGlowStyle = style
@@ -1135,6 +1330,8 @@ local function UpdateTarget(data)
         -- data.targetGlowsHidden: every glow was hidden here or by RemovePlate, their only writers
         -- (they are made hidden), so hiding them again writes nothing.
         local glows = data.targetBarGlows or (edges and PlateParts.EnsureTargetGlows(data)) or EMPTY
+        -- Glows made now start in their own places: outside a Bar frame mark, they move out with the plate's edge.
+        if (data.edgeOutset or 0) > 0 then rounds.PlaceHealthEdges(data, data.edgeOutset) end
         if edges or not data.targetGlowsHidden then
             for _, glow in ipairs(glows) do
                 glow.steady:SetShown(edges)
@@ -1171,19 +1368,23 @@ end
 
 local function UpdateThreat(data)
     -- The edge goes after the record is forgotten: a threat colour reads it.
-    if data.friendly or not PlateNeeds().threat then
+    -- An object is never on a threat table, and is not offered to the threat service.
+    if data.friendly or data.object or not PlateNeeds().threat then
         data.tankWarning = false
         if not (data.threatValuesSet and data.threatInfo == nil) then
             data.threat:Hide()
             data.threat:SetText("")
             ThreatText.Forget(data.threat)
             data.threatTextInfo, data.threatTextRevision = nil, nil
-            UpdateThreatValues(data, nil, data.friendly == true)
+            UpdateThreatValues(data, nil, data.friendly == true or data.object == true)
         end
         ApplyHealthBorder(data)
+        rounds.looseMark.Update(data, nil, db)
+        rounds.extras.Threat(data, db)
         return
     end
-    local showCombined = data.layout.threat.visible ~= false
+    -- On a plate PlateSmith does not draw, the text is one of the extras (Threat: Text, or Text and edge).
+    local showCombined = data.layout.threat.visible ~= false and (data.own or S.EXTRAS.Text(db))
     data.threat:SetShown(showCombined)
     local info = ThreatRecord(data.unit)
     local service = PS.ThreatService
@@ -1203,6 +1404,8 @@ local function UpdateThreat(data)
         data.tankWarning = false
         UpdateThreatValues(data, nil, info ~= nil)
         ApplyHealthBorder(data)
+        rounds.looseMark.Update(data, nil, db)
+        rounds.extras.Threat(data, db)
         return
     end
     -- Written once per refresh of the record (its revision), not on every state visit.
@@ -1214,8 +1417,13 @@ local function UpdateThreat(data)
         data.threatTextInfo, data.threatTextRevision = info, revision
     end
     UpdateThreatValues(data, info)
-    data.tankWarning = db.tankWarning and data.own and service ~= nil and service:GetPlayerRole() == "TANK" and info.tanking == false
+    -- The role Threat colours use: the profile's fixed one (threatColourRole), else this character's.
+    data.tankWarning = db.tankWarning == true and data.own == true and info.tanking == false
+        and PS.ThreatColours.IsTank(db, PS.ThreatColours.PlayerTanks) == true
     ApplyHealthBorder(data)
+    -- The Loose mark and, on Blizzard's plates, the threat edge follow the record (LooseMark.lua, Extras.lua).
+    rounds.looseMark.Update(data, info, db)
+    rounds.extras.Threat(data, db)
 end
 
 
@@ -1298,9 +1506,14 @@ local function ApplyAppearance(data)
     StyledFont(data, "threat", data.threat, detailFontSize)
     StyledFont(data, "tagged", data.tagged, math.max(8, profile.nameFontSize - 3))
     StyledFont(data, "classification", data.classification, detailFontSize)
+    rounds.MarkGeometry(data, detailFontSize)
     rounds.CastGeometry(data)
     rounds.combo.ApplyAppearance(data)
     rounds.targetedBy.ApplyAppearance(data)
+    rounds.actionIcon.ApplyAppearance(data)
+    rounds.objectStatus.ApplyAppearance(data)
+    rounds.looseMark.ApplyAppearance(data)
+    rounds.backdrop.ApplyAppearance(data)
     for _, key in ipairs(STYLED_TEXTS) do Styles.StyledBox(data, key, data[key]) end
     -- A custom part this plate's layout does not use is not made; one it uses is made here, before
     -- the layout places it.
@@ -1358,56 +1571,50 @@ local function HookStackFrames(data)
     end
 end
 
--- Rules (a part's "when ... set ..."), in list order: of the rules that hold, the last one that
--- sets colour (a colour, or a blend by health) sets it, the last opacity rule sets opacity, and
--- any hide rule hides. With none, the part keeps its normal style.
--- An empty condition always holds. Colour goes over the part's own colour (restored when no
--- rule sets it); opacity and hide are its alpha, combined with hiding under a hidden parent. A
--- blend whose health % is protected leaves the part's own colour.
-local function RuleHolds(data, when)
-    if when == nil or (type(when) == "string" and not when:find("%S")) then return true end
-    local tree = PS.Template.CompileCondition(when)
-    return tree ~= nil and PS.Template.Test(tree, Readers.Get(data))
-end
+-- Rules (a part's "when ... set ..."): which apply is PS.StyleRules.Resolve's answer, shared with Studio's preview.
+-- With none, the part keeps its normal style. Colour goes over the part's own colour (restored when no rule sets it);
+-- opacity and hide are its alpha, combined with hiding under a hidden parent. A blend whose health % is protected
+-- leaves the part's own colour.
+local StyleRules = PS.StyleRules
 
 -- One part's rules onto its regions (marked in now).
 local function ApplyPartRules(data, key, list, now)
     if not (data.own and data.layout and data.layout[key]) then return end
     local first, second = PartRegions(data, key)
     if not first then return end
-    local colourRule, alpha, hide
-    for _, rule in ipairs(list) do
-        if rule.enabled ~= false and RuleHolds(data, rule.when) then
-            local set = rule.set
-            if set == "colour" or set == "blend" then colourRule = rule
-            elseif set == "alpha" then alpha = rule.alpha
-            elseif set == "hide" then hide = true end
-        end
-    end
-    local r, g, b, folded
-    if colourRule and colourRule.set == "colour" then
-        local colour = colourRule.colour
-        if type(colour) == "table" then r, g, b = colour.r, colour.g, colour.b end
-    elseif colourRule then
-        r, g, b = Styles.BlendColour(colourRule.stops, Readers.Get(data)("health.percent"))
+    -- after: the first rule after the last colour rule that holds.
+    local colourRule, alpha, hide, after = StyleRules.Resolve(list, list[1] ~= nil and Readers.Get(data) or nil)
+    -- The part's colour: the last colour rule that holds, else the health bar's grey on a tagged mob (Grey when
+    -- tagged by others), else Threat colours (ThreatColours.lua), readable or folded (picked inside the client
+    -- from protected answers; r, g, b then reach a setter only), else none (r nil: the part's own).
+    local ThreatColours = PS.ThreatColours
+    local folded, r, g, b = false
+    if colourRule then
+        r, g, b = StyleRules.Colour(colourRule, Readers.Get(data))
+    elseif key == "health" and data.taggedGrey then
+        local grey = ThreatColours.TAGGED_GREY
+        r, g, b = grey.r, grey.g, grey.b
     else
-        -- No rule colours it: Threat colours may (Nameplates/ThreatColours.lua), picked inside the
-        -- client when only protected answers say who holds it (r, g, b then reach the setter only).
-        local threat = PS.ThreatColours.ForPlate(data, key)
+        local threat = ThreatColours.ForPlate(data, key)
         if threat then
             r, g, b = threat.r, threat.g, threat.b
         else
-            folded, r, g, b = PS.ThreatColours.FoldForPlate(data, key)
-            if folded ~= true then folded, r, g, b = nil, nil, nil, nil end
+            folded, r, g, b = ThreatColours.FoldForPlate(data, key)
         end
     end
+    -- Colour rules after it that only protected threat answers decide are folded over it (or over
+    -- the region's own colour) by the same answers; a colour the setter refuses leaves it as above.
+    local read = after <= #list and ThreatColours.RulesFoldable(data) and Readers.Get(data)
     for index = 1, 2 do
         local region = index == 1 and first or second
         if region then
-            if not folded then
-                Styles.RuleColour(region, r, g, b)
-            elseif not Styles.FoldedRuleColour(region, r, g, b) then
-                Styles.RuleColour(region)
+            local picked, pr, pg, pb = false, nil, nil, nil
+            if read then
+                local under, ur, ug, ub = Styles.ColourUnderRule(region, folded, r, g, b)
+                if under then picked, pr, pg, pb = ThreatColours.FoldRules(data, list, after, read, ur, ug, ub) end
+            end
+            if not (picked and Styles.FoldedRuleColour(region, pr, pg, pb)) then
+                Styles.ApplyRuleColour(region, folded, r, g, b)
             end
             region.plateSmithRuleAlpha = hide and 0 or alpha
             region.plateSmithRuleHidden = hide or nil
@@ -1421,16 +1628,18 @@ local function ApplyRules(data)
     local rules = profile and profile.rules
     local touched = data.ruleRegions
     local ThreatColours = PS.ThreatColours
-    local threat = ThreatColours.Wanted(data)
-    if not touched and not (rules and next(rules)) and not threat then return end
+    local threat, grey = ThreatColours.Wanted(data), data.taggedGrey == true
+    if not touched and not (rules and next(rules)) and not threat and not grey then return end
     -- The regions ruled this time go into the plate's spare table; the two swap each call.
     local now = data.ruleSpare or {}
     data.ruleSpare = nil
     for key, list in pairs(rules or EMPTY) do ApplyPartRules(data, key, list, now) end
-    -- Threat colours go on like a rule's colour, under any rule of the part's own.
-    if threat then
+    -- Threat colours and the tagged grey go on like a rule's colour, under any rule of the part's own.
+    if threat or grey then
         for _, key in ipairs(ThreatColours.RULE_PARTS) do
-            if not (rules and rules[key]) and ThreatColours.Colours(data, key) then ApplyPartRules(data, key, EMPTY, now) end
+            if not (rules and rules[key]) and ((grey and key == "health") or (threat and ThreatColours.Colours(data, key))) then
+                ApplyPartRules(data, key, EMPTY, now)
+            end
         end
     end
     -- Parts whose rules went away go back to their own style.
@@ -1490,6 +1699,7 @@ local function RunFlush(data)
     if data.dirtyVisibility then
         data.dirtyVisibility = false
         ApplyParentVisibility(data)
+        rounds.backdrop.Sync(data)
     end
     addPhases.Stop("placement", started, nested)
 end
@@ -1531,15 +1741,21 @@ DisableRestrictedOverlay = function(data, reason)
     ClearDirty(data)
 end
 
--- Plates with time-based work (threat, TAGGED: enemy plates), visited round-robin by the state pass
--- a few a frame. A friendly plate has none, so a city of players costs the state pass nothing.
+-- Plates with time-based work (threat, TAGGED and the tagged grey: enemy plates), visited round-robin by the
+-- state pass a few a frame. A friendly plate has none, so a city of players costs the state pass nothing.
 function rounds.StateWanted(data)
-    return data.own and data.friendly == false and (PlateNeeds().threat or TaggedWanted(data)) or false
+    if data.friendly ~= false then return false end
+    -- A plate PlateSmith does not draw: the overlay's threat text, and on Blizzard's plates the threat edge and the
+    -- Loose mark, follow the fight too.
+    if not data.own then return PlateNeeds().threat == true end
+    local text, grey = TaggedWanted(data)
+    return (PlateNeeds().threat or text or grey) and true or false
 end
 
 function rounds.SetState(data, wanted)
     if wanted and not data.stateIndex then data.stateDueAt = 0 end
     ListSet(rounds.state, data, "stateIndex", wanted)
+    if wanted then rounds.Wake("plates.state") end
 end
 
 -- A part's layer frame is hidden while the layout turns the part off, and a custom part's holder
@@ -1562,24 +1778,43 @@ local function ApplyLayout(data)
     counters.applyLayout = counters.applyLayout + 1
     -- Laid out now: a relayout still waiting for a change of place (adds.relayouts) is not needed.
     data.relayoutFrame = nil
-    data.own = OwnsAppearance()
-    data.friendly = rounds.Friendly(data.unit)
+    local object
+    object, data.friendly = rounds.Kind(data.unit)
+    data.object = object
+    data.own = rounds.Owns(object)
+    -- The threat service never tracks an object; one the unit was before it became an object goes now.
+    if object and PS.ThreatService then PS.ThreatService:UntrackEnemy(data.unit) end
     local restrictedFriendly = RestrictedFriendly(data.friendly)
     data.restrictedFriendly = restrictedFriendly
     data.restrictedOverlayEnabled = restrictedFriendly
         and db.experimentalDungeonFriendlyText and data.own
     -- The plate type, then its design for where the player is (World, or a context design). A kind
     -- change has just read the plate type (KindChanged): one UnitIsPlayer read, not two.
-    data.profileKey = data.nextProfileKey or PlateIdentity.ProfileKeyForUnit(data.unit, data.friendly)
+    data.profileKey = data.nextProfileKey or PlateIdentity.ProfileKeyForUnit(data.unit, data.friendly, object)
     data.nextProfileKey = nil
     data.design = PS.PlateContext.DesignFor(data.profileKey)
-    data.profile = PS.Designs.For(db, data.profileKey, data.design) or db.plateProfiles.enemy
-    data.namesOnly = not restrictedFriendly and data.friendly and db.friendly == "names"
+    -- An object draws with its type's layer over that design (Designs' object types), the type from the game's cursor
+    -- icon (ActionIcon.TYPE_OF); unknown, or no type read: All objects.
+    data.objectType = object and rounds.actionIcon.TypeFor(data) or nil
+    data.profile = PS.Designs.For(db, data.profileKey, data.design, data.objectType) or db.plateProfiles.enemy
+    -- An object is the Objects plate type's names-only plate (its one layout), or Blizzard's own while
+    -- Draw object plates says so (objectPlates: drawn as a friendly type's Blizzard plates, "off").
+    local showAs
+    if object then showAs = db.objectPlates == "blizzard" and "off" or "names"
+    else showAs = data.friendly and S.FRIENDLY.Mode(db, data.profileKey) end
+    data.namesOnly = object or (not restrictedFriendly and data.friendly and showAs == "names")
     data.layout = restrictedFriendly and data.profile.dungeonNamesLayout
         or (data.namesOnly and data.profile.namesLayout or data.profile.layout)
+    -- An enemy's Elite / rare mark style may place the mark and the level (Classic dragon, Before the name) over
+    -- the layout, never in it (Schema's MARK); data.markStyle: the style its mark is drawn in (nil: none).
+    data.markStyle = nil
+    if data.friendly == false then
+        data.layout = S.MARK.Layout(data.layout, db.classificationStyle)
+        data.markStyle = PS.ClassificationMark.StyleFor(db, data.layout)
+    end
     -- What each update compares against is read again for a fresh plate or new settings.
     data.healthValue, data.healthMaxValue, data.powerRead = nil, nil, nil
-    data.threatValuesSet, data.taggedShown, data.pvpState = nil, nil, nil
+    data.threatValuesSet, data.taggedShown, data.taggedGrey, data.pvpState = nil, nil, nil, nil
     data.threatTextInfo, data.threatTextRevision = nil, nil
     -- What the plate's custom parts and rules read (MarkValues skips the rest).
     data.reads = Readers.PlateReads(data.profile, data.layout, settingsRevision)
@@ -1589,8 +1824,10 @@ local function ApplyLayout(data)
     -- A plate PlateSmith does not draw (unknown, restricted without the opt-in text, friendly off)
     -- is only hidden below: it is not styled for its own layout, so a frame the client hands to a
     -- party member between pulls is still prepared for the enemy it comes back to.
-    local undrawn = data.friendly == nil or (restrictedFriendly and not data.restrictedOverlayEnabled)
-        or (data.friendly and db.friendly == "off")
+    local unknown = data.friendly == nil and not object
+    -- An object type may hide its plates (its Hide these plates: plateHidden).
+    local hidden = object and showAs ~= "off" and data.profile.plateHidden == true
+    local undrawn = unknown or (restrictedFriendly and not data.restrictedOverlayEnabled) or showAs == "off" or hidden
     if not prepared and not undrawn then
         data.preparedLayout, data.valuesCleared = nil, nil
         data.overlay:SetScale(data.profile.scale)
@@ -1609,7 +1846,16 @@ local function ApplyLayout(data)
     end
     rounds.SetState(data, rounds.StateWanted(data))
 
-    if data.friendly == nil or restrictedFriendly or (data.friendly and db.friendly == "off") then
+    if hidden then
+        -- Nothing drawn, Blizzard's plate kept hidden while PlateSmith draws objects; the type is still read, so an
+        -- object that becomes another type shows again.
+        HideOwnedParts(data)
+        if data.own then HideNative(data) else RestoreNative(data) end
+        data.overlay:Hide()
+        rounds.actionIcon.Update(data)
+        return
+    end
+    if unknown or restrictedFriendly or showAs == "off" then
         -- The opt-in text lays the plate out for the dungeon names layout.
         if not undrawn then data.preparedLayout = nil end
         HideOwnedParts(data)
@@ -1643,6 +1889,7 @@ local function ApplyLayout(data)
 
     data.overlay:Show()
     if data.own then
+        rounds.extras.Clear(data)
         HideNative(data)
         data.name:SetShown(data.layout.name.visible ~= false)
         data.health:SetShown(not data.namesOnly and data.layout.health.visible ~= false)
@@ -1676,10 +1923,8 @@ local function ApplyLayout(data)
         data.guild:Hide()
         data.targetName:Hide()
         data.name:Hide()
-        data.threat:ClearAllPoints()
-        data.threat:SetPoint("BOTTOM", data.overlay, "TOP", 0, 2)
-        data.quest:ClearAllPoints()
-        data.quest:SetPoint("RIGHT", data.threat, "LEFT", -4, 0)
+        -- The threat text and quest marker, and on Blizzard's own plates the other extras (Extras.lua).
+        rounds.extras.Apply(data, db)
         data.raidIcon:Hide()
         data.relationshipIcon:Hide()
         data.pvpIcon:Hide()
@@ -1695,6 +1940,11 @@ local function ApplyLayout(data)
     UpdatePower(data)
     UpdateTarget(data)
     rounds.targetedBy.Update(data)
+    rounds.actionIcon.Update(data)
+    rounds.objectStatus.Update(data)
+    rounds.backdrop.Update(data)
+    rounds.objectHover.Update(data)
+    rounds.ObjectFade(data)
     local threatStarted, threatNested = addPhases.Start()
     UpdateThreat(data)
     addPhases.Stop("threat", threatStarted, threatNested)
@@ -1727,6 +1977,9 @@ local function AddPlate(unit)
     if root.IsForbidden and root:IsForbidden() then return end
 
     local data = root.PlateSmithData
+    -- The client handed this nameplate to another unit before the old one's removal arrived: that
+    -- plate is released first, so the late removal cannot take down the new unit's (rounds.RemovePlate).
+    if data and data.unit and data.unit ~= unit then rounds.RemovePlate(data.unit) end
     if not data then
         data = PlateParts.TakeSpare(root)
         if not data then
@@ -1743,7 +1996,10 @@ local function AddPlate(unit)
     data.buffsIndexError, data.debuffsIndexError = nil, nil
     -- For /ps diagnose: when it was added, and how long it waited (and hid Blizzard's plate) if it queued.
     data.addedAt, data.addWaitFrames, data.addHeld = type(GetTime) == "function" and GetTime() or nil, nil, nil
+    if active[unit] == nil then rounds.plates = rounds.plates + 1 end
     active[unit] = data
+    rounds.Wake("plates.frame")
+    rounds.Wake("plates.health")
     if PS.ThreatService then
         local started, nested = addPhases.Start()
         PS.ThreatService:TrackEnemy(unit, root)
@@ -1789,10 +2045,12 @@ function adds.Learn(kind, ms)
     adds.cost[kind] = math.max(adds.base[kind], cost + (ms - cost) * (ms > cost and 0.5 or 0.1))
 end
 
-function adds.Decay()
+-- settle: the frames since the last were many (the frame entry slept through them), so the estimate is
+-- back at the typical cost, as that many halvings would have left it.
+function adds.Decay(settle)
     for kind, cost in pairs(adds.cost) do
         local base = adds.base[kind]
-        if base and cost > base then adds.cost[kind] = base + (cost - base) * 0.5 end
+        if base and cost > base then adds.cost[kind] = settle and base or base + (cost - base) * 0.5 end
     end
 end
 
@@ -1800,7 +2058,31 @@ end
 -- item always runs, so the queues move: a frame's plate work is the budget plus the misjudgement of
 -- its last item at most, or one item alone (a frame's build).
 function adds.Fits(cost)
-    return adds.spent <= 0 or adds.spent + cost <= LIMITS.ADD_BUDGET_MS
+    return adds.spent <= 0 or adds.spent + cost <= adds.Budget()
+end
+
+-- The frame's budget for plate work (ms): the login burst's (adds.burstBudget) while it lasts, else ADD_BUDGET_MS.
+function adds.Budget() return adds.burstBudget or LIMITS.ADD_BUDGET_MS end
+
+-- Whether a waiting add may build (half) a plate now: one half a frame, more in a login burst.
+function adds.MayBuild() return not adds.built or adds.burstBudget ~= nil end
+
+-- Login or a loading screen ended: the burst lasts LOGIN_BURST_SECONDS (adds.Frame works its budget out).
+function adds.StartBurst()
+    local now = type(GetTime) == "function" and GetTime() or nil
+    if not now then return end
+    adds.burstUntil = now + LIMITS.LOGIN_BURST_SECONDS
+    adds.record("burst")
+end
+
+-- Builds halves for unit's add while it still needs one and, after the first, the burst's budget has room.
+function adds.Build(unit)
+    local cost, build
+    repeat
+        adds.Half()
+        cost, build = adds.Estimate(unit)
+    until not (build and adds.burstBudget and adds.Fits(cost))
+    return cost, build
 end
 
 -- What adding unit is expected to cost, and whether it needs a build first: its nameplate has no plate
@@ -1842,10 +2124,16 @@ end
 -- Whether PlateSmith draws unit's plate (and hides Blizzard's), as ApplyLayout decides: readable
 -- answers only, so an unknown unit is left to Blizzard.
 function adds.Drawn(unit)
-    if not (db and db.enabled) or not OwnsAppearance() then return false end
-    local friendly = rounds.Friendly(unit)
+    if not (db and db.enabled) then return false end
+    -- Blizzard's plates with PlateSmith's extras: only objects are PlateSmith's (rounds.Owns); asked first, so no
+    -- unit is read where none is drawn.
+    local owns = OwnsAppearance()
+    if not (owns or rounds.Owns(true)) then return false end
+    local object, friendly = rounds.Kind(unit)
+    if not (owns or object) then return false end
+    if object then return db.objectPlates ~= "blizzard" end
     if friendly == nil or RestrictedFriendly(friendly) then return false end
-    return not (friendly and db.friendly == "off")
+    return not (friendly and S.FRIENDLY.Mode(db, PlateIdentity.ProfileKeyForUnit(unit, friendly)) == "off")
 end
 
 -- A waiting add's nameplate shows nothing until the add draws it: Blizzard's own plate (its name at
@@ -1853,8 +2141,8 @@ end
 -- took its place at the plate's own size. Only a plate PlateSmith will draw is held, the way an add
 -- hides it (HideNative, the alphas kept to put back). held: unit -> the root's plate, or a stand-in
 -- { root } for a nameplate with no plate yet; queuedAt: unit -> the frame (auraWork.frame) it queued in;
--- queuedMs: unit -> the profiler clock then.
-adds.held, adds.queuedAt, adds.queuedMs = {}, {}, {}
+-- queuedMs: unit -> the profiler clock then; queuedBurst: unit -> true when it queued in a login burst.
+adds.held, adds.queuedAt, adds.queuedMs, adds.queuedBurst = {}, {}, {}, {}
 -- performance.addQueue (Diagnostics/Performance.lua): queued, held, each wait in frames and ms, overdue runs.
 local function NoRecord() end
 adds.record = PS.Performance and PS.Performance.RecordAddQueue or NoRecord
@@ -1873,8 +2161,10 @@ function adds.Holding(unit)
     local root = C_NamePlate.GetNamePlateForUnit(unit)
     if not root or (root.IsForbidden and root:IsForbidden()) then return end
     local record = root.PlateSmithData
-    -- Still another unit's plate: that unit's own removal comes first.
-    if record and record.unit ~= nil then return end
+    if record and record.unit == unit then return end
+    -- Still another unit's plate: the client gave the nameplate to this unit before that one's removal
+    -- arrived, so that plate is released now (Blizzard's name showed meanwhile, unheld, for the wait).
+    if record and record.unit ~= nil then rounds.RemovePlate(record.unit) end
     record = record or { root = root }
     HideNative(record)
     adds.held[unit] = record
@@ -1884,13 +2174,13 @@ end
 -- The add ran (added) or the unit went (not added): a plate that drew takes the held frames over (its
 -- own HideNative or RestoreNative already ran); otherwise they are put back.
 function adds.Release(unit, added)
-    local queuedAt, queuedMs = adds.queuedAt[unit], adds.queuedMs[unit]
-    adds.queuedAt[unit], adds.queuedMs[unit] = nil, nil
+    local queuedAt, queuedMs, burst = adds.queuedAt[unit], adds.queuedMs[unit], adds.queuedBurst[unit]
+    adds.queuedAt[unit], adds.queuedMs[unit], adds.queuedBurst[unit] = nil, nil, nil
     local data = added and active[unit]
     if data and queuedAt then
         local waited, clock = auraWork.frame - queuedAt, queuedMs and Clock()
         data.addWaitFrames = waited
-        adds.record("waited", waited, clock and clock - queuedMs or nil)
+        adds.record("waited", waited, clock and clock - queuedMs or nil, burst)
     end
     local record = adds.held[unit]
     if not record then return end
@@ -1904,16 +2194,27 @@ function adds.Release(unit, added)
     end
 end
 
--- ticker: called from the frame's ticker pass (without GetTime, the budget starts there). frameMs: the
--- last frame's length (the spares entry's idle share).
-function adds.Frame(ticker)
-    local now = type(GetTime) == "function" and GetTime() or nil
+-- ticker: called from the frame's ticker pass (without GetTime, the budget starts there); clock: the frame's
+-- GetTime when the caller has it (the ticker's), so the pass asks the client nothing. frameMs: the last frame's
+-- length (the spares entry's idle share). slept: the frame entry slept since the last stamp (no plate work), so
+-- the time since is many frames, not one: the last frame's length is unknown (0, as at login) and the estimates
+-- have settled.
+function adds.Frame(ticker, clock)
+    local now = clock or (type(GetTime) == "function" and GetTime() or nil)
     if now == nil then
         if ticker then adds.spent, adds.overdueRan, adds.built = 0, 0, false end
     elseif now ~= adds.stamp then
-        adds.frameMs = adds.stamp and (now - adds.stamp) * 1000 or 0
+        local slept = adds.slept
+        adds.frameMs = adds.stamp and not slept and (now - adds.stamp) * 1000 or 0
         adds.stamp, adds.spent, adds.overdueRan, adds.built, auraWork.frame = now, 0, 0, false, auraWork.frame + 1
-        adds.Decay()
+        adds.slept = false
+        adds.Decay(slept)
+        adds.burstBudget = nil
+        if adds.burstUntil and now < adds.burstUntil and adds.frameMs >= LIMITS.LOGIN_BURST_SLOW_MS then
+            adds.burstBudget = math.max(LIMITS.ADD_BUDGET_MS, math.min(LIMITS.LOGIN_BURST_MAX_MS,
+                adds.frameMs * LIMITS.LOGIN_BURST_SHARE))
+            adds.record("burstBudget", adds.burstBudget)
+        end
     end
 end
 
@@ -1939,7 +2240,7 @@ end
 -- How many more items may run past the budget this frame: ADD_OVERDUE_PER_FRAME, one once the frame
 -- has built half a plate. So a frame holds at most one half and one other overdue item.
 function adds.OverdueLeft()
-    return (adds.built and 1 or LIMITS.ADD_OVERDUE_PER_FRAME) - adds.overdueRan
+    return (adds.built and not adds.burstBudget and 1 or LIMITS.ADD_OVERDUE_PER_FRAME) - adds.overdueRan
 end
 
 -- Whether the oldest waiting add is late and may still run past the budget this frame: it then goes
@@ -2004,10 +2305,7 @@ function adds.Request(unit)
     local now = adds.waiting == 0 and not (first and auraWork.Starving())
     if now and Clock() then
         local cost, build = adds.Estimate(unit)
-        if build and not adds.built and adds.Fits(cost) then
-            adds.Half()
-            cost, build = adds.Estimate(unit)
-        end
+        if build and adds.MayBuild() and adds.Fits(cost) then cost, build = adds.Build(unit) end
         now = not build and adds.Fits(cost)
     end
     if now then
@@ -2015,8 +2313,10 @@ function adds.Request(unit)
     elseif not adds.pending[unit] then
         adds.pending[unit], adds.waiting = true, adds.waiting + 1
         adds.order[#adds.order + 1] = unit
+        rounds.Wake("plates.frame")
         counters.deferredAdds = counters.deferredAdds + 1
         adds.record("queued")
+        adds.queuedBurst[unit] = adds.burstBudget ~= nil or nil
         adds.Hold(unit)
     end
 end
@@ -2040,10 +2340,9 @@ function adds.Run()
             local run = not stopped
             if run then
                 local cost, build = adds.Estimate(unit)
-                if build and not adds.built and (adds.Fits(cost)
-                    or adds.Late(unit) and adds.OverdueLeft() > 0 and adds.spent < LIMITS.ADD_BUDGET_MS) then
-                    adds.Half()
-                    cost, build = adds.Estimate(unit)
+                if build and adds.MayBuild() and (adds.Fits(cost)
+                    or adds.Late(unit) and adds.OverdueLeft() > 0 and adds.spent < adds.Budget()) then
+                    cost, build = adds.Build(unit)
                 end
                 if build then
                     run = false
@@ -2113,6 +2412,33 @@ local function SetPlateAlpha(data, alpha)
     for _, holder in pairs(data.valueHolders) do holder:SetAlpha(alpha) end
 end
 
+-- Fade objects you can't use (objectFadeUnable): an object plate whose Action icon says you can't use it yet
+-- (object.unable, readable true only) at ObjectPlate.FADE, unless your skill reaches it or you can cultivate it
+-- (ObjectStatus.Usable: object.cangather, object.cancultivate); anything else at full (or its spotlight's). Objects
+-- are never spotlit (the spotlight dims enemies only), so the two never meet on one plate.
+function rounds.ObjectFade(data)
+    local alpha
+    if data.object and db.objectFadeUnable == true and data.objectUnable == true then
+        local id = Readers.EntryID(data, true)
+        if not PS.ObjectStatus.Usable(id, data.objectKind, id and data.entryGUID) then alpha = PS.ObjectPlate.FADE end
+    end
+    if data.objectFadeAlpha == alpha then return end
+    data.objectFadeAlpha = alpha
+    SetPlateAlpha(data, alpha or data.spotlightAlpha or 1)
+end
+
+-- An object's type or Can't use changed (ActionIcon's read): another type is laid out again with that type's design;
+-- Can't use fades it, and its Status text follows.
+function rounds.ObjectChanged(data, typeChanged)
+    if typeChanged then
+        ApplyLayout(data)
+        ApplySpotlightStyle(data)
+        return
+    end
+    rounds.ObjectFade(data)
+    rounds.objectStatus.Refresh(data)
+end
+
 -- Other plates fade while a spotlight shows; with none showing and none faded, nothing to visit.
 local function UpdateSpotlight(now)
     if spotlightUnit and (not active[spotlightUnit] or now >= spotlightUntil) then
@@ -2144,6 +2470,11 @@ local function RemovePlate(unit)
     local data = active[unit]
     if not data then return end
     if PS.ThreatService then PS.ThreatService:UntrackEnemy(unit) end
+    -- Its plate draws another unit now (the client reused the nameplate first): only this entry goes.
+    if data.unit ~= unit then
+        active[unit], rounds.plates = nil, rounds.plates - 1
+        return
+    end
     rounds.SetState(data, false)
     data.nextProfileKey = nil
     -- An aura read still waiting (UNIT_AURA's, or the add's own) is dropped; its order entry is skipped.
@@ -2151,11 +2482,14 @@ local function RemovePlate(unit)
     -- What this unit's aura passes cost is not the next unit's estimate (a unit with no aura cost little).
     data.auraCost, data.auraRowsLeft = nil, nil
     RestoreNative(data)
-    data.nativeAlphas = nil
+    -- Emptied, not dropped: the next unit's add fills the same table (HideNative).
+    local nativeAlphas = data.nativeAlphas
+    if nativeAlphas then for frame in pairs(nativeAlphas) do nativeAlphas[frame] = nil end end
     data.threatTrackRetryAt = nil
     data.threatInfo, data.threatIdle, data.threatValuesSet, data.tankWarning = nil, nil, nil, nil
     data.healthValue, data.healthMaxValue, data.powerValue, data.powerMaxValue = nil, nil, nil, nil
     data.targeted, data.relationship, data.taggedShown, data.aurasWanted, data.pvpState = nil, nil, nil, nil, nil
+    data.taggedGrey = nil
     data.inRange, data.questProgressText, data.questProgressPercent = nil, nil, nil
     data.beaconUntil = nil
     -- A test name is never carried to the next unit on this frame.
@@ -2164,6 +2498,15 @@ local function RemovePlate(unit)
     if data.beacon then data.beacon:Hide() end
     rounds.combo.Release(data)
     rounds.targetedBy.Release(data)
+    rounds.actionIcon.Release(data)
+    rounds.objectStatus.Release(data)
+    rounds.objectHover.Release(data)
+    rounds.backdrop.Release(data)
+    data.objectQuest, data.objectType = nil, nil
+    if data.objectFadeAlpha then
+        data.objectFadeAlpha = nil
+        SetPlateAlpha(data, 1)
+    end
     -- Only a plate that showed the target's highlight has one to take down.
     if data.targetGlowStyle and data.targetGlowStyle ~= "off" then
         for _, glow in ipairs(data.targetBarGlows or EMPTY) do
@@ -2181,6 +2524,8 @@ local function RemovePlate(unit)
     data.buffsIndexError, data.debuffsIndexError = nil, nil
     -- The next unit on this token is another mob: its native aura container is pointed again.
     data.buffs.nativeAuraBound, data.debuffs.nativeAuraBound = nil, nil
+    -- An add's reserve read (Auras.lua's first aura) is not the next unit's.
+    data.buffs.plateSmithFirstAura, data.debuffs.plateSmithFirstAura = false, false
     if data.spotlightAlpha and data.spotlightAlpha ~= 1 then SetPlateAlpha(data, 1) end
     RestoreParentFaded(data)
     data.spotlightAlpha = nil
@@ -2197,15 +2542,38 @@ local function RemovePlate(unit)
     ClearDirty(data)
     PS.Stacking.PlateRemoved(data)
     data.unit, data.targetUnit = nil, nil
-    active[unit] = nil
+    active[unit], rounds.plates = nil, rounds.plates - 1
     if spotlightUnit == unit then
         spotlightUnit, spotlightUntil = nil, nil
         UpdateSpotlight(GetTime())
     end
 end
 
+rounds.RemovePlate = RemovePlate
+
 local function ReleaseAllPlates()
     for unit in pairs(active) do RemovePlate(unit) end
+end
+
+-- The unit a client nameplate (root) shows, and its plate (data) when PlateSmith tracks it for that unit.
+-- A token the root carries (namePlateUnitToken, else its unit frame's unit) is used when readable; Forever
+-- protects namePlateUnitToken, so otherwise the plate's own unit, which AddPlate took from
+-- NAME_PLATE_UNIT_ADDED's token, names it. nil when nothing readable does.
+function rounds.RootUnit(root)
+    if root.IsForbidden and root:IsForbidden() then return nil end
+    local token = root.namePlateUnitToken
+    if not (IsReadable(token) and type(token) == "string") then
+        token = nil
+        local frame = root.UnitFrame
+        if type(frame) == "table" then
+            local unit = frame.unit
+            if IsReadable(unit) and type(unit) == "string" then token = unit end
+        end
+    end
+    local data = root.PlateSmithData
+    local unit = data and data.unit
+    if unit and active[unit] == data and data.root == root and (token == nil or token == unit) then return unit, data end
+    return token
 end
 
 -- Adds the visible plates not already tracked for their frame.
@@ -2213,11 +2581,8 @@ local function ScanPlates()
     if not C_NamePlate or not C_NamePlate.GetNamePlates then return end
     local plates = C_NamePlate.GetNamePlates()
     for _, root in ipairs(plates) do
-        local unit = root.namePlateUnitToken
-        if IsReadable(unit) and type(unit) == "string" then
-            local data = active[unit]
-            if not (data and data.root == root) then adds.Request(unit) end
-        end
+        local unit, data = rounds.RootUnit(root)
+        if unit and not data then adds.Request(unit) end
     end
 end
 
@@ -2345,6 +2710,12 @@ local function RefreshAllNow(relayoutOnly, changedOnly)
     PS.Stacking.Invalidate()
     -- Where plates show follows the settings and the place (a context change relayouts through here).
     PS.PlateVisibility.Apply()
+    -- So does Clicking (the client's click-through switches).
+    PS.ClickThrough.Apply()
+    -- And the game's interact key settings (Settings › Objects & interacting).
+    PS.Interaction.Apply()
+    -- Friendly players' names-only switch follows who draws them (on, it leaves their plates no click area).
+    NamePolicy.ApplyNamesOnly()
     PS.Conflicts.ForgetProvider()
     if not relayoutOnly then
         PS.Profiles.MarkChanged()
@@ -2357,6 +2728,9 @@ local function RefreshAllNow(relayoutOnly, changedOnly)
     rounds.range.SetWanted(db.enabled and PlateNeeds().range)
     rounds.combo.SetWanted(db.enabled and PlateNeeds().combo)
     rounds.targetedBy.SetWanted(db.enabled and PlateNeeds().targetedBy)
+    rounds.actionIcon.SetWanted(db.enabled and PlateNeeds().actionIcon, PlateNeeds().objectKinds)
+    rounds.objectStatus.SetWanted(db.enabled and PlateNeeds().objectStatus)
+    rounds.objectHover.SetWanted(db.enabled and S.HoverNeeded(db))
     -- Before the enabled check: turned off, PlateSmith puts Blizzard's fonts back too.
     ApplyNativeNameFont()
     if not db.enabled then
@@ -2497,10 +2871,10 @@ end
 -- Whether the unit is now another kind of plate (friendliness, a restricted friendly, plate type, its
 -- design here, or who draws it): only then is it laid out again.
 function changes.KindChanged(data)
-    local friendly = rounds.Friendly(data.unit)
-    if friendly ~= data.friendly or OwnsAppearance() ~= data.own then return true end
+    local object, friendly = rounds.Kind(data.unit)
+    if object ~= (data.object == true) or friendly ~= data.friendly or rounds.Owns(object) ~= data.own then return true end
     if RestrictedFriendly(friendly) ~= data.restrictedFriendly then return true end
-    local plateType = PlateIdentity.ProfileKeyForUnit(data.unit, friendly)
+    local plateType = PlateIdentity.ProfileKeyForUnit(data.unit, friendly, object)
     if plateType == data.profileKey and PS.PlateContext.DesignFor(plateType) == data.design then return false end
     -- For the ApplyLayout that follows (an enemy whose player status the client now gives is one).
     data.nextProfileKey = plateType
@@ -2626,7 +3000,7 @@ function auraWork.Read(data, budgeted)
     local started = Clock()
     local only = data.auraRowsLeft
     data.auraRowsLeft = nil
-    if budgeted and started and not only and adds.spent + auraWork.Estimate(data) > LIMITS.ADD_BUDGET_MS then
+    if budgeted and started and not only and adds.spent + auraWork.Estimate(data) > adds.Budget() then
         only, data.auraRowsLeft = "buffs", "debuffs"
     end
     local later = data.aurasLater
@@ -2742,17 +3116,45 @@ function adds.RunRelayouts()
     for index = kept + 1, #list do list[index] = nil end
 end
 
+-- performance.memory.frameSteps (Diagnostics/Performance.lua): plates.frame by step. Each step that runs is timed
+-- and the Lua it allocates measured the way the ticker measures an entry (Performance.Memory around it), so a live
+-- report names the step a frame's garbage comes from; what the entry allocated outside every step is the ticker's
+-- own call and the batch around them. StepStart and StepEnd sit beside the step, not around it, so measuring adds
+-- no call depth to the frame's work.
+rounds.RecordStep = PS.Performance and PS.Performance.RecordFrameStep
+function rounds.StepStart()
+    if rounds.RecordStep then return PS.Performance.Memory(), Clock() end
+end
+function rounds.StepEnd(name, memory, started)
+    if started then rounds.RecordStep(name, Clock() - started, PS.Performance.Allocated(memory)) end
+end
+
 local function FrameTick(now)
+    local Start, End = rounds.StepStart, rounds.StepEnd
+    local memory, started
     -- Plate adds a burst left over, within this frame's budget. First, adds that waited too long (a
     -- hidden name), then aura passes adds kept back (one even past the budget once starving).
-    if adds.order[1] and adds.Overdue() then adds.Run() end
-    if auraWork.Starving() then auraWork.Run(true, adds.spent > 0) end
-    if adds.order[1] then adds.Run() end
+    if adds.order[1] and adds.Overdue() then
+        memory, started = Start()
+        adds.Run()
+        End("adds", memory, started)
+    end
+    if auraWork.Starving() then
+        memory, started = Start()
+        auraWork.Run(true, adds.spent > 0)
+        End("auras", memory, started)
+    end
+    if adds.order[1] then
+        memory, started = Start()
+        adds.Run()
+        End("adds", memory, started)
+    end
     -- Bursty events set these flags; each is applied at most once per frame.
     -- Resting flips (PLAYER_UPDATE_RESTING) at a city's edge: the context is worked out once a frame, and
     -- after a change no sooner than CONTEXT_HOLD later, so walking along the edge (or bobbing on it) changes
     -- the place at most that often; plates whose design changed are laid out again a few a frame.
     if pending.context and now >= pending.contextAt then
+        memory, started = Start()
         pending.context = false
         if PS.PlateContext.Refresh("resting") then
             pending.contextAt = now + LIMITS.CONTEXT_HOLD
@@ -2761,33 +3163,51 @@ local function FrameTick(now)
             if PS.PlateContext.Current() == "city" then PlateParts.Warm(now) end
             RefreshAllNow(true, true)
         end
+        End("context", memory, started)
     end
-    if adds.relayouts[1] then adds.RunRelayouts() end
+    if adds.relayouts[1] then
+        memory, started = Start()
+        adds.RunRelayouts()
+        End("relayouts", memory, started)
+    end
     if pending.kinds then
+        memory, started = Start()
         pending.kinds = false
         changes.UnitKinds()
+        End("kinds", memory, started)
     end
     if pending.relationships and now >= pending.relationshipsAt then
+        memory, started = Start()
         pending.relationships, pending.relationshipsAt = false, now + LIMITS.RELATIONSHIP_INTERVAL
         changes.Relationships()
+        End("relationships", memory, started)
     end
     if pending.auras and now >= pending.aurasAt then
+        memory, started = Start()
         pending.auras, pending.aurasAt = false, now + AURA_EVENT_INTERVAL
         for unit, data in pairs(active) do
             if data.unit == unit and data.aurasWanted then auraWork.Queue(data) end
         end
+        End("auraEvents", memory, started)
     end
-    if auraWork.order[1] then auraWork.Run(true) end
+    if auraWork.order[1] then
+        memory, started = Start()
+        auraWork.Run(true)
+        End("auras", memory, started)
+    end
     -- A token that can stand in for a withheld marker changed: the target, focus or mouseover (every
     -- stand-in resolved again, at most every RAID_FALLBACK_INTERVAL), or a group member's target
     -- (only that token tested, pending.raidTokens).
     if pending.raidFallback and now >= pending.raidFallbackAt then
+        memory, started = Start()
         pending.raidFallback, pending.raidFallbackAt = false, now + LIMITS.RAID_FALLBACK_INTERVAL
         for token in pairs(pending.raidTokens) do pending.raidTokens[token] = nil end
         for unit, data in pairs(active) do
             if data.unit == unit and data.raidIconNeedsFallback then SafePlateUpdate(data, UpdateRaidIcon) end
         end
+        End("raidMarkers", memory, started)
     elseif next(pending.raidTokens) then
+        memory, started = Start()
         for unit, data in pairs(active) do
             if data.unit == unit and data.raidIconNeedsFallback then
                 for token in pairs(pending.raidTokens) do
@@ -2799,22 +3219,83 @@ local function FrameTick(now)
             end
         end
         for token in pairs(pending.raidTokens) do pending.raidTokens[token] = nil end
+        End("raidMarkers", memory, started)
     end
-    if pending.quests and now >= pending.questsAt then
+    -- A quest log change waits while no plate is up: nothing reads what it refreshes (the marks, a module's
+    -- quest cache; QuestieDB's read makes a client table per quest log entry and quest). It runs in the frame
+    -- the first plate is added, before that frame is drawn (adds run above, events come before the ticker).
+    if pending.quests and now >= pending.questsAt and rounds.plates > 0 then
         pending.quests = false
         pending.questsAt = now + QUEST_REFRESH_INTERVAL
-        if type(PS.ForEachModule) == "function" then PS:ForEachModule("OnQuestLogChanged", pending.questEvent) end
+        if type(PS.ForEachModule) == "function" then
+            memory, started = Start()
+            PS:ForEachModule("OnQuestLogChanged", pending.questEvent)
+            End("questModules", memory, started)
+        end
+        memory, started = Start()
         RefreshQuestMarkersNow()
+        End("questMarkers", memory, started)
     end
-    if next(activeCasts) then UpdateCastTimes(now) end
+    if next(activeCasts) then
+        memory, started = Start()
+        UpdateCastTimes(now)
+        End("casts", memory, started)
+    end
+    -- The frame's plate work, inside the batch so it is a step of its own (the batch's end then finds none).
+    if next(dirtyPlates) then
+        memory, started = Start()
+        FlushDirty()
+        End("flush", memory, started)
+    end
 end
 
--- Plate work is split by cadence; each entry is visible in the Ticker report.
+-- The plate entries run only while they have work, so a frame with none makes no pass at all: plates.frame while
+-- a plate is up or plate work waits (an add, an aura read, a relayout, a flush, a change of place), plates.state
+-- while a plate has time-based state or the highlight, plates.health while a plate is up. Live, in a quiet zone,
+-- plates.frame's pass over no plate measured about 0.6 KiB of Lua a frame (2.2 MiB a minute at 65 fps) that none
+-- of PlateSmith's code allocates: a call that goes deeper than the frame's other calls grows the client's call
+-- stack for it, which a fresh thread per call models to the same 0.58 KiB (tests/perf_smoke.lua). Wake is a flag
+-- check; an entry goes to sleep when its pass finds nothing (rounds.Idle, and the state and health callbacks).
+rounds.awake = { ["plates.frame"] = true, ["plates.state"] = true, ["plates.health"] = true }
+function rounds.Wake(id)
+    if rounds.awake[id] then return end
+    rounds.awake[id] = true
+    PS.Ticker.SetEnabled(id, true)
+end
+function rounds.Sleep(id)
+    rounds.awake[id] = false
+    PS.Ticker.SetEnabled(id, false)
+end
+
+-- No plate up and none waiting to be added, laid out again or flushed, and no change of place to work out: the
+-- frame has no plate work. The flags whose work is only on plates up are spent as a pass over no plate would
+-- spend them; a quest log change stays held for the first plate.
+function rounds.Idle()
+    if rounds.plates > 0 or adds.order[1] or auraWork.order[1] or adds.relayouts[1] or pending.context
+        or next(dirtyPlates) ~= nil or next(activeCasts) ~= nil then
+        return false
+    end
+    pending.kinds, pending.relationships, pending.auras, pending.raidFallback = false, false, false, false
+    for token in pairs(pending.raidTokens) do pending.raidTokens[token] = nil end
+    return true
+end
+
+-- Plate work is split by cadence; each entry is visible in the Ticker report. The frame's bookkeeping (adds.Frame
+-- and the idle check) is a step too: "frame" on a frame with plate work, "idle" on the one that finds none and
+-- puts the entry to sleep.
 PS.Ticker.Register("plates.frame", 0, function(_, now)
     if not db then return end
     -- The frame's first entry runs outside any batch; one left open by an error closes here.
     batchDepth, rounds.backstop = 0, false
-    adds.Frame(true)
+    local memory, started = rounds.StepStart()
+    -- now: the ticker's GetTime for the frame, so the bookkeeping asks the client nothing.
+    adds.Frame(true, type(GetTime) == "function" and now or nil)
+    if rounds.Idle() then
+        rounds.StepEnd("idle", memory, started)
+        adds.slept = true
+        return rounds.Sleep("plates.frame")
+    end
+    rounds.StepEnd("frame", memory, started)
     RunBatch(false, FrameTick, now)
 end)
 
@@ -2830,7 +3311,9 @@ local function HealthTick()
     end
     rounds.backstop = false
 end
+-- Asleep while no plate is up (rounds.Wake: AddPlate).
 PS.Ticker.Register("plates.health", HEALTH_BACKSTOP_INTERVAL, function()
+    if rounds.plates == 0 then return rounds.Sleep("plates.health") end
     if db then RunBatch(false, HealthTick) end
 end)
 
@@ -2846,7 +3329,7 @@ end)
 
 -- Builds spares while the attached plates and spares are fewer than SpareTarget, then native aura
 -- containers while the pool wants one (one a pass), and switches itself off when both are full
--- (TakeSpare, WarmLater and a container taken from the pool switch it on again).
+-- (TakeSpare, WarmNow and a container taken from the pool switch it on again).
 PS.Ticker.Register("plates.spares", LIMITS.SPARE_INTERVAL, function(_, now)
     local spares = PlateParts.spares
     local platesFull = PlateParts.attached + #spares >= PlateParts.SpareTarget(now)
@@ -2955,8 +3438,10 @@ local function StateTick(elapsed)
         end
     end
 end
+-- Asleep while no plate has time-based state and none is highlighted (rounds.Wake: SetState, UpdateTarget).
 PS.Ticker.Register("plates.state", 0, function(elapsed)
-    if db and (rounds.state[1] or rounds.targetPlate) then RunBatch(false, StateTick, elapsed) end
+    if not (rounds.state[1] or rounds.targetPlate) then return rounds.Sleep("plates.state") end
+    if db then RunBatch(false, StateTick, elapsed) end
 end)
 
 -- Auras follow UNIT_AURA; this pass reads again only rows whose soonest timed aura has run out
@@ -3105,9 +3590,10 @@ local function HandleLogin()
     if PS.CreateOptions then PS.CreateOptions() end
     if PS.EnableModules then PS:EnableModules() end
     ApplyNativeNameFont()
+    adds.StartBurst()
     ScanPlates()
-    PlateParts.WarmLater()
-    PS.Chat.Print(string.format(PS.L["loaded %s. Type /platesmith status for the active mode."], tostring(PS.RUNTIME_BUILD)))
+    PlateParts.WarmNow()
+    PS.Chat.Print(string.format(PS.L["loaded %s. Type /ps to open Blueprint Studio."], tostring(PS.RUNTIME_BUILD)))
 end
 
 local function HandleEvent(event, unit)
@@ -3125,6 +3611,7 @@ local function HandleEvent(event, unit)
         local data = PlateFor(unit)
         if data then SafePlateUpdate(data, UpdatePower) end
     elseif event == "UNIT_AURA" then
+        auraWork.auraEvents = auraWork.auraEvents + 1
         if not IsReadable(unit) or type(unit) ~= "string" then
             -- Restricted aura events may carry a protected unit token. Refresh visible rows,
             -- at most every AURA_EVENT_INTERVAL, without branching or indexing on that token.
@@ -3190,10 +3677,13 @@ local function HandleEvent(event, unit)
         PS.PlateContext.Refresh("zone")
         NamePolicy.Apply()
         RefreshAllNow(true)
+        adds.StartBurst()
         ScanPlates()
-        PlateParts.WarmLater()
+        PlateParts.WarmNow()
     elseif event == "PLAYER_REGEN_ENABLED" then
         NamePolicy.FlushPending()
+        -- A names-only switch given back in combat drops its record now (and one wanted again is set).
+        NamePolicy.ApplyNamesOnly()
         -- Aura reads that errored during combat are tried again.
         for plateUnit, data in pairs(active) do
             if data.unit == plateUnit and (data.buffsIndexError or data.debuffsIndexError) then
@@ -3216,6 +3706,7 @@ local function HandleEvent(event, unit)
         end
     elseif event == "PLAYER_UPDATE_RESTING" then
         pending.context = true
+        rounds.Wake("plates.frame")
     elseif event == "PLAYER_LOGOUT" then
         -- A /reload in combat: the writes are tried, but one the client blocks fails unseen, so the
         -- records are kept for the next login to put back.
@@ -3241,6 +3732,7 @@ do
     eventFrame:SetScript("OnEvent", function(_, event, unit)
         local ignored = byEvent[event]
         if ignored and IsReadable(unit) and type(unit) == "string" and not active[unit] and ignored[unit] then return end
+        local memory = RecordEvent and PS.Performance.Memory()
         local started = RecordEvent and Clock()
         local built, spared, queued = counters.platesBuilt, counters.sparesUsed, counters.deferredAdds
         RunBatch(DEFERRED_EVENTS[event] == true, HandleEvent, event, unit)
@@ -3251,15 +3743,28 @@ do
                 name = (counters.platesBuilt ~= built or counters.sparesUsed ~= spared) and PLATE_ADDED.new
                     or counters.deferredAdds ~= queued and PLATE_ADDED.queued or PLATE_ADDED.reused
             end
-            RecordEvent(name, Clock() - started)
+            RecordEvent(name, Clock() - started, PS.Performance.Allocated(memory))
         end
     end)
 end
 
 PS.Refresh = RefreshAll
 PS.RefreshQuestMarkers = RefreshQuestMarkers
+-- PS:InvalidateFact (Core/Modules.lua): a module's token changed with no plate event, so the plates whose custom parts
+-- or rules read a module's token (volatile reads: TemplateReaders) render again, every plate or unit's.
+function rounds.InvalidateValues(unit)
+    for plateUnit, data in pairs(active) do
+        local reads = data.reads
+        if data.unit == plateUnit and (unit == nil or SameUnit(plateUnit, unit))
+            and (not reads or reads.values.volatile or reads.rules.volatile) then
+            MarkValues(data, nil)
+        end
+    end
+end
+PS._InvalidatePlateValues = function(unit) RunBatch(false, rounds.InvalidateValues, unit) end
 PS.GetSettings = GetSettings
 PS.SetOption = PlateSettings.SetOption
+PS.SetFriendlyMode = PlateSettings.SetFriendlyMode
 PS.GetLayout = PlateSettings.GetLayout
 PS.SetLayout = PlateSettings.SetLayout
 PS.SetComponentPosition = PlateSettings.SetComponentPosition
@@ -3275,26 +3780,67 @@ for _, name in ipairs({ "CreateComponentGroup", "RenameComponentGroup", "SetComp
     "SetComponentGroupScale", "SetComponentParent", "MoveComponentGroupTo",
     "RemoveComponent", "RestoreComponent", "ResetComponent", "SetComponentStack", "SetComponentFree", "SetComponentLayer",
     "RenameComponent", "SetLayoutMeasure", "MoveComponentGroup", "DeleteComponentGroup", "ComponentGroupKeys",
-    "GetPlateProfileSettings", "GetDungeonEnemyOverride", "SetDungeonEnemyProfile", "GetDefaultLayout",
+    "GetPlateProfileSettings", "GetDungeonEnemyOverride", "SetDungeonEnemyProfile", "GetDefaultLayout", "GetLayoutSource",
     "SetPlateProfileOption", "CopyTargetHighlight", "SetPlateValueSlot", "SetPlateValueSlotFields", "SetPlateAuraLayout", "SetPartRules",
     "GetFadeState", "SetFadeEverywhere", "SetFadeAlpha",
     "SetPartStyle", "ResetValueSlot", "SaveStylePreset", "DeleteStylePreset", "ApplyStylePreset", "SetPlateProfileHealthColour",
     "SetRelationshipColour", "SetThreatColour", "SetThreatPartOwnColours", "GetCharacterSettings", "SetCharacterOption",
     "ResetSettings", "AddDesign", "RemoveDesign", "ResetDesign", "ResetDesignArea", "SlimDesign", "CopyDesign",
-    "FreeValueSlot" }) do
+    "FreeValueSlot", "CopyObjectLook", "ObjectLookChanged" }) do
     PS[name] = PlateSettings[name]
 end
 PS.ApplyNameplateFont = ApplyNameplateFont
 -- Whether PlateSmith draws a unit's plate, so Blizzard's own name there is hidden (NativeFonts asks).
 PS.PlateDrawsUnit = adds.Drawn
+
+-- /ps diagnose's context.ownership: the client's nameplates (total), those PlateSmith draws now (owned)
+-- and should draw (shouldDraw, adds.Drawn), those waiting in the add queue (waiting, their Blizzard plate
+-- held hidden), and those showing Blizzard's own plate and name: where PlateSmith should draw (nativeShown,
+-- a fault) or leaves it to Blizzard (nativeLeft), and unknown: those no readable token or plate names (a
+-- waiting add's is found by its held frames). Roots are mapped by rounds.RootUnit, as ScanPlates does. A
+-- name with a guild, title or <Away> tag and no plate is the client's world name text for a unit with no
+-- nameplate; worldNames has the CVars that show it and NamePolicy's watch over Hide unstyled names. namesOnly is
+-- Blizzard's names-only switch for friendly players, which leaves their plates no click area while on.
+rounds.WORLD_NAME_CVARS = { "UnitNameFriendlyPlayerName", "UnitNameNPC", "UnitNameFriendlySpecialNPCName",
+    "UnitNameInteractiveNPC" }
+function rounds.Ownership()
+    local report = { total = 0, owned = 0, shouldDraw = 0, waiting = adds.waiting, nativeShown = 0, nativeLeft = 0,
+        unknown = 0, worldNames = { hideUnstyled = db and db.hideUnstyledFriendlyNames == true, watch = NamePolicy.WatchReport() },
+        namesOnly = NamePolicy.NamesOnlyReport() }
+    for _, name in ipairs(rounds.WORLD_NAME_CVARS) do report.worldNames[name] = NamePolicy.Read(name) or "none" end
+    local heldRoots = {}
+    for unit, record in pairs(adds.held) do
+        if record.root then heldRoots[record.root] = unit end
+    end
+    local plates = C_NamePlate and C_NamePlate.GetNamePlates and C_NamePlate.GetNamePlates() or EMPTY
+    for _, root in ipairs(plates) do
+        report.total = report.total + 1
+        local unit, data = rounds.RootUnit(root)
+        if unit == nil then unit = heldRoots[root] end
+        if unit == nil then report.unknown = report.unknown + 1 end
+        if data and data.overlay:IsShown() then report.owned = report.owned + 1 end
+        local should = unit ~= nil and adds.Drawn(unit)
+        if should then report.shouldDraw = report.shouldDraw + 1 end
+        local native = root.UnitFrame
+        local alpha = native and ReadNumber(native, "GetAlpha")
+        if alpha and alpha > 0.01 and RegionVisibleState(native) == true then
+            if should then report.nativeShown = report.nativeShown + 1 else report.nativeLeft = report.nativeLeft + 1 end
+        end
+    end
+    return report
+end
+PS.PlateOwnership = rounds.Ownership
+-- The unit and plate a client nameplate shows (the developer probe's click test maps plates with it).
+PS.PlateRootUnit = rounds.RootUnit
 -- A part's text in its style (font, Font size, outline, shadow), for parts drawn outside this file.
 PS.StyledPartFont = Styles.StyledFont
 PS.ApplyThreatText = ApplyThreatText
 PS.HighlightPlate = HighlightPlate
 PS.ExternalProvider = ExternalProvider
 PS.Diagnose = Diagnose
-PS.ProbePlayerPlate = ProbePlayerPlate
-PS.SetTestName = rounds.SetTestName
+-- For PlateSmith_Dev's /ps playerprobe and /ps testname only.
+PS._Dev.ProbePlayerPlate = ProbePlayerPlate
+PS._Dev.SetTestName = rounds.SetTestName
 PS._Test = {
     Abbreviate = PS.Format.Abbreviate,
     FormatThreat = ThreatText.Readable,
@@ -3313,6 +3859,8 @@ PS._Test = {
     Counters = counters,
     Limits = LIMITS,
     PendingAdds = function() return #adds.order end,
+    -- The login burst (adds.StartBurst) ended now, for a test of the normal throttling.
+    EndLoginBurst = function() adds.burstUntil, adds.burstBudget = nil, nil end,
     PendingAuras = function() return #auraWork.order end,
     -- What the next add, build or aura pass is expected to cost (ms), as the budget judges them.
     ItemCosts = adds.cost,
@@ -3355,4 +3903,9 @@ PS._Test = {
     -- The names-only cast bar (Placement's NameCast), for the store shot of it.
     NameCast = rounds.nameCast,
     TargetedBy = rounds.targetedBy,
+    ActionIcon = rounds.actionIcon,
+    ObjectHover = rounds.objectHover,
+    LooseMark = rounds.looseMark,
+    Extras = rounds.extras,
+    Backdrop = rounds.backdrop,
 }

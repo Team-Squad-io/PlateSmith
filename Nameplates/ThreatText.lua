@@ -350,9 +350,19 @@ PS.Ticker.SetEnabled(KEPT_TICKER, false)
 -- threat or more (or more raw threat than you, status 2), pulling from 90% of the pull threshold
 -- (or status 1). Rules read them (TemplateReaders) and the threat text is coloured by them.
 local LOSING_SHARE, PULLING_PERCENT = 0.9, 90
+-- Whether the holder the threat service matched (targetUnit) is you: the roster's answer
+-- (targetIsPlayer; in a raid your token is "raidN", so the token alone cannot say), else the
+-- "player" token itself. nil without a matched holder, or when the client would not say.
+local function HolderIsYou(info)
+    if type(info.targetUnit) ~= "string" then return nil end
+    local you = info.targetIsPlayer
+    if you == true or you == false then return you end
+    if info.targetUnit == "player" then return true end
+    return nil
+end
 -- Whether you hold it: isTanking; without it the threat status (2 or 3 is tanking), else the
 -- scaled percent (100 while you tank it, below 100 otherwise), else the mob's own target as the
--- threat service matched it to the group (targetUnit: you, or someone else). Outdoors a mob you do
+-- threat service matched it to the group (HolderIsYou). Outdoors a mob you do
 -- not target has protected threat but a readable target, which is what the threat text and windows
 -- show for it (YOU, TANK). The record keeps only readable values (the threat service's kept read
 -- included, for its hold), so nil means none of them is readable.
@@ -360,10 +370,10 @@ local function Holding(info)
     if info.playerThreatNoEntry == true then return false end
     local tanking = info.tanking
     if tanking == true or tanking == false then return tanking end
-    local status, percent, holder = info.status, info.percent, info.targetUnit
+    local status, percent = info.status, info.percent
     if type(status) == "number" then return status >= 2 end
     if type(percent) == "number" then return percent >= 100 end
-    if type(holder) == "string" then return holder == "player" end
+    return HolderIsYou(info)
 end
 local THREAT_FACTS = {
     holding = Holding,
@@ -392,15 +402,26 @@ local THREAT_FACTS = {
         if holding == true then return false end
         if holding == false and info.playerThreatNoEntry ~= true then return true end
         -- No threat of your own on it: held by someone else only if a group member holds it.
-        if type(info.targetUnit) == "string" and info.targetUnit ~= "player" then return true end
+        if HolderIsYou(info) == false then return true end
         if holding == false then return false end
     end,
     -- Held by another tank in your group (the mob's target has the tank role).
     offtank = function(info)
         if Holding(info) == true then return false end
-        local holder = info.targetUnit
-        if info.holdState == "TANK" and type(holder) == "string" then return holder ~= "player" end
+        if info.holdState == "TANK" and type(info.targetUnit) == "string" then
+            local you = HolderIsYou(info)
+            if you == nil then return nil end
+            return not you
+        end
         if info.holdState == "YOU" or info.holdState == "LOOSE" or info.holdState == "IDLE" then return false end
+    end,
+    -- The threat service's LOOSE (Service.lua's SetHolder and SetHold): held by someone who is not a tank (you too,
+    -- in a group, as a damage dealer or healer), or by someone outside the group. The Tank window's LOOSE, rules'
+    -- threat.loose and the Loose mark all read it here. UNKNOWN (the service could not say) is unknown, never loose.
+    loose = function(info)
+        local hold = info.holdState
+        if hold == "LOOSE" then return true end
+        if hold == "TANK" or hold == "YOU" or hold == "IDLE" then return false end
     end,
 }
 ThreatText.Facts = THREAT_FACTS
@@ -455,11 +476,7 @@ end
 -- protected) is true, else r, g, b (themselves possibly protected, from an earlier step). True and
 -- the new r, g, b (for sinks only), or false when the client has no such sink.
 local function FoldColour(flag, colour, r, g, b)
-    local okR, nr = Secret.Pick(flag, colour[1], r)
-    local okG, ng = Secret.Pick(flag, colour[2], g)
-    local okB, nb = Secret.Pick(flag, colour[3], b)
-    if okR and okG and okB then return true, nr, ng, nb end
-    return false
+    return Secret.PickColour(flag, colour[1], colour[2], colour[3], r, g, b)
 end
 ThreatText.FoldColour = FoldColour
 

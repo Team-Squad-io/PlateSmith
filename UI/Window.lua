@@ -15,13 +15,143 @@ Window.colours = {
     studio = { 0.58, 0.42, 0.19, 0.95 },
 }
 
--- Escape hides the named frame; Blizzard's UISpecialFrames needs a global name.
-function Window.CloseOnEscape(name)
+-- Blizzard's Settings panel runs CloseAllWindows on its transitions (closing back to the game menu, for one),
+-- which hides every UISpecialFrames window: closing the panel closed Studio with it. The panel (HIGH strata)
+-- also sits under every PlateSmith window. So while it shows, PlateSmith's Escape windows leave that list
+-- (back a frame after it hides, past its close's own CloseAllWindows), and outside combat each shown one
+-- keeps Escape from the rest of the UI and closes itself: Escape closes the top window first, as it looks.
+-- In combat the key cannot be kept, so Escape closes the panel and the windows stay.
+local escape = { names = {}, frames = {}, catchers = {}, afterClose = {}, held = false }
+Window._escape = escape
+
+local function SettingsPanelShown()
+    local panel = SettingsPanel
+    return type(panel) == "table" and panel.IsShown ~= nil and panel:IsShown() == true
+end
+
+local function InCombat() return PS.Secret ~= nil and PS.Secret.InCombat() == true end
+
+-- A window off the list keeps its slot under a name no global has (Blizzard's CloseSpecialWindows skips it), so the
+-- other addons' slots never move: shifting them from the panel's OnShow hook would taint each one.
+local HELD = "PlateSmith escape held: "
+
+local function SetListed(name, listed)
     if type(UISpecialFrames) ~= "table" then return end
-    for _, existing in ipairs(UISpecialFrames) do
-        if existing == name then return end
+    local held = HELD .. name
+    for index, existing in ipairs(UISpecialFrames) do
+        if existing == name then
+            if not listed then UISpecialFrames[index] = held end
+            return
+        elseif existing == held then
+            if listed then UISpecialFrames[index] = name end
+            return
+        end
     end
-    table.insert(UISpecialFrames, name)
+    if listed then table.insert(UISpecialFrames, name) end
+end
+
+-- From a frame's OnKeyDown: whether the key stops there (keep) or passes on to the rest of the UI; returns keep. Never
+-- in combat, where the client blocks the change (ADDON_ACTION_BLOCKED): a frame takes the keyboard only out of combat
+-- and passing keys on (Window.TakeKeyboard), so in combat every key passes on and nothing is kept.
+function Window.KeepKey(frame, keep)
+    if InCombat() then return false end
+    if frame.SetPropagateKeyboardInput then pcall(frame.SetPropagateKeyboardInput, frame, not keep) end
+    return keep == true
+end
+
+-- Out of combat: frame takes the keyboard (on), passing every key on until its OnKeyDown keeps one (KeepKey), or
+-- lets it go. Returns whether it changed.
+function Window.TakeKeyboard(frame, on)
+    if not frame or InCombat() then return false end
+    if on and frame.SetPropagateKeyboardInput then pcall(frame.SetPropagateKeyboardInput, frame, true) end
+    if frame.EnableKeyboard then pcall(frame.EnableKeyboard, frame, on and true or false) end
+    return true
+end
+
+-- On, a catcher takes the keyboard passing every key on until its handler keeps one: it never starts out
+-- keeping keys, which it could not undo in combat (where that setting cannot change).
+local function SetCatching(catcher, on)
+    if not catcher then return end
+    if on and catcher.SetPropagateKeyboardInput then pcall(catcher.SetPropagateKeyboardInput, catcher, true) end
+    if catcher.EnableKeyboard then pcall(catcher.EnableKeyboard, catcher, on) end
+end
+
+-- A keyboard-only child over the window (no mouse), made the first time the panel shows with it. It lets
+-- go of the keyboard when it keeps an Escape and takes it again when its window next shows.
+local function Catcher(name)
+    if escape.catchers[name] then return escape.catchers[name] end
+    local frame = escape.frames[name] or _G[name]
+    if type(frame) ~= "table" or not frame.Hide then return nil end
+    local catcher = CreateFrame("Frame", nil, frame)
+    catcher:SetAllPoints(frame)
+    catcher:SetScript("OnKeyDown", function(owner, key)
+        if not Window.KeepKey(owner, key == "ESCAPE") then return end
+        if owner.EnableKeyboard then pcall(owner.EnableKeyboard, owner, false) end
+        frame:Hide()
+    end)
+    catcher:SetScript("OnShow", function(owner) SetCatching(owner, escape.held and not InCombat()) end)
+    escape.catchers[name] = catcher
+    return catcher
+end
+
+local function Hold()
+    escape.held = true
+    local catching = not InCombat()
+    for _, name in ipairs(escape.names) do
+        SetListed(name, false)
+        SetCatching(Catcher(name), catching)
+    end
+end
+
+local function Relist()
+    if escape.held or SettingsPanelShown() then return end
+    for _, name in ipairs(escape.names) do SetListed(name, true) end
+    local after = escape.afterClose
+    escape.afterClose = {}
+    for _, callback in ipairs(after) do
+        local ok, failure = pcall(callback)
+        if not ok and PS.Chat then PS.Chat.ReportError("settings panel closed", failure) end
+    end
+end
+
+local function Release()
+    escape.held = false
+    for _, name in ipairs(escape.names) do SetCatching(escape.catchers[name], false) end
+    if C_Timer and type(C_Timer.After) == "function" then C_Timer.After(0, Relist) else Relist() end
+end
+
+-- True once the panel's show and hide are followed (false on a client without Blizzard's Settings panel).
+local function WatchSettingsPanel()
+    if escape.watching then return true end
+    local panel = SettingsPanel
+    if type(panel) ~= "table" or not panel.HookScript then return false end
+    escape.watching = true
+    panel:HookScript("OnShow", Hold)
+    panel:HookScript("OnHide", Release)
+    return true
+end
+Window.WatchSettingsPanel = WatchSettingsPanel
+
+-- Escape hides the named frame (frame: the window itself, else the global of that name); Blizzard's
+-- UISpecialFrames needs a global name.
+function Window.CloseOnEscape(name, frame)
+    if type(UISpecialFrames) ~= "table" then return end
+    local known = false
+    for _, existing in ipairs(escape.names) do
+        if existing == name then known = true break end
+    end
+    if not known then escape.names[#escape.names + 1] = name end
+    escape.frames[name] = frame or escape.frames[name]
+    WatchSettingsPanel()
+    if escape.watching and SettingsPanelShown() then Hold() elseif not escape.held then SetListed(name, true) end
+end
+
+-- Runs callback once, the frame after Blizzard's Settings panel next closes; false (and nothing kept)
+-- when the panel is not showing.
+function Window.WhenSettingsPanelCloses(callback)
+    if not (WatchSettingsPanel() and SettingsPanelShown()) or type(callback) ~= "function" then return false end
+    escape.afterClose[#escape.afterClose + 1] = callback
+    return true
 end
 
 -- spec: width, height, title, titleFont, strata, border, background,
@@ -61,7 +191,7 @@ function Window.Create(name, spec)
         frame.closeButton:SetScript("OnClick", function() frame:Hide() end)
     end
 
-    if spec.closeOnEscape ~= false and name then Window.CloseOnEscape(name) end
+    if spec.closeOnEscape ~= false and name then Window.CloseOnEscape(name, frame) end
 
     local bounds = spec.resizable
     if bounds then
@@ -208,6 +338,7 @@ function Window.ScrollBar(scroll)
     bar.up:SetScript("OnClick", function() Step(-1) end)
     bar.down:SetScript("OnClick", function() Step(1) end)
     local function Wheel(_, delta) Step(-delta) end
+    bar.Wheel = Wheel
     for _, frame in ipairs({ scroll, bar }) do
         if frame.EnableMouseWheel then frame:EnableMouseWheel(true) end
         frame:SetScript("OnMouseWheel", Wheel)
@@ -272,9 +403,16 @@ function Window.ScrollEditBox(parent, spec)
     scroll.textMeasure = measure
     scroll.measure = function(width) return MeasureText(measure, width, editBox:GetText() or "") end
     local bar = Window.ScrollBar(scroll)
+    -- The box covers the view and takes the pointer, so it passes the wheel on itself.
+    if editBox.EnableMouseWheel then editBox:EnableMouseWheel(true) end
+    editBox:SetScript("OnMouseWheel", bar.Wheel)
     editBox:SetScript("OnTextChanged", function() Window.RefreshScroll(scroll) end)
-    -- The cursor (typing, arrow keys, a selection being dragged) stays in view.
-    editBox:SetScript("OnCursorChanged", function(_, _, y, _, lineHeight)
+    -- A cursor that moved (typing, arrow keys, a selection being dragged) is brought into view. One
+    -- reported where it already was (the client can report it again as it lays the text out) is left
+    -- alone, so the wheel and the bar can move away from it.
+    editBox:SetScript("OnCursorChanged", function(box, x, y, _, lineHeight)
+        if box.cursorX == x and box.cursorY == y then return end
+        box.cursorX, box.cursorY = x, y
         local offset, view = scroll:GetVerticalScroll() or 0, scroll:GetHeight() or 0
         local top, line = -(tonumber(y) or 0), tonumber(lineHeight) or 14
         if top < offset then
@@ -306,11 +444,13 @@ function Window.ScrollText(parent)
     return scroll, child
 end
 
--- Replaces the text of a ScrollEditBox or ScrollText, back at the top, and resizes the content
--- to it: its height is the text's plus a small padding, so the scroll ends at the last line.
+-- Replaces the text of a ScrollEditBox or ScrollText, back at the top with nothing selected, and resizes
+-- the content to it: its height is the text's plus a small padding, so the scroll ends at the last line.
+-- Selecting it for copying is the caller's explicit step (a Copy or Select all button).
 function Window.SetScrollText(scroll, text)
     local target = scroll.textTarget or scroll:GetScrollChild()
     target:SetText(tostring(text or ""))
+    if target.HighlightText then target:HighlightText(0, 0) end
     if target.SetCursorPosition then target:SetCursorPosition(0) end
     scroll:SetVerticalScroll(0)
     Window.RefreshScroll(scroll)

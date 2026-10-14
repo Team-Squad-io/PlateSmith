@@ -132,7 +132,7 @@ function Interrupt.Ready()
     return value
 end
 
-local Pick = Secret.Pick
+local PickColour = Secret.PickColour
 
 -- The cast bar colour for colours (ready, cooldown, locked) and the cast's notInterruptible as the
 -- cast API gave it (possibly protected). Returns true, r, g, b (each possibly protected: for
@@ -144,13 +144,10 @@ function Interrupt.CastColour(colours, notInterruptible)
     if lockedKnown and notInterruptible == true then return true, locked.r, locked.g, locked.b end
     local value, secret = Read()
     local ready, cooldown = colours.ready, colours.cooldown
-    local r, g, b
+    local ok, r, g, b
     if secret then
-        local okR, okG, okB
-        okR, r = Pick(value, ready.r, cooldown.r)
-        okG, g = Pick(value, ready.g, cooldown.g)
-        okB, b = Pick(value, ready.b, cooldown.b)
-        if not (okR and okG and okB) then return false end
+        ok, r, g, b = PickColour(value, ready.r, ready.g, ready.b, cooldown.r, cooldown.g, cooldown.b)
+        if not ok then return false end
     elseif value == nil then
         return false
     else
@@ -158,11 +155,8 @@ function Interrupt.CastColour(colours, notInterruptible)
         r, g, b = colour.r, colour.g, colour.b
     end
     if not lockedKnown then
-        local okR, okG, okB
-        okR, r = Pick(notInterruptible, locked.r, r)
-        okG, g = Pick(notInterruptible, locked.g, g)
-        okB, b = Pick(notInterruptible, locked.b, b)
-        if not (okR and okG and okB) then return false end
+        ok, r, g, b = PickColour(notInterruptible, locked.r, locked.g, locked.b, r, g, b)
+        if not ok then return false end
     end
     return true, r, g, b
 end

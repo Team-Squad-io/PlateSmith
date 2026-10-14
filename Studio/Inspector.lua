@@ -241,7 +241,9 @@ end
 -- Runs build(...) for Studio's on-demand pages and contexts: what it registered is refreshed and
 -- given Studio's current look, as Options:Refresh and ApplyEditorTheme did for what was built with
 -- the frame. A failure is reported once; what was built stays.
-local function BuildLater(what, build, ...)
+-- tag, when given: { field, value } set on each control it registered (studioPage, studioContext: see
+-- Options:IsEditorControlAway).
+local function BuildLater(what, build, tag, ...)
     local controls = Options.controls
     local first, marks = #controls + 1, Options.EditorThemeMarks and Options:EditorThemeMarks()
     local ok, failure = pcall(build, ...)
@@ -249,12 +251,62 @@ local function BuildLater(what, build, ...)
     local settings = PS.GetSettings()
     local refreshing = Options.refreshing
     Options.refreshing = true
-    for index = first, #controls do pcall(controls[index].Refresh, controls[index], settings) end
+    for index = first, #controls do
+        if tag then controls[index][tag[1]] = tag[2] end
+        pcall(controls[index].Refresh, controls[index], settings)
+    end
     Options.refreshing = refreshing
     if marks then Options:PaintEditorThemeSince(marks) end
     return ok
 end
-Options._BuildEditorLater = BuildLater
+Options._BuildEditorLater = function(what, build, ...) return BuildLater(what, build, nil, ...) end
+
+-- A Settings page's controls (studioPage) and a part context's own rows (studioContext) are refreshed while they
+-- can be seen: Options:Refresh passes over them otherwise and marks them stale, and they are refreshed when
+-- their page is laid out to show (Chrome's LayoutEditorSettingsPanels) or their context is selected
+-- (RefreshEditorInspectorContext). Settings search lends any page's rows, so while it is busy every page counts as
+-- seen. Most of a refresh's controls are on pages and contexts out of sight (live: the Stacking page's diagram
+-- was drawn again on every value changed anywhere in Studio).
+function Options:IsEditorControlAway(control)
+    -- A page of Blizzard's Settings (Panel.lua's BuildPage) refreshes everything when it shows.
+    local panel = control.settingsPage
+    if panel then return not (panel.IsVisible and panel:IsVisible()) end
+    local page, context, away = control.studioPage, control.studioContext, false
+    if page then
+        local search = self.settingsSearch
+        if self.editorWorkspacePage ~= "settings" then
+            away = true
+        elseif not (search and search.IsBusy()) then
+            away = page ~= (self.editorSettingsCategory or "plate")
+        end
+    elseif context then
+        local selection = self.editorInspectorSelection
+        away = not (selection and selection.context == context)
+    end
+    -- Never one that can be seen (a row shown somewhere else than its page or context).
+    if away and control.IsVisible and control:IsVisible() then return false end
+    return away
+end
+
+-- The stale controls that can now be seen, refreshed (cheap when there are none).
+function Options:RefreshEditorStaleControls()
+    if not self.editorStaleControls then return end
+    local settings, refreshing, stale = PS.GetSettings(), self.refreshing, false
+    if not settings then return end
+    self.refreshing = true
+    for _, control in ipairs(self.controls) do
+        if control.studioStale then
+            if self:IsEditorControlAway(control) then
+                stale = true
+            else
+                control.studioStale = nil
+                pcall(control.Refresh, control, settings)
+            end
+        end
+    end
+    self.refreshing = refreshing
+    self.editorStaleControls = stale or nil
+end
 
 -- Fills a context's frame the first time it is wanted; true when it is built (or has nothing to build).
 -- With nothing selected the inspector shows the Plate row's Quick layout, built with the plate's rows.
@@ -263,7 +315,7 @@ function Options:BuildEditorContext(key)
     local build = contextBuilders[key]
     if not build then return true end
     contextBuilders[key] = nil
-    return BuildLater("studio inspector " .. key, build, self.editorContextFrames[key])
+    return BuildLater("studio inspector " .. key, build, { "studioContext", key }, self.editorContextFrames[key])
 end
 
 -- Whether a context's rows are still to be built (tests, Settings search).
@@ -363,29 +415,33 @@ local function BuildHeader(page)
     K.Add(page, header)
 end
 
--- Controls that cannot apply right now (Stacking while unmanaged) are dimmed this much.
+-- Controls that cannot apply (a Stacking setting the game ignores) are dimmed this much.
 local DIMMED_ALPHA = 0.55
 
 -- Placement: what the part is anchored to (its parent in the tree; dragging it there does the
 -- same) and how. Free keeps an offset from the parent's centre; pinned to an edge, it follows the
 -- parent's size. Either way it moves with the parent and hides with a hidden one.
--- Combo points that Style › Position puts on the health bar: Placement has no say (Editor's
--- IsEditorPlacedByStyle), so Anchor to and Stick to are unavailable and say why.
-local BY_STYLE_TIP = L["Style › Position puts the combo points on the health bar. Choose Where placed there to place "
-    .. "them here."]
+-- Combo points that Style › Position puts on the health bar, and the parts the Elite / rare mark's style places:
+-- Placement has no say (Editor's IsEditorPlacedByStyle), so Anchor to and Stick to are unavailable and say why
+-- (EditorPlacedByStyleTip).
+local function ByStyleTip() return Options:EditorPlacedByStyleTip(Options.selectedComponent) end
 local function BuildPlacement(page)
     local section = K.Section(page, L["PLACEMENT"])
     Options.editorInspectorBasics = section
     -- Where it is, its anchor, pin and scale are one area, so the section carries the mark.
     Mark(section, Area.Entry("placement"))
+    -- Whether other (its layout entry position) can be the selected part's anchor.
+    local function Anchorable(other, position, key)
+        return type(position) == "table" and other ~= key and not position.removed
+            and not (key and Options:IsEditorUnder(other, key))
+            and (other:match("^group%.%d+$") or Options:IsEditorComponentRelevant(other)) and true or false
+    end
     local function AnchorChoices()
         local key, layout = Options.selectedComponent, Options.editorLayout or {}
         local choices = { { value = "", label = L["Plate"] } }
         local entries = {}
         for other, position in pairs(layout) do
-            if type(position) == "table" and other ~= key and not position.removed
-                and not (key and Options:IsEditorUnder(other, key))
-                and (other:match("^group%.%d+$") or Options:IsEditorComponentRelevant(other)) then
+            if Anchorable(other, position, key) then
                 entries[#entries + 1] = { value = other, label = Options:EditorNodeLabel(other),
                     group = other:match("^group%.%d+$") ~= nil }
             end
@@ -399,6 +455,15 @@ local function BuildPlacement(page)
     end
     local anchorRow, anchor = K.DropdownRow(section, L["Anchor to"], {
         choices = AnchorChoices, name = WidgetName("editor_anchor", "Dropdown"),
+        -- What AnchorChoices names the anchor (the plate, or an entry it lists), without listing them.
+        labelFor = function(parentKey)
+            if parentKey == "" then return L["Plate"] end
+            local layout = Options.editorLayout or {}
+            if Anchorable(parentKey, layout[parentKey], Options.selectedComponent) then
+                return Options:EditorNodeLabel(parentKey)
+            end
+            return nil
+        end,
         get = function()
             local position = SelectedPosition()
             return position and position.parent or ""
@@ -429,7 +494,7 @@ local function BuildPlacement(page)
                 tooltip = L["Pinned below it: its top edge follows the parent's bottom edge."] },
         },
         disabledTip = function()
-            if Options:IsEditorPlacedByStyle(Options.selectedComponent) then return BY_STYLE_TIP end
+            if Options:IsEditorPlacedByStyle(Options.selectedComponent) then return ByStyleTip() end
             return L["To pin it to an edge, anchor it to a part (not a group or the plate)."]
         end,
         enabled = function(value)
@@ -445,7 +510,12 @@ local function BuildPlacement(page)
         end,
     })
     K.Add(section, behaviourRow)
-    K.Add(section, K.Note(section, BY_STYLE_TIP), function() return Options:IsEditorPlacedByStyle(Options.selectedComponent) end)
+    local byStyleNote = K.Note(section, ByStyleTip())
+    K.Add(section, byStyleNote, function()
+        local placed = Options:IsEditorPlacedByStyle(Options.selectedComponent)
+        if placed and byStyleNote.text then byStyleNote.text:SetText(ByStyleTip()) end
+        return placed
+    end)
     -- X and Y (for a pinned part, an offset from its pinned spot).
     local offset
     offset = K.OffsetRow(section, L["Offset"], function()
@@ -485,7 +555,7 @@ local function BuildPlacement(page)
         if instance:IsEnabled() or not GameTooltip then return end
         GameTooltip:SetOwner(instance, "ANCHOR_RIGHT")
         GameTooltip:SetText(L["Anchor to"], 1, 1, 1)
-        GameTooltip:AddLine(BY_STYLE_TIP, 1, 0.82, 0.45, true)
+        GameTooltip:AddLine(ByStyleTip(), 1, 0.82, 0.45, true)
         GameTooltip:Show()
     end)
     anchor:HookScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
@@ -540,10 +610,15 @@ end
 -- slider's step, which only the preview follows (once a frame); otherwise the preview and every
 -- style-bound control (styleControls: Display's text rows and Style's) follow.
 local styleControls = {}
-local function SelectedStyle()
-    local key = Options.selectedComponent
-    local profile = Profile()
-    return key and profile and profile.styles and profile.styles[key] or {}
+-- Read only (a part without a style shares one empty table: every style row asks on each refresh).
+local SelectedStyle
+do
+    local NONE = {}
+    SelectedStyle = function()
+        local key = Options.selectedComponent
+        local profile = Profile()
+        return key and profile and profile.styles and profile.styles[key] or NONE
+    end
 end
 local function WriteSelectedStyle(field, value, light)
     local key = Options.selectedComponent
@@ -574,11 +649,16 @@ end
 -- text's). spec.context: whose rows they are, which Settings search finds (EditorDisplayRows).
 local FONT_STYLE_CHOICES = { { value = "", label = L["Plate outline"] }, { value = "none", label = L["None"] },
     { value = "outline", label = L["Outline"] }, { value = "thick", label = L["Thick outline"] } }
+-- Kept while Media's list is the same (it is kept too): each refresh of a Font row asks. Read only.
+local fontChoices, fontChoicesFrom
 local function FontChoices()
+    local media = PS.Media.FontChoices()
+    if fontChoices and fontChoicesFrom == media then return fontChoices end
     local choices = { { value = "", label = L["Plate font"] } }
-    for _, choice in ipairs(PS.Media.FontChoices()) do
+    for _, choice in ipairs(media) do
         if choice.value ~= "default" then choices[#choices + 1] = choice end
     end
+    fontChoices, fontChoicesFrom = choices, media
     return choices
 end
 local function StyleBinding(field)
@@ -656,7 +736,7 @@ local DISPLAY_ROW_LABELS = { buffs = { L["Permanent"], L["Font"], L["Font size"]
     L["Text position"] } }
 DISPLAY_ROW_LABELS.debuffs = DISPLAY_ROW_LABELS.buffs
 for _, context in ipairs({ "name", "level", "guild", "tagged", "targetName", "quest", "classification", "threat",
-    "combo", "targetedBy", "cast", "value" }) do
+    "combo", "targetedBy", "cast", "value", "statusText" }) do
     DISPLAY_ROW_LABELS[context] = TEXT_ROW_LABELS
 end
 Options._editorDisplayRowLabels = DISPLAY_ROW_LABELS
@@ -818,16 +898,17 @@ local function BuildTextContexts(page)
             name = WidgetName("selected_friendlyPvpStyle", "Dropdown"), get = getPvp, set = setPvp })
         Register(pvp)
         K.Add(pvpSection, pvpRow)
-        -- The flagged name's colour (relationshipColours.pvp), while Display colours it.
-        local function NameColoured()
-            local style = PS.GetSettings().friendlyPvpStyle
-            return style == "colour" or style == "both"
-        end
+        -- The flagged ally's colour (relationshipColours.pvp), while Display colours it; where it goes is
+        -- PvPMark.ColourOnBar's.
+        local function NameColoured() return PS.PvPMark.Colours(PS.GetSettings()) end
         local function SetPvpColour(r, g, b)
             PS.SetRelationshipColour("pvp", r, g, b)
             Options:Refresh(true)
         end
-        local colourRow, colour = K.SwatchRow(pvpSection, L["Name colour"], {
+        K.Add(pvpSection, K.Help(pvpSection, L["On a full plate the health bar takes the colour and the name keeps its "
+            .. "own. The name takes it on names-only plates and where the bar has a colour of its own: Custom colour, a "
+            .. "colour rule that always applies, or class colours (Colour social relationships off)."]), NameColoured)
+        local colourRow, colour = K.SwatchRow(pvpSection, L["PvP colour"], {
             name = WidgetName("selected_pvpColour", "Colour"),
             get = function() return PS.GetSettings().relationshipColours.pvp end,
             set = SetPvpColour,
@@ -857,8 +938,19 @@ local function BuildTextContexts(page)
             name = WidgetName("selected_classificationStyle", "Dropdown"), get = getMark, set = setMark })
         Register(mark)
         K.Add(markSection, markRow)
+        -- Icon size, for the styles that draw Blizzard's winged icon.
+        local getSize, setSize = SettingControl("classificationIconSize")
+        local sizeRow, size = K.DropdownRow(markSection, L["Icon size"], { choices = model.classificationIconSizeChoices,
+            name = WidgetName("selected_classificationIconSize", "Dropdown"), get = getSize, set = setSize })
+        Register(size)
+        K.Add(markSection, sizeRow, function()
+            local style = PS.GetSettings().classificationStyle
+            return style == "icon" or style == "beforeName"
+        end)
         Options.SharedSettingNote(K, markSection)
-        K.Add(markSection, K.Help(markSection, L["Icons: gold dragon elite, silver dragon rare or rare elite, skull world boss."]))
+        K.Add(markSection, K.Help(markSection, L["Gold for elite, silver for rare, both for rare elite, a skull or red "
+            .. "for a world boss. Classic dragon and Before the name place the mark and the level themselves; another "
+            .. "style puts back your own placement. Where the game keeps the classification private, no mark shows."]))
         TextRows(markSection, { context = "classification" })
     end)
 
@@ -943,6 +1035,92 @@ local function BuildTextContexts(page)
         end })
     end)
 
+    -- The Action icon (Nameplates/ActionIcon.lua): what it is, and how an icon saying you can't shows.
+    CreateContext(page, "actionIcon", function(context)
+        local actionSection = K.Section(context, L["DISPLAY"])
+        K.Add(context, actionSection)
+        K.Add(actionSection, K.Help(actionSection, L["The game's own cursor icon for this object or NPC: a herb, ore, a "
+            .. "chest, a book, a quest, someone to talk to or a trainer. Where the game gives no icon, none shows. Rules "
+            .. "and custom text can read what it says: object.kind, object.unable, and interact.inrange for reach."]))
+        local unableRow, unable = K.DropdownRow(actionSection, L["Can't use"], {
+            choices = { { value = "game", label = L["As the game shows it"] }, { value = "grey", label = L["Greyed"] },
+                { value = "hide", label = L["Hidden"] } },
+            name = WidgetName("selected_actionIcon_unable", "Dropdown"),
+            get = function() return SelectedStyle().iconUnable or "game" end,
+            set = function(value) WriteSelectedStyle("iconUnable", value ~= "game" and value or nil) end,
+        })
+        KeepStyleControl(unable)
+        Mark(unableRow, Area.Style("iconUnable"))
+        K.AttachHelp(unableRow, L["The game shows its own icon for something you cannot use yet, such as a herb your "
+            .. "skill is too low for. Greyed dims it further; Hidden shows nothing."])
+        K.Add(actionSection, unableRow)
+    end)
+
+    -- The Status text (Nameplates/ObjectStatus.lua): where it comes from, then the text rows.
+    CreateContext(page, "statusText", function(context)
+        local section = K.Section(context, L["DISPLAY"])
+        K.Add(context, section)
+        K.Add(section, K.Help(section, L["What the object needs, such as Mining 65, in the game's gathering colours for "
+            .. "your skill: orange, yellow, green, grey, or red when you can't yet. It comes from the game's tooltip: "
+            .. "hover one Tin Vein and every Tin Vein shows it from then on; herbs and ore veins show the original "
+            .. "game's level without hovering. Until then, or for an object that needs no skill, nothing shows. With "
+            .. "Cultivation (Tauren), herbs add Cultivate ready, Cultivate in 23m, Cultivated or the level it needs. "
+            .. "Rules and custom text can read object.skill, object.cangather and object.cancultivate."]))
+        TextRows(section, { context = "statusText" })
+    end)
+
+    -- The Backdrop (Nameplates/Backdrop.lua): what it is; its look and size are under Style.
+    CreateContext(page, "backdrop", function(context)
+        local section = K.Section(context, L["DISPLAY"])
+        K.Add(context, section)
+        K.Add(section, K.Help(section, L["A box behind other parts, like the game's tooltip. Style › Size: Fit to parts "
+            .. "wraps the parts you tick (the name, the Status text, the Action icon, the quest marker) as they show and "
+            .. "hide, so a herb's box grows to hold its Status text; Fixed size is a box of your own size to place "
+            .. "anywhere. Rules can hide or fade it."]))
+    end)
+
+    -- The Loose mark (Nameplates/LooseMark.lua): when it shows, its icon and its pulse.
+    CreateContext(page, "looseMark", function(context)
+        local looseSection = K.Section(context, L["DISPLAY"])
+        K.Add(context, looseSection)
+        K.Add(looseSection, K.Help(looseSection, L["A small mark while the mob is loose: attacking someone who is not a "
+            .. "tank, as the Tank window's LOOSE says. Where the game will not say who holds it, no mark shows. Rules "
+            .. "and custom text can read the same as threat.loose. Test values: Loose and You tank."]))
+        local forRow, forControl = K.DropdownRow(looseSection, L["Show for"], {
+            choices = { { value = "tank", label = L["Tanks"] }, { value = "all", label = L["Everyone"] } },
+            name = WidgetName("selected_looseMark_for", "Dropdown"),
+            get = function() return SelectedStyle().looseFor or "tank" end,
+            set = function(value) WriteSelectedStyle("looseFor", value == "all" and "all" or nil) end,
+        })
+        KeepStyleControl(forControl)
+        Mark(forRow, Area.Style("looseFor"))
+        K.AttachHelp(forRow, L["Tanks: only while you tank (your role, or Threat colours' Role). Everyone: whatever your "
+            .. "role, so a healer sees which mobs got loose."])
+        K.Add(looseSection, forRow)
+        local iconRow, iconControl = K.DropdownRow(looseSection, L["Icon"], {
+            choices = { { value = "alert", label = L["The game's alert"] }, { value = "window", label = L["Tank window's"] } },
+            name = WidgetName("selected_looseMark_icon", "Dropdown"),
+            get = function() return SelectedStyle().looseIcon or "alert" end,
+            set = function(value) WriteSelectedStyle("looseIcon", value == "window" and "window" or nil) end,
+        })
+        KeepStyleControl(iconControl)
+        Mark(iconRow, Area.Style("looseIcon"))
+        K.Add(looseSection, iconRow)
+        local pulseRow, pulse = K.CheckRow(looseSection, L["Pulse"], { text = L["Pulse as it gets loose"],
+            name = WidgetName("selected_looseMark_pulse", "Checkbox"),
+            get = function() return SelectedStyle().loosePulse ~= false end,
+            -- On clears the field (nil: it pulses); off stores false.
+            set = function(on)
+                if on then return WriteSelectedStyle("loosePulse", nil) end
+                return WriteSelectedStyle("loosePulse", false)
+            end,
+        })
+        KeepStyleControl(pulse)
+        Mark(pulseRow, Area.Style("loosePulse"))
+        K.AttachHelp(pulseRow, L["Two quick blinks when the mob becomes loose; then it stays still."])
+        K.Add(looseSection, pulseRow)
+    end)
+
     -- Parts with nothing of their own beyond Placement, Style and Rules.
     for _, key in ipairs({ "raidIcon", "other" }) do CreateContext(page, key) end
 end
@@ -991,6 +1169,35 @@ local function BuildBarContexts(page)
         Mark(colourRow, Area.Option({ "healthColour", "healthColourMode" }))
         K.Add(health, colourRow)
         Options.ThreatColourPartCheck(K, health, "health")
+        -- Grey when tagged by others (greyWhenTagged, the whole profile's; ThreatColours.GreyWhenTagged): enemy
+        -- plates only. A profile saved before 1.2.1 has it off and keeps its TAGGED word; a line offers the
+        -- switch, which turns TAGGED off too (Settings › Show on plates' box, every design).
+        local function EnemyPlate() return Options:IsEditorEnemy() end
+        local greyGet, greySet = Options.BindSetting("greyWhenTagged")
+        local greyRow, grey = K.CheckRow(health, L["Tagged"], { text = L["Grey when tagged by others"],
+            get = greyGet, set = greySet, name = WidgetName("selected_greyWhenTagged", "Checkbox") })
+        Register(grey)
+        K.Add(health, greyRow, EnemyPlate)
+        local greyHelp = L["While another player or group has tagged the mob (you get no credit for it), its health bar "
+            .. "is grey, as Blizzard's plates draw it. It wins over threat colours; a colour rule on the health bar wins "
+            .. "over it."]
+        if not K.AttachHelp(greyRow, greyHelp) then K.Add(health, K.Help(health, greyHelp), EnemyPlate) end
+        Options.SharedSettingNote(K, health, EnemyPlate)
+        local function OfferGrey()
+            return EnemyPlate() and PS.GetSettings().greyWhenTagged ~= true and PS.GetPartShownState("showTagged") ~= "none"
+        end
+        K.Add(health, K.Help(health, L["This profile shows the TAGGED word. Blizzard's plates grey the bar instead."]),
+            OfferGrey)
+        local insteadRow, instead = K.ButtonRow(health, L["Grey bar instead"], 150)
+        instead:SetScript("OnClick", function()
+            PS.SetOption("greyWhenTagged", true)
+            PS.SetPartShownEverywhere("showTagged", false)
+            Options:Refresh(true)
+        end)
+        PS.UI.Controls.AttachTooltip(instead, L["Grey bar instead"], { L["Turns on Grey when tagged by others and turns "
+            .. "the TAGGED word off in every design. Its eye in the parts tree brings it back."] })
+        K.Add(health, insteadRow, OfferGrey)
+        Options.editorGreyWhenTagged, Options.editorGreyInstead = grey, instead
     end)
 
     CreateContext(page, "power", function(context)
@@ -1012,6 +1219,8 @@ local function BuildBarContexts(page)
         local icon = K.Segmented(iconRow, {
             name = WidgetName("selected_castIcon", "Choice"),
             choices = { { value = "left", label = L["Left"], tooltip = L["The spell's icon left of the bar."] },
+                { value = "inside", label = L["Inside"],
+                    tooltip = L["The spell's icon inside the bar's left end, as tall as the bar; the spell's name starts after it."] },
                 { value = "right", label = L["Right"], tooltip = L["The spell's icon right of the bar."] },
                 { value = "off", label = L["Off"], tooltip = L["No icon."] } },
             get = function() return ProfileValue("castIcon")() or "left" end,
@@ -1105,13 +1314,22 @@ local function BuildValueContext(page)
             local slot = SelectedSlot()
             return slot and slot.source == "template" and not slot.kind
         end
+        -- A choice's fields in one write (a module's source is the source and the text: catalog.ChoiceFields).
+        local function WriteChoice(value, field)
+            local slot, key = SelectedSlot()
+            local fields = catalog.ChoiceFields(value, field, slot and slot.kind)
+            if not slot or not PS.SetPlateValueSlotFields(Options:EditorTarget(), key, fields) then return false end
+            Options:RefreshEditorAppearance(PS.GetSettings())
+            Options:SelectEditorComponent(key)
+            return true
+        end
         local controls = {}
-        -- A bar's fill comes from a percentage; a text value from any source.
+        -- A bar's fill comes from a percentage; a text value from any source; both may be a module's.
         local sourceRow, source = K.DropdownRow(section, L["Source"], {
             placeholder = L["Choose value"], name = WidgetName("selected_value_source", "Dropdown"),
-            choices = function() return Kind() == "bar" and catalog.barSourceChoices or catalog.valueSourceChoices end,
-            get = SlotField("source"),
-            set = function(value) WriteSlot("source", value, true) end,
+            choices = function() return Kind() == "bar" and catalog.BarSourceChoices() or catalog.ValueSourceChoices() end,
+            get = function() return catalog.SlotChoice((SelectedSlot())) end,
+            set = function(value) WriteChoice(value, "source") end,
         })
         controls[#controls + 1] = source
         -- Refreshed with every setting-bound control (Options:Refresh) as well as with the part.
@@ -1122,9 +1340,9 @@ local function BuildValueContext(page)
         K.Add(section, sourceRow, function() return Kind() == nil or Kind() == "bar" end)
         -- An icon's picture, in the source's place.
         local iconRow, icon = K.DropdownRow(section, L["Picture"], {
-            choices = catalog.iconChoices, name = WidgetName("selected_value_icon", "Dropdown"),
-            get = function() return SlotField("icon")() or "raid8" end,
-            set = function(value) WriteSlot("icon", value) end,
+            choices = catalog.IconChoices, name = WidgetName("selected_value_icon", "Dropdown"),
+            get = function() return catalog.SlotChoice((SelectedSlot())) end,
+            set = function(value) WriteChoice(value, "icon") end,
         })
         controls[#controls + 1] = icon
         Register(icon)
@@ -1151,6 +1369,7 @@ local function BuildValueContext(page)
         end
         K.Add(section, shape, function() return Kind() ~= nil end)
         Options.editorValueShapeBox, Options.editorValueIconDropdown = shape, icon
+        Options.editorValueSourceDropdown = source
         -- Custom text: the template, written live (the preview shows it with sample values), and
         -- what is wrong with it while it does not compile.
         local template = K.Group(section)
@@ -1204,7 +1423,14 @@ local function BuildValueContext(page)
                 .. "brackets and < <= > >= = !=."],
             L["Flags for conditions: tagged elite rare boss casting interruptible interruptReady combat tanking targeted focus quest "
                 .. "questdrop friendly hostile neutral player pvp instance ingroup inguild role.tank threat.holding "
-                .. "threat.losing threat.pulling threat.other threat.offtank hastarget inrange; level.diff is a number."],
+                .. "threat.losing threat.pulling threat.other threat.offtank threat.loose hastarget inrange; level.diff is a "
+                .. "number."],
+            L["Objects and NPCs you can interact with: {object.kind} (herb, ore, skin, loot, quest, inspect, interact, "
+                .. "talk, trainer, vendor, flight, repair, mail or other, from the game's own icon), [if object.kind = herb], "
+                .. "object.unable (the icon says you can't yet), interact.inrange, object.quest (a quest database lists it). "
+                .. "{object.id} is the object's ID from the game, {unit.id} an NPC's. {object.skill} is the skill it needs "
+                .. "and object.cangather whether yours reaches it (herbs and ore at once, other objects once you have "
+                .. "hovered one like it); object.cancultivate whether Cultivation is ready for this herb."],
             { L["A protected or missing value still shows, but a condition on it is unknown and counts as not true "
                 .. "(not included), so [else] shows."], 0.86, 0.86, 0.86 },
         }, true)
@@ -1376,10 +1602,11 @@ end
 -- shadow are in Display). Bars: texture, background and border. Pips (combo points): colours, size
 -- and spacing. Badges ("Targeted by"): size, spacing and direction.
 local STYLE_TEXT = { name = true, level = true, guild = true, targetName = true, threat = true, tagged = true,
-    classification = true }
+    classification = true, statusText = true }
 local STYLE_BAR = { health = true, power = true, cast = true }
 local function StyleKind(key)
     if STYLE_BAR[key] then return "bar" end
+    if key == "backdrop" then return "backdrop" end
     if key == "combo" then return "pips" end
     if key == "targetedBy" then return "badges" end
     if type(key) == "string" and key:match("^value%d+$") then
@@ -1395,7 +1622,7 @@ local function StyleKind(key)
 end
 -- Parts a rule can colour (a text's colour, a bar's fill).
 local COLOURABLE = { health = true, power = true, cast = true, name = true, level = true, guild = true,
-    threat = true, tagged = true, targetName = true, classification = true }
+    threat = true, tagged = true, targetName = true, classification = true, statusText = true }
 local function Colourable(key)
     return COLOURABLE[key] or (type(key) == "string" and key:match("^value%d+$") ~= nil)
 end
@@ -1452,17 +1679,64 @@ local function BuildStyle(page)
 
     -- Text: the box behind it (its shape, its fill and border with their opacity, and padding). A rounded
     -- box is Blizzard's own level box in its own colours, so Fill and Border are for the square one.
-    local function SquareBox() return Text() and Style().boxShape ~= "rounded" end
-    K.Add(section, K.SubHeader(section, L["Box behind"]), Text)
+    -- The Backdrop (Nameplates/Backdrop.lua) shares the box's rows (its border has a width too), then how it is sized:
+    -- Fit to parts (the parts it wraps, ticked as the soft glow's Glow parts are, and Padding round them) or Fixed size
+    -- (Width and Height, placed as any part).
+    local BACKDROP = Schema.BACKDROP
+    local function Backdrop() return StyleKind(Options.selectedComponent) == "backdrop" end
+    local function Fitted() return Backdrop() and Style().backdropWrap ~= "fixed" end
+    local function FixedSize() return Backdrop() and Style().backdropWrap == "fixed" end
+    local function Boxed() return Text() or Backdrop() end
+    local function SquareBox() return Boxed() and Style().boxShape ~= "rounded" end
+    K.Add(section, K.SubHeader(section, L["Box behind"]), Boxed)
     K.Add(section, CheckRow(L["Box"], "box", true, L["Show a box"]), Text)
     K.Add(section, DropdownRow(L["Shape"], "boxShape", {
         { value = "", label = L["Square"] }, { value = "rounded", label = L["Rounded (Blizzard's)"] },
-    }, "selected_style_box_shape"), Text)
+    }, "selected_style_box_shape"), Boxed)
     K.Add(section, K.Help(section, L["Rounded is Blizzard's own nameplate level box, in its own colours."]),
-        function() return Text() and Style().boxShape == "rounded" end)
+        function() return Boxed() and Style().boxShape == "rounded" end)
+    -- Height (boxHeight): the text and Padding, or at least the part the text is pinned to (Blizzard's box by its bar).
+    K.Add(section, DropdownRow(L["Height"], "boxHeight", {
+        { value = "", label = L["Fit the text"] }, { value = "parent", label = L["Match its parent"] },
+    }, "selected_style_box_height"), Text)
+    K.Add(section, K.Help(section, L["As tall as the part this text is pinned to (the bar beside it), centred on the "
+        .. "text; Padding sets its sides."]), function() return Text() and Style().boxHeight == "parent" end)
     K.Add(section, SwatchRow(L["Fill"], "boxColour", STYLE_DEFAULTS.boxColour, true), SquareBox)
     local boxBorder = SwatchRow(L["Border"], "boxBorder", STYLE_DEFAULTS.boxBorder, true)
-    K.Add(section, boxBorder, SquareBox)
+    K.Add(section, boxBorder, function() return Text() and Style().boxShape ~= "rounded" end)
+    local backdropBorder = SwatchRow(L["Border"], "boxBorder", STYLE_DEFAULTS.boxBorder, true)
+    SizeAfterSwatch(backdropBorder, "border", Schema.STYLE_BORDER, STYLE_DEFAULTS.backdropEdge)
+    backdropBorder.changedMark.area = Area.Style({ "boxBorder", "border" })
+    K.Add(section, backdropBorder, function() return Backdrop() and Style().boxShape ~= "rounded" end)
+    local wrapRow = DropdownRow(L["Size"], "backdropWrap", {
+        { value = "", label = L["Fit to parts"] }, { value = "fixed", label = L["Fixed size"] },
+    }, "selected_style_backdrop_wrap")
+    K.AttachHelp(wrapRow, L["Fit to parts: it wraps the parts ticked under Wraps while they show, Padding round them, and "
+        .. "hides when none shows; move those parts to move it. Fixed size: Width by Height, placed like any part."])
+    K.Add(section, wrapRow, Backdrop)
+    local ticked = {}
+    local function TickedParts()
+        local set = BACKDROP.Ticked(Style().backdropParts)
+        for _, part in ipairs(BACKDROP.PARTS) do ticked[part] = set[part] == true end
+        return ticked
+    end
+    local partChoices = {}
+    for _, part in ipairs(BACKDROP.PARTS) do
+        partChoices[#partChoices + 1] = { value = part, label = Options:EditorComponentLabel(part) }
+    end
+    local partsRow, partsControl = K.DropdownRow(section, L["Wraps"], { multi = true, choices = partChoices,
+        name = WidgetName("selected_style_backdrop_parts", "Dropdown"), get = TickedParts,
+        set = function(part, on)
+            local parts = TickedParts()
+            parts[part] = on == true
+            local value = BACKDROP.Value(parts)
+            return WriteStyle("backdropParts", value ~= BACKDROP.DEFAULT and value or nil)
+        end })
+    Keep(partsControl)
+    Mark(partsRow, Area.Style("backdropParts"))
+    K.AttachHelp(partsRow, L["The parts the box wraps while they show. A hidden part (its eye off, nothing to show, "
+        .. "or hidden by a rule) is left out; with none showing the box hides."])
+    K.Add(section, partsRow, Fitted)
     local paddingRow, padding = K.SliderRow(section, L["Padding"], {
         min = Schema.STYLE_PADDING[1], max = Schema.STYLE_PADDING[2], step = 1,
         get = function() return Style().padding or STYLE_DEFAULTS.padding end,
@@ -1471,8 +1745,19 @@ local function BuildStyle(page)
     })
     Keep(padding)
     Mark(paddingRow, Area.Style("padding"))
-    K.Add(section, paddingRow, Text)
-
+    K.Add(section, paddingRow, function() return Text() or Fitted() end)
+    for _, size in ipairs({ { L["Width"], "backdropWidth" }, { L["Height"], "backdropHeight" } }) do
+        local field = size[2]
+        local row, slider = K.SliderRow(section, size[1], {
+            min = BACKDROP.SIZE[1], max = BACKDROP.SIZE[2], step = 1,
+            get = function() return Style()[field] or STYLE_DEFAULTS[field] end,
+            drag = function(value) return WriteStyle(field, value, true) end,
+            set = function(value) return WriteStyle(field, value) end,
+        })
+        Keep(slider)
+        Mark(row, Area.Style(field))
+        K.Add(section, row, FixedSize)
+    end
     -- Pips (combo points): the shape and where the row sits, the filled and empty colours with their
     -- opacity (or your class colour), a glow on filled pips, each pip's size and the gap, and Fit to bar
     -- width (the row spans the health bar: Schema.PipRow works out the width, or the gap, it replaces).
@@ -1491,6 +1776,9 @@ local function BuildStyle(page)
         { value = "", label = L["Where placed"] }, { value = "edge", label = L["On the bar's bottom edge"] },
         { value = "above", label = L["Above the bar"] }, { value = "below", label = L["Below the bar"] },
     }, "selected_style_pip_anchor"), Pips)
+    -- One placement at a time (audit #15): on the bar, Placement's rows are unavailable (IsEditorPlacedByStyle).
+    K.Add(section, K.Help(section, L["On the bar's bottom edge, above or below it, the row sits on the health bar and "
+        .. "Placement is off. Where placed: Placement places it."]), Pips)
     -- Show row (pipShowRow): when the row appears on your target; "" is Always (empty pips at 0).
     K.Add(section, DropdownRow(L["Show row"], "pipShowRow", {
         { value = "", label = L["Always"] }, { value = "combat", label = L["In combat or with points"] },
@@ -1615,10 +1903,19 @@ end
 -- Rules: an ordered list of "when <condition>, then <colour | blend | opacity | hide>" cards.
 -- Written whole on each change (PS.SetPartRules); the preview shows them with sample values, or
 -- as if every condition held while Preview "as if every condition is true" is ticked.
+-- ReadRules: the stored list, read only (every rule row's getter and the section's refresh ask on each refresh);
+-- CurrentRules: a copy to change and write whole.
+local ReadRules
+do
+    local NONE = {}
+    ReadRules = function()
+        local key = Options.selectedComponent
+        local profile = Profile()
+        return key and profile and profile.rules and profile.rules[key] or NONE, key
+    end
+end
 local function CurrentRules()
-    local key = Options.selectedComponent
-    local profile = Profile()
-    local list = key and profile and profile.rules and profile.rules[key] or {}
+    local list, key = ReadRules()
     return PS.Table.DeepCopy(list), key
 end
 -- The full write refreshes the preview, and with it the inspector (these cards too).
@@ -1662,10 +1959,12 @@ end
 -- One rule's card (K.Card); cards are made as needed and reused.
 local function RuleCard(parent, index)
     local card = K.Card(parent)
+    -- Rule(): this card's rule in a copy of the list, to change and write; Shown(): the stored one, read only.
     local function Rule()
         local list = CurrentRules()
         return list[index], list
     end
+    local function Shown() return (ReadRules())[index] end
     local pad = K.CARD_PAD
     -- When: an on/off box, then the condition, the whole control column (less the remove at the
     -- card's right). A rule turned off stays in the list, unchanged, and never applies.
@@ -1673,7 +1972,7 @@ local function RuleCard(parent, index)
     local enabled = Controls.Checkbox(whenRow, {
         name = WidgetName("selected_rule_enabled_" .. index, "Checkbox"), label = "",
         get = function()
-            local rule = Rule()
+            local rule = Shown()
             return rule ~= nil and rule.enabled ~= false
         end,
         set = function(on)
@@ -1746,7 +2045,7 @@ local function RuleCard(parent, index)
     local setDropdown = K.Dropdown(thenRow, {
         choices = SetChoices, name = WidgetName("selected_rule_set_" .. index, "Dropdown"),
         get = function()
-            local rule = Rule()
+            local rule = Shown()
             return rule and rule.set
         end,
         set = function(value)
@@ -1763,7 +2062,7 @@ local function RuleCard(parent, index)
     local swatch = Controls.ColourSwatch(thenRow, {
         size = K.SWATCH,
         get = function()
-            local rule = Rule()
+            local rule = Shown()
             return rule and rule.colour
         end,
         set = function(r, g, b)
@@ -1786,7 +2085,7 @@ local function RuleCard(parent, index)
     local alpha = K.Slider(alphaRow, {
         min = 0, max = 1, step = 0.05, format = PercentText,
         get = function()
-            local rule = Rule()
+            local rule = Shown()
             return rule and rule.alpha or 0.5
         end,
         drag = function(value) return WriteAlpha(value, true) end, set = WriteAlpha,
@@ -1805,7 +2104,8 @@ local function RuleCard(parent, index)
         row.swatch = Controls.ColourSwatch(row, {
             size = K.SWATCH,
             get = function()
-                local stops = Stops()
+                local rule = Shown()
+                local stops = rule and rule.stops
                 return stops and stops[stopIndex] and stops[stopIndex].colour
             end,
             set = function(r, g, b)
@@ -1944,7 +2244,7 @@ end
 
 local function BuildRules(page)
     local section = K.Section(page, L["RULES"], { summary = function()
-        local count = #(CurrentRules() or {})
+        local count = #(ReadRules())
         if count == 0 then return L["No rules"] end
         return count == 1 and L["1 rule"] or string.format(L["%d rules"], count)
     end })
@@ -1956,7 +2256,14 @@ local function BuildRules(page)
             .. "hides. With none, the part keeps its own style. Presets add ready-made sets."],
         L["Conditions are the same as in Custom text: tagged, elite, casting, health.percent < 35, and, or, not. "
             .. "Role and threat: role.tank, threat.holding, threat.losing, threat.pulling, threat.other, "
-            .. "threat.offtank. Fades: hastarget (you have a target), inrange (within your spells' reach)."],
+            .. "threat.offtank, threat.loose (held by someone who is not a tank, as the Tank window's LOOSE). Fades: "
+            .. "hastarget (you have a target), inrange (within your spells' reach)."],
+        L["Objects and NPCs: object.kind = herb (or ore, skin, loot, quest, inspect, interact, talk, trainer, vendor, "
+            .. "flight, repair, mail, other: the game's own icon says), object.unable (it says you can't yet), "
+            .. "interact.inrange (within reach), object.quest (a quest database lists it), object.id = 175734 (the "
+            .. "object's ID from the game), unit.id (an NPC's), object.skill > 100 (the skill it needs), object.cangather "
+            .. "(your skill reaches it; both known for herbs and ore, and once you have hovered one like it), "
+            .. "object.cancultivate (Cultivation is ready for this herb)."],
         { L["A condition on a protected or missing value is unknown and counts as not true, even after not."],
             0.86, 0.86, 0.86 },
     }, false)
@@ -1985,35 +2292,35 @@ local function BuildRules(page)
         local rules = CurrentRules()
         if RuleRoom(rules) < 1 then return end
         local key = Options.selectedComponent
-        rules[#rules + 1] = { when = "tagged", set = Colourable(key) and "colour" or "alpha",
-            colour = { r = 0.5, g = 0.5, b = 0.5 }, alpha = 0.5 }
+        -- A starter to edit: low health turns the part red (or half see-through). Not "tagged", which
+        -- the plates already grey on their own.
+        rules[#rules + 1] = { when = "health.percent < 35", set = Colourable(key) and "colour" or "alpha",
+            colour = { r = 0.9, g = 0.15, b = 0.1 }, alpha = 0.5 }
         WriteRules(rules)
     end)
     Controls.AttachTooltip(addRule, L["+ Add rule"], { string.format(L["A part keeps up to %d rules, a plate type %d "
         .. "in all; when the button is off, remove one first."], Schema.MAX_RULES_PER_PART, MAX_RULES) })
     K.Add(section, buttons)
     -- Presets: built-in sets of rules that fit this part, appended after its own (the title's action).
-    -- Presets with a hint (the threat colours, which a setting does without rules) sit under Advanced,
-    -- the hint its tooltip.
+    -- Retired ones (a built-in option does the job: Threat colours, Colour by interrupt, Fading) are not
+    -- offered; rules made from them stay ordinary rules.
+    -- A preset for some plate types only (plates: Colour objects by type, the Objects tab's) is offered there.
+    local function PresetFits(preset, key)
+        return not preset.retired and (preset.kind ~= "colour" or Colourable(key))
+            and (preset.plates == nil or preset.plates[Options.editorProfile] == true)
+    end
     local function RulePresetEntries()
-        local key, entries, advanced, hint = Options.selectedComponent, {}, {}, nil
-        local room = RuleRoom(CurrentRules())
+        local key, entries = Options.selectedComponent, {}
+        local room = RuleRoom((ReadRules()))
         for _, preset in ipairs(RULE_PRESETS) do
-            if preset.kind ~= "colour" or Colourable(key) then
-                local into = preset.hint and advanced or entries
-                hint = hint or preset.hint
-                into[#into + 1] = { text = preset.name, disabled = room < #preset.rules,
-                    tooltip = preset.hint and { title = preset.name, text = preset.hint } or nil, func = function()
+            if PresetFits(preset, key) then
+                entries[#entries + 1] = { text = preset.name, disabled = room < #preset.rules, func = function()
                     local rules = CurrentRules()
                     if RuleRoom(rules) < #preset.rules then return end
                     for _, rule in ipairs(preset.rules) do rules[#rules + 1] = PS.Table.DeepCopy(rule) end
                     WriteRules(rules)
                 end }
             end
-        end
-        if #advanced > 0 then
-            entries[#entries + 1] = { text = L["Advanced"], children = advanced,
-                tooltip = { title = L["Advanced"], text = hint } }
         end
         return entries
     end
@@ -2024,8 +2331,17 @@ local function BuildRules(page)
     Options.editorRulesAdd, Options.editorRulePresetsButton = addRule, presets
     Options.editorRuleRows = cards
     Options.EditorRulePresetEntries = RulePresetEntries
+    -- Whether any preset fits this part (RulePresetEntries offers one), without listing them.
+    local function AnyPresetFits()
+        local key = Options.selectedComponent
+        for _, preset in ipairs(RULE_PRESETS) do
+            if PresetFits(preset, key) then return true end
+        end
+        return false
+    end
+    -- The cards show the stored rules (read only: each change writes a copy, CurrentRules).
     Options.editorRulesRefresh = function()
-        local rules, key = CurrentRules()
+        local rules, key = ReadRules()
         if not key then return end
         previewTrue:Refresh()
         for index, rule in ipairs(rules) do
@@ -2044,7 +2360,7 @@ local function BuildRules(page)
         local room = RuleRoom(rules) > 0
         SetAvailable(addRule, room)
         -- With no preset for this part, the title has no action at all (not a blank, dimmed one).
-        local fits = #RulePresetEntries() > 0
+        local fits = AnyPresetFits()
         presets:SetEnabled(fits)
         presets:SetShown(fits)
     end
@@ -2224,6 +2540,15 @@ local function CustomGlow()
     return mode == "custom" or mode == "threat"
 end
 local function TargetLit() return Lit() and EditorHighlight().targetHighlightStyle ~= "off" end
+-- The glow's wrap: Fit to parts (its Width and Height are targetGlowSpread and targetGlowSpreadY, room past the
+-- parts) or Fixed size (targetGlowWidth and targetGlowHeight, its whole size). Height shows only with Same width
+-- and height (targetGlowEven) off.
+local function Fixed() return EditorHighlight().targetGlowWrap == "fixed" end
+local function FitsParts() return Glowing() and not Fixed() end
+local function FixedGlow() return Glowing() and Fixed() end
+local function Uneven() return EditorHighlight().targetGlowEven == false end
+local function FitsPartsUneven() return FitsParts() and Uneven() end
+local function FixedUneven() return FixedGlow() and Uneven() end
 -- Its rows in order (Settings search lists them before they are built): id is the option.
 local TARGET_ROWS = {
     { id = "targetHighlightStyle", label = L["Highlight"], shown = Lit, help = L["Gold edge lights the selected plate's "
@@ -2233,13 +2558,26 @@ local TARGET_ROWS = {
         help = L["The glow's colour: one you pick, the target's class (players), its reaction, or your threat on it. "
             .. "Threat: your threat colour on this target while you're in combat with it; your custom colour otherwise."] },
     { id = "targetGlowColour", label = L["Custom glow colour"], shown = CustomGlow },
-    { id = "targetGlowSpread", label = L["Glow size"], shown = Glowing, step = 1, help = L["Wraps the health bar and the "
-        .. "name, power bar and cast bar next to it (a names-only plate's name alone). Glow size is how far it reaches "
-        .. "past them, in pixels."] },
     { id = "targetGlowOpacity", label = L["Glow opacity"], shown = Glowing, step = 0.05, format = PercentText },
+    { id = "targetGlowWrap", label = L["Glow wrap"], shown = Glowing, help = L["Fit to parts: the glow follows the parts "
+        .. "you pick as they show and hide (a names-only plate's name line), and Width and Height add room around them. "
+        .. "Fixed size: Width and Height are the glow's whole size, centred on the health bar."] },
+    { id = "targetGlowParts", label = L["Glow parts"], shown = FitsParts, help = L["The parts the glow wraps while they "
+        .. "show and sit next to each other. With none showing, it wraps the health bar."] },
     { id = "targetGlowOffsetX", label = L["Glow offset X"], shown = Glowing, step = 1 },
     { id = "targetGlowOffsetY", label = L["Glow offset Y"], shown = Glowing, step = 1,
-        help = L["Moves the whole glow right (X) or up (Y) from the parts it wraps, in pixels."] },
+        help = L["Moves the glow's centre right (X) or up (Y), in pixels."] },
+    { id = "targetGlowSpread", label = L["Glow width"], shown = FitsParts, step = 1,
+        help = L["How far the glow reaches past the parts left and right (and up and down with Same width and height), "
+            .. "in pixels, the same on both sides."] },
+    { id = "targetGlowSpreadY", label = L["Glow height"], shown = FitsPartsUneven, step = 1,
+        help = L["How far the glow reaches past the parts up and down, in pixels, the same on both sides."] },
+    { id = "targetGlowWidth", label = L["Glow width"], shown = FixedGlow, step = 1,
+        help = L["The glow's whole width (and height with Same width and height), in pixels."] },
+    { id = "targetGlowHeight", label = L["Glow height"], shown = FixedUneven, step = 1,
+        help = L["The glow's whole height, in pixels."] },
+    -- (Its line is the note under it, made with the row: what Width and Height are in this wrap.)
+    { id = "targetGlowEven", label = L["Same width and height"], shown = Glowing },
     { id = "targetGlowPulse", label = L["Pulse slowly"], shown = TargetLit,
         help = L["The gold edge or the soft glow slowly fades in and out."] },
 }
@@ -2280,7 +2618,8 @@ local function BuildTargetHighlightSection(context)
             or (highlight.targetHighlightStyle == "glow" and highlight.targetGlowPulse == true)
         return pulsing and string.format(L["%s, pulsing"], label) or label
     end })
-    K.Add(context, section)
+    -- Objects show no target highlight (Lifecycle's UpdateTarget).
+    K.Add(context, section, function() return not Options:IsEditorObject() end)
     Options.editorTargetHighlightSection = section
     -- Whom it edits, kept in step with the open tab and design.
     local scope = K.Help(section, "")
@@ -2309,6 +2648,14 @@ local function BuildTargetHighlightSection(context)
     end
     local _, setStyle = Bind("targetHighlightStyle")
     local _, setGlowPulse = Bind("targetGlowPulse")
+    local _, setEven = Bind("targetGlowEven")
+    local _, setParts = Bind("targetGlowParts")
+    local HIGHLIGHT, ticked = Schema.HIGHLIGHT, {}
+    local function TickedParts()
+        local set = HIGHLIGHT.PartsSet(EditorHighlight().targetGlowParts)
+        for _, part in ipairs(HIGHLIGHT.GLOW_PARTS) do ticked[part] = set == nil or set[part] == true end
+        return ticked
+    end
     local build = {
         targetHighlightStyle = function(spec)
             return K.DropdownRow(section, spec.label, { choices = model.targetHighlightChoices, get = ShownStyle,
@@ -2323,6 +2670,44 @@ local function BuildTargetHighlightSection(context)
             local get, set = Bind(spec.id)
             return K.DropdownRow(section, spec.label, { choices = model.targetGlowColourChoices, get = get, set = set,
                 name = WidgetName("editor_targetGlowColourMode", "Dropdown") })
+        end,
+        -- Fixed size unticks Same width and height in the same edit (one change), so it starts as its own
+        -- Width by Height box, not a square; Fit to parts leaves the tick as it is.
+        targetGlowWrap = function(spec)
+            local get, set = Bind(spec.id)
+            return K.DropdownRow(section, spec.label, { choices = model.targetGlowWrapChoices, get = get,
+                set = function(value)
+                    if value ~= "fixed" or EditorHighlight().targetGlowEven == false then return set(value) end
+                    local ok = PS.SetPlateProfileOption(Options:EditorTarget(), { targetGlowWrap = value, targetGlowEven = false })
+                    Options:Refresh(true)
+                    return ok
+                end,
+                name = WidgetName("editor_targetGlowWrap", "Dropdown") })
+        end,
+        -- One item per part: it writes the whole set (Schema's targetGlowParts names it).
+        targetGlowParts = function(spec)
+            return K.DropdownRow(section, spec.label, { multi = true, choices = model.targetGlowPartChoices,
+                name = WidgetName("editor_targetGlowParts", "Dropdown"), get = TickedParts,
+                set = function(part, on)
+                    local parts = TickedParts()
+                    parts[part] = on == true
+                    return setParts(HIGHLIGHT.PartsValue(parts))
+                end })
+        end,
+        -- Unticked, Height starts at Width, so nothing moves until it is dragged.
+        targetGlowEven = function(spec)
+            return K.CheckRow(section, nil, { text = spec.label, name = WidgetName("editor_targetGlowEven", "Checkbox"),
+                get = function() return EditorHighlight().targetGlowEven ~= false end,
+                set = function(on)
+                    if on then return setEven(true) end
+                    local highlight = EditorHighlight()
+                    if highlight.targetGlowWrap == "fixed" then
+                        Write("targetGlowHeight", highlight.targetGlowWidth)
+                    else
+                        Write("targetGlowSpreadY", highlight.targetGlowSpread)
+                    end
+                    return setEven(false)
+                end })
         end,
         targetGlowColour = function(spec)
             local row, colour
@@ -2364,7 +2749,31 @@ local function BuildTargetHighlightSection(context)
         -- its style ("halo").
         Mark(row, Area.Option(spec.id == "targetGlowPulse" and { "targetGlowPulse", "targetHighlightStyle" } or spec.id))
         controls[spec.id], frames[spec.id] = Register(control), row
+        if spec.id == "targetGlowEven" then
+            -- One line under the size rows: what Width and Height are in this wrap.
+            local note = K.Help(section, "")
+            K.Add(section, note, Glowing)
+            Options.editorTargetGlowSizeNote = note
+            Register({ Refresh = function()
+                note.text:SetText(Fixed() and L["Width and Height are the glow's whole size, centred on the health bar."]
+                    or L["The glow follows the plate's parts; Width and Height add room around them."])
+            end })
+        end
     end
+    -- A profile saved before 1.2.1 keeps the health bar's gold target edge with Highlight Off
+    -- (targetOffKeepsEdge, every design); a line says so, with a button that drops the edge.
+    local function KeepsEdge()
+        return Lit() and EditorHighlight().targetHighlightStyle == "off" and PS.GetSettings().targetOffKeepsEdge == true
+    end
+    K.Add(section, K.Help(section, L["This profile keeps the health bar's gold target edge with Highlight Off, as "
+        .. "before 1.2.1."]), KeepsEdge)
+    local dropRow, drop = K.ButtonRow(section, L["No gold edge"], 140)
+    drop:SetScript("OnClick", function()
+        PS.SetOption("targetOffKeepsEdge", false)
+        Options:Refresh(true)
+    end)
+    K.Add(section, dropRow, KeepsEdge)
+    Options.editorTargetOffKeepsEdge = drop
     -- Every plate type's World design takes this look (their other designs keep their own).
     local copyRow, copy = K.ButtonRow(section, L["Copy to all plate types"], 170)
     copy:SetScript("OnClick", function()
@@ -2377,11 +2786,281 @@ local function BuildTargetHighlightSection(context)
     Options.editorTargetHighlightCopy = copy
 end
 
+-- Hide unstyled names (hideUnstyledFriendlyNames): it changes the game's own friendly name settings (NamePolicy's
+-- players', pets', guardians', minions' and totems' name CVars, kept off by its watch), so its home is Settings ›
+-- Names; Players › Plate settings › Friendly plates has a line that reads it and opens it there.
+local HIDE_UNSTYLED_HELP = L["Outside dungeons & raids, keeps the game's large floating names off friendly players and "
+    .. "their pets, guardians, minions and totems. The game writes them over players with no PlateSmith name: past its 40 "
+    .. "nameplates in a crowd, or past nameplate range. On, those players show no name; if another addon or the game's "
+    .. "Names options turn the names back on, PlateSmith turns them off again. Off: the game's Names options decide. "
+    .. "Friendly NPCs' names are not affected."]
+
+-- Clicking (Nameplates/ClickThrough.lua): its home is Settings › Behaviour & display › Clicking; the Clicks rows in
+-- Players' and Friendly NPCs' Friendly plates read and write the same settings (STANDARDS section 2a rule 3). Each
+-- row's choices and help, and the one dropdown both places build. Friendly players' row shows "Click through (shared
+-- with NPCs)" and is locked while Friendly NPCs' Click through covers them (the game has one Friendly setting).
+local CLICKS = {
+    players = {
+        { value = "clickable", label = L["Clickable"], help = L["Clicking the plate selects the player."] },
+        { value = "through", label = L["Click through"], help = L["Clicks pass through the plate to whatever is behind it."] },
+    },
+    others = {
+        { value = "game", label = L["Clickable"], help = L["PlateSmith leaves the game's click area as it is."] },
+        { value = "through", label = L["Click through"], help = L["Clicks pass through the plate to whatever is behind it."] },
+    },
+    shared = L["Click through (shared with NPCs)"],
+    help = {
+        clickFriendlyPlayer = L["While PlateSmith draws friendly players outside dungeons & raids. Click through turns on "
+            .. "the game's names-only option for them, which leaves their plates nothing to click; PlateSmith still draws "
+            .. "its own look. With Blizzard's plates, and in dungeons & raids, the game's option is yours."],
+        clickFriendlyNPC = L["The game has one click setting for every friendly plate, so Click through here makes "
+            .. "friendly players click through too. Outside dungeons & raids."],
+        clickEnemy = L["Every enemy plate, everywhere."],
+    },
+    home = L["The same setting as Settings › Behaviour & display › Clicking."],
+}
+local function ClickDropdownRow(kit, parent, key, label, name)
+    local ClickThrough = PS.ClickThrough
+    local players = key == "clickFriendlyPlayer"
+    local get, set = Options.BindSetting(key)
+    local spec = { choices = players and CLICKS.players or CLICKS.others, set = set, name = name }
+    if players then
+        spec.get = function() return ClickThrough.PlayersValue(PS.GetSettings()) end
+        spec.labelFor = function(value) return value == "shared" and CLICKS.shared or nil end
+    else
+        spec.get = function() return get() == "through" and "through" or "game" end
+    end
+    local row, dropdown = kit.DropdownRow(parent, label, spec)
+    if players then
+        local refresh = dropdown.Refresh
+        function dropdown:Refresh()
+            refresh(self)
+            local shared = ClickThrough.SharedThrough(PS.GetSettings())
+            SetAvailable(self, not shared)
+            row:SetAlpha(shared and DIMMED_ALPHA or 1)
+        end
+    end
+    return row, dropdown
+end
+
+-- Plate settings' Friendly plates, first on the Players and Friendly NPCs tabs: the one home for how the open
+-- friendly plate type shows outdoors. Show as (Schema's FRIENDLY, each type its own, through PS.SetFriendlyMode);
+-- on Players, a line saying whether Hide unstyled names is on, which opens it in Settings › Names (its home);
+-- Show in, this type's row of Where plates show (Studio/Visibility.lua, the same settings as Settings' grid and
+-- the design row's eye); and the way to the Dungeons & raids design, where Blizzard draws them. Its rows in
+-- order, for Settings search before they are built: id, label, help, plateType (the tab it is on, when only one).
+local FRIENDLY_ROWS = {
+    { id = "section", label = L["Friendly plates"] },
+    { id = "showAs", label = L["Show as"], help = L["How this plate type's friendly units show outside dungeons & raids: "
+        .. "PlateSmith's names only or full plates, or Blizzard's own plates. Players and Friendly NPCs each have their "
+        .. "own. Blizzard's plates still show: to hide this type's plates in a place, use Show in below (Where plates "
+        .. "show)."] },
+    { id = "clicksPlayer", key = "clickFriendlyPlayer", label = L["Clicks"], plateType = "friendlyPlayer",
+        help = CLICKS.help.clickFriendlyPlayer .. " " .. CLICKS.home },
+    { id = "clicksNPC", key = "clickFriendlyNPC", label = L["Clicks"], plateType = "friendlyNPC",
+        help = CLICKS.help.clickFriendlyNPC .. " " .. CLICKS.home },
+    { id = "hideUnstyled", label = L["Hide unstyled names"], plateType = "friendlyPlayer", help = HIDE_UNSTYLED_HELP },
+    { id = "showIn", label = L["Show in"], help = L["Where this plate type's plates show. The same switches as Settings › "
+        .. "Where plates show."] },
+    { id = "dungeon", label = L["Dungeons & raids design"], help = L["In dungeons & raids Blizzard draws friendly "
+        .. "plates: its names, names only, class colours and font are set in this plate type's Dungeons & raids design."] },
+}
+local function FriendlyTab()
+    return Options.editorProfile == "friendlyPlayer" or Options.editorProfile == "friendlyNPC"
+end
+
+-- The section's rows for Settings search: { id, label, help, plateType, frame (once built), section }.
+function Options:EditorFriendlyRows()
+    local rows, built = {}, self.editorFriendlyRowFrames or {}
+    for index, spec in ipairs(FRIENDLY_ROWS) do
+        rows[index] = { id = spec.id, label = spec.label, help = spec.help, plateType = spec.plateType, frame = built[spec.id],
+            section = self.editorFriendlySection }
+    end
+    return rows
+end
+
+local function BuildFriendlySection(context)
+    local frames = {}
+    Options.editorFriendlyRowFrames = frames
+    local section = K.Section(context, L["FRIENDLY PLATES"], { summary = function()
+        local mode = Options:EditorShowAs()
+        for _, choice in ipairs(model.friendlyChoices) do
+            if choice.value == mode then return choice.label end
+        end
+        return ""
+    end })
+    K.Add(context, section, FriendlyTab)
+    Options.editorFriendlySection, frames.section = section, section
+    local spec = {}
+    for _, row in ipairs(FRIENDLY_ROWS) do spec[row.id] = row end
+    local scope = K.Help(section, "")
+    K.Add(section, scope)
+    Register({ Refresh = function()
+        scope.text:SetText(string.format(L["For %s, outside dungeons & raids."], Options:EditorPlateLabel(Options.editorProfile)))
+    end })
+
+    local showRow, showAs = K.DropdownRow(section, spec.showAs.label, { choices = model.friendlyChoices,
+        name = WidgetName("editor_friendlyShowAs", "Dropdown"),
+        get = function() return Options:EditorShowAs() end,
+        set = function(value) return Options:SetEditorShowAs(value) end })
+    K.Add(section, showRow)
+    K.AttachHelp(showRow, spec.showAs.help)
+    Options.editorFriendlyShowAs, frames.showAs = Register(showAs), showRow
+    K.Add(section, K.Help(section, L["Blizzard draws these plates everywhere."]),
+        function() return Options:EditorShowAs() == "off" end)
+    -- Clicks, independent of Show as: a shortcut to Settings › Clicking's row for this plate type (the same setting).
+    Options.editorFriendlyClicks = {}
+    for _, id in ipairs({ "clicksPlayer", "clicksNPC" }) do
+        local entry = spec[id]
+        local function Shown()
+            return Options.editorProfile == entry.plateType and PS.ClickThrough.Supported(entry.key)
+        end
+        local row, control = ClickDropdownRow(K, section, entry.key, entry.label,
+            WidgetName("editor_friendlyClicks_" .. entry.plateType, "Dropdown"))
+        K.Add(section, row, Shown)
+        K.AttachHelp(row, entry.help)
+        Options.editorFriendlyClicks[entry.key] = Register(control)
+        frames[id] = row
+    end
+    -- One line each, so the shared Friendly setting is never a surprise.
+    K.Add(section, K.Help(section, L["The game has one click setting for all friendly plates: Click through here makes "
+        .. "friendly players click through too."]), function()
+        return Options.editorProfile == "friendlyNPC" and PS.ClickThrough.Supported("clickFriendlyNPC")
+    end)
+    K.Add(section, K.Help(section, L["Friendly NPCs' Click through covers players too: the game has one click setting for "
+        .. "all friendly plates."]), function()
+        return Options.editorProfile == "friendlyPlayer" and PS.ClickThrough.SharedThrough(PS.GetSettings())
+    end)
+    -- Friendly NPCs with the game's own switch for their plates off: the green names over them are the game's
+    -- floating names, which cannot be clicked. The way is Where plates show (Studio/Visibility.lua), its one home.
+    local function NPCPlatesOff()
+        return Options.editorProfile == "friendlyNPC" and PS.PlateVisibility.GameHides("friendlyNPC")
+    end
+    K.Add(section, K.Help(section, L["The game's friendly NPC plates are off, so NPCs show only floating names (not "
+        .. "clickable)."]), NPCPlatesOff)
+    local npcOffRow, npcOff = K.ButtonRow(section, L["Where plates show"], 170)
+    npcOff:SetScript("OnClick", function() Options:OpenPlateVisibilitySettings() end)
+    K.Add(section, npcOffRow, NPCPlatesOff)
+    Options.editorFriendlyNPCPlatesOff = npcOff
+
+    -- Hide unstyled names (Players): one line across the row, reading the setting and opening its home, Settings ›
+    -- Names (STANDARDS §2a rule 3). A box with "(in Settings › Names)" after it would not fit the inspector on one line.
+    local getHide = Options.BindSetting("hideUnstyledFriendlyNames")
+    local hideRow = K.Row(section, nil)
+    local hide = CreateFrame("Button", WidgetName("editor_friendlyHideUnstyled", "Button"), hideRow)
+    hide:SetAllPoints(hideRow)
+    hide.hover = hide:CreateTexture(nil, "BACKGROUND")
+    hide.hover:SetAllPoints(hide)
+    hide.hover:Hide()
+    hide.text = K.Text(hide, "", "label")
+    hide.text:SetPoint("LEFT", hide, "LEFT", 0, 0)
+    hide.text:SetPoint("RIGHT", hide, "RIGHT", 0, 0)
+    if hide.text.SetWordWrap then hide.text:SetWordWrap(false) end
+    hide:SetScript("OnEnter", function(instance)
+        local colour = K.Palette().hover or { 1, 1, 1, 0.06 }
+        instance.hover:SetColorTexture(colour[1], colour[2], colour[3], colour[4] or 1)
+        instance.hover:Show()
+        K.Ink(instance.text, "value")
+    end)
+    hide:SetScript("OnLeave", function(instance)
+        instance.hover:Hide()
+        K.Ink(instance.text, "label")
+    end)
+    PS.UI.Controls.AttachTooltip(hide, spec.hideUnstyled.label, { spec.hideUnstyled.help,
+        { L["It changes the game's own name settings, so it is set in Settings › Behaviour & display › Names. "
+            .. "Click to open it there."], 0.86, 0.86, 0.86 } })
+    hide:SetScript("OnClick", function() Options:OpenSettingsControl("plate.hideUnstyledFriendlyNames") end)
+    function hide:Refresh()
+        self.text:SetText(getHide() and L["Hide unstyled names: On, in Settings › Names"]
+            or L["Hide unstyled names: Off, in Settings › Names"])
+    end
+    K.Add(section, hideRow, function() return Options.editorProfile == spec.hideUnstyled.plateType end)
+    Options.editorFriendlyHideUnstyled, frames.hideUnstyled = Register(hide), hideRow
+
+    frames.showIn = Options.BuildPlateShowIn(K, section, spec.showIn.label, spec.showIn.help)
+
+    K.Add(section, K.Help(section, L["Blizzard draws them in dungeons & raids:"]))
+    local dungeonRow, dungeon = K.ButtonRow(section, spec.dungeon.label, 200)
+    dungeon:SetScript("OnClick", function() Options:SetEditorDesign("dungeon") end)
+    K.Add(section, dungeonRow)
+    K.AttachHelp(dungeonRow, spec.dungeon.help)
+    Options.editorFriendlyDungeonLink, frames.dungeon = dungeon, dungeonRow
+    -- Show as, Hide unstyled names and Show in are the whole profile's, whichever design is open.
+    Options.SharedSettingNote(K, section, nil, true)
+end
+
+-- Plate settings' Objects, first on the Objects tab: design things only (Copy style from a look) and the way to the
+-- home of the object settings, Studio › Settings › Objects & interacting (who draws them, fading, pointing at a
+-- plate, the game's interact key), so each setting has one place.
+
+-- Copy style from a look's menu: the looks in their order; picking one copies its Objects style, asking first when the
+-- Objects tab has changes of its own (they would go).
+function Options:ObjectLookMenuItems()
+    local items = {}
+    for _, preset in ipairs(PS.ProfilePresets.LIST) do
+        local id, name = preset.id, preset.name
+        items[#items + 1] = { text = name, tooltip = { title = name, text = preset.description }, func = function()
+            local function Copy()
+                if PS.CopyObjectLook(id) then Options:Refresh(true) end
+            end
+            if not PS.ObjectLookChanged() then return Copy() end
+            Options:ConfirmStudioAction(string.format(L["Give this profile %s's Objects style? Your changes on the Objects "
+                .. "tab (All objects, its types and Fade objects you can't use yet) go; Revert undoes it until you Save."], name),
+                L["Copy"], Copy)
+        end }
+    end
+    return items
+end
+
+function Options:OpenObjectLookMenu(anchor)
+    return PS.UI.Menu.Toggle(anchor, function() return Options:ObjectLookMenuItems() end, { width = 200 })
+end
+
+local function BuildObjectsSection(context)
+    local section = K.Section(context, L["OBJECTS"])
+    K.Add(context, section, function() return Options.editorProfile == "object" end)
+    Options.editorObjectsSection = section
+    K.Add(section, K.Help(section, L["Books, chests, ore and quest objects the game gives a plate. Where they show is "
+        .. "the game's: it has no switch for object plates."]))
+    -- A look's Objects style into this profile (Settings' CopyObjectLook), confirmed first when the Objects tab has
+    -- changes of its own (ObjectLookChanged).
+    local copyRow, copy = K.ButtonRow(section, L["Copy style from a look..."], 200)
+    copy:SetScript("OnClick", function(instance) Options:OpenObjectLookMenu(instance) end)
+    K.Add(section, copyRow)
+    K.AttachHelp(copyRow, L["Gives this profile the Objects style of a look (PlateSmith, Classic... Blizzard): All "
+        .. "objects' design, its types (herbs green, the Status text...) and Fade objects you can't use yet. The Objects' "
+        .. "Dungeons & raids, Battlegrounds & arenas and Cities & inns designs stay. Like any change it needs Save; "
+        .. "Revert undoes it."])
+    Options.editorObjectCopyLook = copy
+    local settingsRow, settingsLink = K.ButtonRow(section, L["Object settings..."], 200)
+    settingsLink:SetScript("OnClick", function() Options:OpenSettingsCategory("objects") end)
+    K.Add(section, settingsRow)
+    K.AttachHelp(settingsRow, L["Opens Studio › Settings › Objects & interacting: who draws object plates, fading "
+        .. "objects you can't use yet, what pointing at an object's plate shows, and the game's interact key."])
+    Options.editorObjectSettingsLink = settingsLink
+end
+
 -- The plate's own scale, per plate type: Studio's Plate settings row (the tree's top). Sizes belong to
 -- their parts (the health bar's width and height, each text's size), so they are set there, once.
--- Under it, the selected target's highlight for this plate type and design.
+-- Under it, the selected target's highlight for this plate type and design. On the friendly tabs,
+-- Friendly plates comes first.
 local function BuildPlateContext(page)
     CreateContext(page, "plate", function(context)
+        BuildFriendlySection(context)
+        BuildObjectsSection(context)
+        -- An object type open (Objects › Type): it may hide its plates altogether (plateHidden, the type's own).
+        local typeSection = K.Section(context, L["THIS TYPE"])
+        K.Add(context, typeSection, function() return Options:EditorObjectType() ~= nil end)
+        local hideRow, hide = K.CheckRow(typeSection, L["Plates"], { text = L["Hide these plates"],
+            name = WidgetName("editor_plateHidden", "Checkbox"),
+            get = function() return ProfileValue("plateHidden")() == true end,
+            set = function(on) SetProfileValue("plateHidden")(on == true) end })
+        Register(hide)
+        Mark(hideRow, Area.Option("plateHidden"))
+        K.AttachHelp(hideRow, L["Draws no plate for objects of this type (in every place), and keeps the game's own hidden "
+            .. "while PlateSmith draws objects. The others stay."])
+        K.Add(typeSection, hideRow)
+        Options.editorObjectTypeSection = typeSection
         local section = K.Section(context, L["SCALE"])
         K.Add(context, section)
         local range = profileRanges.scale
@@ -2411,8 +3090,9 @@ end
 -- Settings › Stacking & distance: Blizzard's own stacking, spacing, edge, distance, scale and fade
 -- CVars (PS.Stacking, docs/STACKING.md) and PlateSmith's stacking options. The CVar rows come from
 -- the client's catalogue, so a CVar this client lacks never shows and a group without any is
--- hidden. While PlateSmith does not manage stacking, every section under Management is dimmed and
--- takes no clicks (still readable). A dragged slider only redraws the preview; letting go writes.
+-- hidden. Every row is live: changing one makes it PlateSmith's (a changed mark, whose arrow gives it
+-- back to the game); one the game ignores (View distance) is dimmed and takes no clicks, with the
+-- reason under it. A dragged slider only redraws the preview; letting go writes.
 -- The preview: a fixed scale (plate: the unscaled plate's width in pixels), units standing on a
 -- ground line `ground` px above the canvas's bottom (their distances under it), each plate headGap
 -- over its unit's head. Plates glide on the ticker (interval) only while one moves and it shows.
@@ -2431,6 +3111,39 @@ local function TrimNumber(value)
     local text = string.format("%.3f", value):gsub("0+$", ""):gsub("%.$", "")
     return text
 end
+
+-- The Settings kit's changed marks (UI/Layout's ChangedMark): a Stacking & distance row PlateSmith sets
+-- ({ kind = "stacking", key }, or keys: a bitfield's bits, changed while PlateSmith sets any), and its
+-- arrow, which gives the setting (every bit) back to the game.
+local function StackingOwnedKeys(area)
+    local owned = {}
+    if type(area) ~= "table" or area.kind ~= "stacking" or not PS.Stacking then return owned end
+    for _, key in ipairs(area.keys or { area.key }) do
+        local _, source = PS.Stacking.Get(key)
+        if source == "setting" then owned[#owned + 1] = key end
+    end
+    return owned
+end
+local settingsMarks = {
+    State = function(area)
+        local owned = #StackingOwnedKeys(area) > 0
+        return owned, false, owned
+    end,
+    Tip = function(area)
+        if type(area) ~= "table" or area.kind ~= "stacking" then return nil end
+        return { L["PlateSmith sets this in this profile. The arrow gives it back to the game."] }
+    end,
+    Reset = function(area)
+        local given = false
+        for _, key in ipairs(StackingOwnedKeys(area)) do
+            if PS.Stacking.Set(key, nil) then given = true end
+        end
+        if not given then return false end
+        Options:Refresh(true)
+        return true
+    end,
+    resetLabel = L["Give it back to the game"],
+}
 
 -- A CVar's reading: distances in yards, opacity and screen insets as percentages, scales and
 -- spacing as multiples, anything else as the plain number.
@@ -2462,7 +3175,7 @@ local BLIZZARD_NAME_CHOICES = {
 -- colours are players' only; names only is players' only where the client has the players' CVar
 -- (NamePolicy), else Blizzard's one CVar covers friendly NPCs too.
 local BLIZZARD_NAME_ROW_SHOWN = {
-    [L["Names only"]] = function(profile)
+    [L["Blizzard: names only in dungeons"]] = function(profile)
         return profile == "friendlyPlayer" or not (PS.NamePolicy and PS.NamePolicy.NamesOnlyIsPlayersOnly())
     end,
     [L["Blizzard class colours, when available"]] = function(profile) return profile == "friendlyPlayer" end,
@@ -2478,6 +3191,14 @@ Options.BlizzardNameRowShown = BlizzardNameRowShown
 -- the opt-in size for its shared nameplate fonts (Nameplates/NativeFonts.lua).
 local function BuildBlizzardNameContext(page)
     CreateContext(page, "blizzardName", function(context)
+        -- The way back from Friendly plates' Dungeons & raids link: World, with Plate settings open.
+        local backRow, back = K.ButtonRow(context, L["‹ Back to World design"], 200)
+        back:SetScript("OnClick", function()
+            if Options:SetEditorDesign("world") then Options:SelectEditorPlate() end
+        end)
+        K.Add(context, backRow)
+        K.AttachHelp(backRow, L["How these plates look outdoors, and Plate settings › Friendly plates: how and where they show."])
+        Options.editorBlizzardNameBack = back
         local section = K.Section(context, L["DISPLAY"])
         K.Add(context, section)
         local rows, controls = {}, {}
@@ -2507,8 +3228,10 @@ local function BuildBlizzardNameContext(page)
             .. "Blizzard draws on its own plates. It changes Blizzard's shared nameplate fonts, so any other addon or "
             .. "Blizzard window that uses them changes too. Turning it off puts them back as they were."])
         Choice("blizzardNameFontScope", L["Where"], BLIZZARD_NAME_CHOICES.scope, "scope")
-        Check("restrictedFriendlyNamesOnly", L["Names only"], "namesOnly", L["Blizzard shows only the name on these "
-            .. "plates, without their health bars."])
+        -- Not Show as' Names only (PlateSmith's own names outdoors): Blizzard's choice for its own plates here.
+        Check("restrictedFriendlyNamesOnly", L["Blizzard: names only in dungeons"], "namesOnly", L["Blizzard shows only "
+            .. "the name on these plates, without their health bars. Outdoors, Plate settings › Friendly plates › Show as "
+            .. "decides."])
         Check("restrictedFriendlyClassColour", L["Blizzard class colours, when available"], "classColour",
             L["Blizzard colours friendly players' names by class, where the game allows it."])
         Choice("blizzardNameFontFace", L["Font"], PS.Media.FontChoices, "face",
@@ -2525,7 +3248,7 @@ local function BuildBlizzardNameContext(page)
         displayRows.blizzardName = rows
     end)
 end
-DISPLAY_ROW_LABELS.blizzardName = { L["Change Blizzard's names"], L["Where"], L["Names only"],
+DISPLAY_ROW_LABELS.blizzardName = { L["Change Blizzard's names"], L["Where"], L["Blizzard: names only in dungeons"],
     L["Blizzard class colours, when available"], L["Font"], L["Font size"], L["Font style"] }
 
 -- Players › Dungeons & raids' Blizzard name rows (labels; frames once built), for Settings search
@@ -2547,24 +3270,13 @@ local function BuildStackingPage(SK, Page, Bind)
     if not Stacking then return end
     local bound = Options.editorSettingsControls
     local page = Page("stacking")
-    local state = { rows = {}, groups = {}, dimmed = {}, drag = {} }
+    local state = { rows = {}, groups = {}, drag = {} }
     Options.editorStacking = state
     local function Changed() Options:Refresh(true) end
     local function StackSection(id, title, summary, visible)
         local section = SK.Section(page.columns, title, { key = "studio.settings." .. id, summary = summary })
         section.title:SetFont(SK.FONT_PATH, SK.TITLE_FONT)
         SK.Add(page.columns, section, visible)
-        return section
-    end
-    -- Dimmed and blocked while unmanaged; its title band still folds it.
-    local function Dimmable(section)
-        local blocker = CreateFrame("Frame", nil, section)
-        blocker:EnableMouse(true)
-        blocker:SetPoint("TOPLEFT", section.band, "BOTTOMLEFT", 0, 0)
-        blocker:SetPoint("BOTTOMRIGHT", section, "BOTTOMRIGHT", 0, 0)
-        blocker:Hide()
-        section.stackingBlocker = blocker
-        state.dimmed[#state.dimmed + 1] = section
         return section
     end
     local function CheckRow(section, id, text, get, set)
@@ -2592,29 +3304,28 @@ local function BuildStackingPage(SK, Page, Bind)
         return false
     end
 
-    -- Management.
-    local management = StackSection("stackingManagement", L["Management"], function()
-        return Stacking.IsManaged() and L["On"] or L["Off"]
-    end)
-    CheckRow(management, "managed", L["Manage Blizzard's plate stacking"], Stacking.IsManaged, function(value)
-        Stacking.SetManaged(value)
-        Changed()
-    end)
-    SK.Add(management, SK.ControlHelp(management, L["When off, PlateSmith leaves Blizzard's stacking settings alone. "
-        .. "Turning it off puts every setting back as it was."]))
-    state.offNote = SK.Add(management, SK.Note(management, L["Turn it on to change the settings below."]),
-        function() return not Stacking.IsManaged() end)
-    SK.Ink(state.offNote.text, "sub")
+    -- Blizzard's settings: what changing a row does, how many PlateSmith sets, and the reset.
+    local function OwnedText()
+        local count = Stacking.OwnedCount()
+        if count == 0 then return L["All the game's own"] end
+        return count == 1 and L["PlateSmith sets 1"] or string.format(L["PlateSmith sets %d"], count)
+    end
+    local blizzard = StackSection("stackingBlizzard", L["Blizzard's settings"], OwnedText)
+    state.intro = SK.Add(blizzard, SK.Help(blizzard, L["Change any setting on this page and PlateSmith keeps it set "
+        .. "for this profile. Settings you leave alone stay the game's own. A changed setting is marked; its arrow "
+        .. "gives it back to the game."]))
+    state.ownedText = OwnedText
     -- The saved record of the player's own values was lost (Stacking.OriginalsMissing).
-    state.lostNote = SK.Add(management, SK.Note(management, L["PlateSmith has no record of your earlier "
-        .. "settings; turning this off restores Blizzard's defaults."]), function() return Stacking.OriginalsMissing() end)
+    state.lostNote = SK.Add(blizzard, SK.Note(blizzard, L["PlateSmith has no record of your earlier settings; a "
+        .. "setting given back to the game goes to Blizzard's default."]), function() return Stacking.OriginalsMissing() end)
     SK.Ink(state.lostNote.text, "sub")
-    local resetRow, reset = SK.ButtonRow(management, L["Reset Blizzard's stacking to game defaults"], nil, "action")
-    SK.Add(management, resetRow)
+    local resetRow, reset = SK.ButtonRow(blizzard, L["Reset Blizzard's stacking to game defaults"], nil, "action")
+    SK.Add(blizzard, resetRow)
     state.reset = reset
     reset:SetScript("OnClick", function()
         Options:ConfirmStudioAction(L["Set every Blizzard stacking, distance, scale and fade setting to the game's "
-            .. "default? This clears this profile's stacking values; Revert undoes that until you save."], L["Reset"],
+            .. "default and give each back to the game? This clears this profile's stacking values; Revert undoes "
+            .. "that until you save."], L["Reset"],
             function()
                 local _, left = Stacking.ResetToDefaults()
                 if left and #left > 0 then
@@ -2632,12 +3343,12 @@ local function BuildStackingPage(SK, Page, Bind)
         { value = "loose", label = L["Loose"], tooltip = L["More room between plates and from the screen edges."] },
         { value = "custom", label = L["Custom"], tooltip = L["Your own values, set below."] },
     }
-    local preset = Dimmable(StackSection("stackingPreset", L["Preset"], function()
+    local preset = StackSection("stackingPreset", L["Preset"], function()
         for _, choice in ipairs(presetChoices) do
             if choice.value == Stacking.Preset() then return choice.label end
         end
         return ""
-    end, function() return HasEntries() end))
+    end, function() return HasEntries() end)
     local presetRow = SK.Add(preset, SK.Row(preset, L["Spacing"]))
     state.preset = Bind("stacking.preset", SK.Segmented(presetRow, { choices = presetChoices,
         name = WidgetName("stacking_preset", "Segmented"), get = Stacking.Preset,
@@ -2650,16 +3361,20 @@ local function BuildStackingPage(SK, Page, Bind)
 
     -- One section per group, a row per CVar this client has (SyncRows fills them).
     for _, group in ipairs(Stacking.GROUPS) do
-        local section = Dimmable(StackSection("stacking." .. group.id, group.label, nil,
-            function() return HasEntries(group.id) end))
+        local section = StackSection("stacking." .. group.id, group.label, nil, function() return HasEntries(group.id) end)
         local rows = SK.Add(section, SK.Group(section))
         state.groups[group.id] = { section = section, rows = rows }
         if group.id == "stacking" then
+            -- Only where one setting stacks both (Plate arrangement); Stack plates names its units itself.
             state.sharedNote = SK.Add(section, SK.Help(section, L["Blizzard uses one stacking setting for friendly "
                 .. "and enemy plates."]), function() return Stacking.MotionShared() end)
         end
     end
-    local SOURCES = { setting = L["Set in this profile"], client = L["Game setting"], default = L["Blizzard default"] }
+    local SOURCES = { setting = L["Set by PlateSmith in this profile"], client = L["The game's own setting"],
+        default = L["Blizzard default"] }
+    -- Why a row the game ignores is shown but cannot be changed.
+    local IGNORED = { nameplateMaxDistance = L["The game keeps nameplates to a fixed range (about 60 yards) and "
+        .. "ignores this setting, so PlateSmith leaves it alone."] }
     local function Value(key) return (Stacking.Get(key)) end
     -- Blizzard spaces plates only while they stack; Overlapping leaves them on their units.
     local SPACING = { nameplateOverlapV = true, nameplateOverlapH = true }
@@ -2714,12 +3429,67 @@ local function BuildStackingPage(SK, Page, Bind)
         LiveTip(control, entry.label, function()
             local _, source = Stacking.Get(key)
             local lines = { { SOURCES[source] or "", 1, 0.82, 0.45 }, { key, 0.6, 0.6, 0.6 } }
-            if SPACING[key] and Value("nameplateMotion") ~= 1 then
+            if entry.ignored then
+                table.insert(lines, 1, { IGNORED[key] or L["The game ignores this setting."], 1, 1, 1 })
+            elseif SPACING[key] and Stacking.Arrangement() == "overlapping" then
                 table.insert(lines, 2, { SPACING_OFF, 1, 1, 1 })
             end
             return lines
         end)
-        return { row = row, control = control, entry = entry }
+        local record = { row = row, control = control, entry = entry }
+        if entry.ignored then
+            record.note = SK.Note(parent, IGNORED[key] or L["The game ignores this setting."])
+            SK.Ink(record.note.text, "sub")
+        else
+            -- Set by PlateSmith: marked, and its arrow gives it back to the game (settingsMarks). The diamond sits
+            -- in the gap before the control: left of the row it would be cut off by the page's edge.
+            record.mark = SK.ChangedMark(row, { kind = "stacking", key = key }, { anchor = control })
+        end
+        return record
+    end
+    -- A bitfield's bits (Stack Nameplates' Enemy and Friendly) are one row, as Blizzard's options show
+    -- them: a multi-select whose field reads the ticked bits. Each item writes only its own bit; the mark
+    -- shows while PlateSmith sets either, and its arrow gives both back.
+    local function MakeBitsRow(parent, bitfield, entries)
+        local record = { entries = entries, bitfield = bitfield }
+        local function Choices()
+            local choices = {}
+            for index, entry in ipairs(record.entries) do choices[index] = { value = entry.key, label = entry.bitLabel } end
+            return choices
+        end
+        local label = entries[1].bitfieldLabel or bitfield
+        local row, control = SK.DropdownRow(parent, label, { multi = true, choices = Choices,
+            name = WidgetName("stacking_" .. bitfield, "Dropdown"),
+            get = function()
+                local ticked = {}
+                for _, entry in ipairs(record.entries) do ticked[entry.key] = Value(entry.key) == 1 end
+                return ticked
+            end,
+            set = function(key, ticked)
+                local ok = Stacking.Set(key, ticked and 1 or 0)
+                Changed()
+                return ok
+            end })
+        Wrap(row)
+        local words = {}
+        for _, entry in ipairs(entries) do words[#words + 1] = entry.bitLabel end
+        row.kitSearchExtra = table.concat(words, ", ")
+        LiveTip(control, label, function()
+            local lines = {}
+            for _, entry in ipairs(record.entries) do
+                local _, source = Stacking.Get(entry.key)
+                lines[#lines + 1] = { string.format(L["%s: %s"], entry.bitLabel, SOURCES[source] or ""), 1, 0.82, 0.45 }
+            end
+            lines[#lines + 1] = { bitfield, 0.6, 0.6, 0.6 }
+            return lines
+        end)
+        record.row, record.control = row, control
+        record.mark = SK.ChangedMark(row, function()
+            local keys = {}
+            for index, entry in ipairs(record.entries) do keys[index] = entry.key end
+            return { kind = "stacking", keys = keys }
+        end, { anchor = control })
+        return record
     end
     -- The rows follow the client's catalogue (built once per client; again only for a new one).
     local function SyncRows()
@@ -2730,23 +3500,34 @@ local function BuildStackingPage(SK, Page, Bind)
         for key, record in pairs(state.rows) do
             record.live = false
             record.row:Hide()
+            if record.note then record.note:Hide() end
             bound["stacking." .. key] = nil
+        end
+        local bits = {}
+        for _, entry in ipairs(catalogue) do
+            if entry.bitfield then
+                bits[entry.bitfield] = bits[entry.bitfield] or {}
+                table.insert(bits[entry.bitfield], entry)
+            end
         end
         for _, entry in ipairs(catalogue) do
             local holder = state.groups[entry.group]
-            if holder then
-                local record = state.rows[entry.key] or MakeRow(holder.rows, entry)
-                state.rows[entry.key], record.live = record, true
+            local key = entry.bitfield or entry.key
+            if holder and not (state.rows[key] and state.rows[key].live) then
+                local record = state.rows[key]
+                if record and entry.bitfield then record.entries = bits[key] end
+                record = record or (entry.bitfield and MakeBitsRow(holder.rows, key, bits[key]) or MakeRow(holder.rows, entry))
+                state.rows[key], record.live = record, true
                 SK.Add(holder.rows, record.row)
-                bound["stacking." .. entry.key] = record.control
+                if record.note then SK.Add(holder.rows, record.note) end
+                bound["stacking." .. key] = record.control
             end
         end
     end
     state.SyncRows = SyncRows
 
-    -- PlateSmith's own options.
-    -- Target and focus on top are PlateSmith's own and work without managing Blizzard's stacking;
-    -- only the two options that change Blizzard's settings wait for management.
+    -- PlateSmith's own options. Target and focus on top move only PlateSmith's frames; frame size and
+    -- combat stacking change Blizzard's plates, and are off until ticked.
     local options = StackSection("stackingOptions", L["PlateSmith options"])
     local function Option(name, text, help)
         local box = CheckRow(options, name, text, function() return Stacking.GetOption(name) end, function(value)
@@ -2785,7 +3566,7 @@ local function BuildStackingPage(SK, Page, Bind)
     -- Preview: three units at near, mid (your target) and far range and where Blizzard draws their
     -- plates (Stacking.PreviewModel), at a fixed scale so every change moves or restyles a plate.
     local SP = STACKING_PREVIEW
-    local preview = Dimmable(StackSection("stackingPreview", L["Preview"]))
+    local preview = StackSection("stackingPreview", L["Preview"])
     local holder = CreateFrame("Frame", nil, preview)
     holder:SetSize(SK.WIDTH, SP.height)
     local canvas = CreateFrame("Frame", nil, holder)
@@ -2962,46 +3743,58 @@ local function BuildStackingPage(SK, Page, Bind)
         state.notShown.text:SetText(NotShownText())
         return relayout(self, width)
     end
-    -- The CVar rows are not Options.controls (a new catalogue replaces them): refreshed here.
-    Register({ Refresh = function()
+    -- A setting changed outside PlateSmith (Blizzard's Options, another addon) is checked when the page opens,
+    -- as a client may not say (Stacking.LiveChanged); the page then shows the live values.
+    page:HookScript("OnShow", function() Stacking.LiveChanged() end)
+    -- The CVar rows are not Options.controls (a new catalogue replaces them): refreshed here, and on their own
+    -- when a CVar changes outside PlateSmith (Options:RefreshEditorStacking).
+    function state.Refresh()
         SyncRows()
         for _, record in pairs(state.rows) do
             if record.live then
                 record.control:Refresh()
-                local value = record.control.valueText
+                local value = record.entry and record.control.valueText
                 if value then
                     local _, source = Stacking.Get(record.entry.key)
                     SK.Ink(value, source == "setting" and "value" or "muted")
                 end
+                if record.mark then
+                    record.mark:Refresh()
+                    -- Over a check row's label click area, so the arrow takes its own clicks.
+                    if record.mark.reset then record.mark.reset:SetFrameLevel(record.row:GetFrameLevel() + 2) end
+                end
+                -- The row carries its own dimming, so it stays dimmed when the settings search lends it out.
+                if record.entry and record.entry.ignored then
+                    SetAvailable(record.control, false)
+                    record.row:SetAlpha(DIMMED_ALPHA)
+                end
             end
         end
-        local managed = Stacking.IsManaged()
-        local sizable = managed and Stacking.SizeSupport()
+        local sizable = Stacking.SizeSupport()
         SetAvailable(state.matchFrame, sizable)
         state.matchFrame.label:SetAlpha(sizable and 1 or 0.45)
-        for _, section in ipairs(state.dimmed) do
-            -- The title and the rows dim; the divider above stays as on every other section.
-            local alpha = managed and 1 or DIMMED_ALPHA
-            section.band:SetAlpha(alpha)
-            -- Each row carries its own dimming (a CVar row too, not only its group), so it stays
-            -- dimmed when the settings search lends it to its results page.
-            for _, item in ipairs(section.flowItems) do
-                local frame = item.frame
-                frame:SetAlpha(frame.flowTransparent and 1 or alpha)
-                for _, inner in ipairs(frame.flowTransparent and frame.flowItems or {}) do inner.frame:SetAlpha(alpha) end
-            end
-            section.stackingDimmed = not managed
-            section.stackingBlocker:SetFrameLevel(section:GetFrameLevel() + 60)
-            section.stackingBlocker:SetShown(not managed)
-        end
         state.sizeText.text:SetText(FrameSizeText())
         local combatState = CombatState()
-        SetAvailable(combat, managed and combatState ~= "refused")
-        combat.label:SetAlpha((managed and combatState ~= "refused") and 1 or 0.45)
+        SetAvailable(combat, combatState ~= "refused")
+        combat.label:SetAlpha(combatState ~= "refused" and 1 or 0.45)
         state.combatNote.text:SetText(COMBAT_TIPS[combatState] or "")
-    end })
+    end
+    Register({ Refresh = state.Refresh })
     -- Its own control, so a row that fails to refresh cannot leave the diagram as it was.
     Register({ Refresh = function() state.DrawPreview() end })
+end
+
+-- Blizzard's stacking settings may have changed outside PlateSmith (Stacking.LiveChanged, once its pass ran):
+-- Settings › Stacking & distance, while it shows, reads them again. Nothing else in Studio depends on them.
+function Options:RefreshEditorStacking()
+    local state = self.editorStacking
+    local page = self.editorInspectorPages and self.editorInspectorPages.stacking
+    if not (state and state.Refresh and page and page:IsVisible()) then return end
+    self.refreshing = true
+    local ok, failure = pcall(state.Refresh)
+    if ok then ok, failure = pcall(state.DrawPreview) end
+    self.refreshing = false
+    if not ok then PS.Chat.ReportError("stacking refresh", failure) end
 end
 
 -- Settings › Fading: a shortcut over a fade rule preset on every part the enemy plates show
@@ -3062,6 +3855,7 @@ local function BuildSettingsPages(settingsContent)
             DROPDOWN_TEXT_INSETS = 42 },
         button = CreateStudioButton,
         collapsible = true,
+        marks = settingsMarks,
         -- Blizzard's Settings rows: a check's text is its label, the box in the control column.
         checkLabels = true,
         ruleUnder = true,
@@ -3120,12 +3914,15 @@ local function BuildSettingsPages(settingsContent)
         order[#order + 1] = key
     end
     Options.editorSettingsPageOrder = order
-    local function Section(panel, id, title, summary)
-        local section = SK.Section(panel.columns, title, { key = "studio.settings." .. id, summary = summary })
+    -- foldKey: the section's fold state key (default "studio.settings.<id>").
+    local function Section(panel, id, title, summary, foldKey)
+        local section = SK.Section(panel.columns, title, { key = foldKey or ("studio.settings." .. id), summary = summary })
         section.title:SetFont(SK.FONT_PATH, SK.TITLE_FONT)
         SK.Add(panel.columns, section)
         return section
     end
+    -- Modules' pages (Studio/Modules.lua) are built with the same pieces.
+    Options.settingsPageKit = { Page = Page, Section = Section, Bind = Bind }
     local function Check(section, id, key, text, controlID)
         local get, set = Options.BindSetting(key)
         local row, checkbox = SK.CheckRow(section, nil, { text = text, get = get, set = set,
@@ -3198,7 +3995,13 @@ local function BuildSettingsPages(settingsContent)
         local plate = Page("plate")
         local plates = Section(plate, "plates", L["Plates"])
         Choice(plates, "plate.mode", "mode", L["Who draws the plates"], model.modeChoices)
-        Choice(plates, "plate.friendly", "friendly", L["Friendly units"], model.friendlyChoices)
+        -- How friendly plates show (Show as, Show in) is set per plate type in Studio.
+        local friendlyRow, friendlyLink = SK.ButtonRow(plates, L["Friendly plates in Studio › Plate settings"])
+        SK.Add(plates, friendlyRow)
+        friendlyLink:SetScript("OnClick", function() Options.settingsSearch.RevealFriendlyPlates() end)
+        SK.Add(plates, SK.ControlHelp(plates, L["Players and Friendly NPCs each choose names only, full plates or "
+            .. "Blizzard's plates there, and where they show."]))
+        Options.editorFriendlyPlatesLink = friendlyLink
         -- Blizzard's names in dungeons & raids are set in Studio's Players › Dungeons & raids design.
         -- The friendly-name CVars PlateSmith changes (NamePolicy), back to the game's defaults.
         local restoreRow, restoreNames = SK.ButtonRow(plates, L["Restore Blizzard nameplate settings"], nil, "action")
@@ -3216,11 +4019,52 @@ local function BuildSettingsPages(settingsContent)
             end)
         end)
         SK.Add(plates, SK.ControlHelp(plates, L["For when names show wrongly after PlateSmith's saved settings were lost."]))
+        -- What Blizzard, with PlateSmith extras adds to Blizzard's plates (Studio/Extras.lua), its one home.
+        Options.BuildExtrasSettings(SK, Section(plate, "extras", L["Extras on Blizzard's plates"], Options.ExtrasSummary),
+            Bind)
         Options.BuildPlateVisibilitySettings(SK, Section(plate, "visibility", L["Where plates show"],
             Options.PlateVisibilitySummary), Bind)
+        -- Clicking (Nameplates/ClickThrough.lua), the home: a row per kind of plate, where this client can set it
+        -- (friendly players through the game's names-only switch; NPCs and enemies through the client's click-through
+        -- switch or the hit-test insets; your own plate through the switch only). Players' and Friendly NPCs' Friendly
+        -- plates have a Clicks row for the same setting.
+        do
+            local ClickThrough = PS.ClickThrough
+            local clickRows = { { key = "clickFriendlyPlayer", label = L["Friendly players"] },
+                { key = "clickFriendlyNPC", label = L["Friendly NPCs"] }, { key = "clickEnemy", label = L["Enemies"] },
+                { key = "clickSelf", label = L["Your own plate"] } }
+            local clicking = Section(plate, "clicking", L["Clicking"], function()
+                if not ClickThrough.AnySupported() then return L["Not on this game client"] end
+                local settings, through = PS.GetSettings(), 0
+                for _, entry in ipairs(clickRows) do
+                    local value = entry.key == "clickFriendlyPlayer" and ClickThrough.PlayersValue(settings)
+                        or settings[entry.key]
+                    if ClickThrough.Supported(entry.key) and value ~= "clickable" and value ~= "game" then
+                        through = through + 1
+                    end
+                end
+                if through == 0 then return L["Clickable"] end
+                return string.format(L["Click through: %d"], through)
+            end)
+            for _, entry in ipairs(clickRows) do
+                local function Shown() return ClickThrough.Supported(entry.key) end
+                local row, dropdown = ClickDropdownRow(SK, clicking, entry.key, entry.label,
+                    WidgetName("editor_" .. entry.key, "Dropdown"))
+                SK.Add(clicking, row, Shown)
+                Bind("plate." .. entry.key, dropdown)
+                if CLICKS.help[entry.key] then SK.Add(clicking, SK.ControlHelp(clicking, CLICKS.help[entry.key]), Shown) end
+            end
+            SK.Add(clicking, SK.Help(clicking, L["Each covers every plate of its kind, not one plate. Click through is put "
+                .. "back to the game's own when you choose Clickable, turn PlateSmith off or log out; in combat the change "
+                .. "waits for combat to end."]), ClickThrough.AnySupported)
+            SK.Add(clicking, SK.Help(clicking, L["This game client has no way to make nameplates click through, "
+                .. "so there is nothing to set here."]), function() return not ClickThrough.AnySupported() end)
+        end
         local names = Section(plate, "names", L["Names"])
         Check(names, "plate.showPlayerSurnames", "showPlayerSurnames", L["Show player surnames"])
-        Check(names, "plate.hideUnstyledFriendlyNames", "hideUnstyledFriendlyNames", L["Hide unstyled names outdoors"])
+        -- Its home (the game's own name settings); Players › Plate settings › Friendly plates reads it and links here.
+        Check(names, "plate.hideUnstyledFriendlyNames", "hideUnstyledFriendlyNames", L["Hide unstyled names"])
+        SK.Add(names, SK.ControlHelp(names, HIDE_UNSTYLED_HELP))
         Check(names, "plate.friendlyRelationshipColours", "friendlyRelationshipColours", L["Colour social relationships"])
         Check(names, "plate.nativeNameFont", "nativeNameFont", L["Readable Blizzard names outdoors"])
         SK.Add(names, SK.ControlHelp(names, L["Outside dungeons and raids, Blizzard's names are drawn at least 13 pt with "
@@ -3304,6 +4148,9 @@ local function BuildSettingsPages(settingsContent)
         end)
         Choice(quests, "plate.questIcons", "questIcons", L["Quest icons"], questIconChoices,
             L["Questie can draw its own quest icons on nameplates. Choose whose show, so a plate never has two."])
+        -- The companion's own options (audit #12) are its page under Modules.
+        SK.Add(quests, SK.ControlHelp(quests, L["With the PlateSmith_QuestieDB companion installed, its own options "
+            .. "(which mobs it marks for your quests) are in Studio › Settings › Modules › QuestieDB."]))
         -- Shortcuts over the tree's eyes; the summary counts those shown on at least one plate type.
         local shows = Section(plate, "showOnPlates", L["Show on plates"], function()
             local on = 0
@@ -3314,12 +4161,98 @@ local function BuildSettingsPages(settingsContent)
             return string.format(L["%d of %d shown"], on, #SHOW_ON_PLATES)
         end)
         for _, entry in ipairs(SHOW_ON_PLATES) do PartCheck(shows, "plate." .. entry.key, entry.key, entry.label) end
-        -- Not a part: the health bar's edge on enemy plates, so it has a setting of its own.
-        Check(shows, "plate.tankWarning", "tankWarning", L["Warn when you lose a mob you tank"])
-        SK.Add(shows, SK.ControlHelp(shows, L["While you tank, an enemy's health bar edge turns red when you stop "
-            .. "holding its threat."]))
-        Options.BuildThreatColourSettings(SK, Section(plate, "threatColours", L["Threat colours"], Options.ThreatColourSummary),
-            Bind)
+        -- Threat colours' home is Modules › Threat (ROADMAP 1.3 Modules): a link where they were.
+        local threat = Section(plate, "threatColours", L["Threat colours"], Options.ThreatColourSummary)
+        local threatRow, threatLink = SK.ButtonRow(threat, L["Threat colours are in Modules › Threat"], 340)
+        SK.Add(threat, threatRow)
+        threatLink:SetScript("OnClick", function() Options:OpenModuleSettings("threat", "colours") end)
+        SK.Add(threat, SK.ControlHelp(threat, L["Colour by threat, the role, the colours, Apply to and the tank warning "
+            .. "moved to Studio › Settings › Modules › Threat, with the rest of the threat settings."]))
+        Options.editorThreatColoursLink = threatLink
+    end)
+
+    -- Objects & interacting: the home of the object settings (the Objects tab's Plate settings links here) and of the
+    -- game's interact key settings (Nameplates/Interaction.lua: a row only where the client has its CVar).
+    Define("objects", function()
+        local Interaction = PS.Interaction
+        local objects = Page("objects")
+        local drawChoices = {
+            { value = "platesmith", label = L["PlateSmith"], help = L["Drawn in the Objects tab's design."] },
+            { value = "blizzard", label = L["Blizzard's"], help = L["The game's own object plate, untouched."] },
+        }
+        local plates = Section(objects, "objectPlates", L["Object plates"], function()
+            return LabelOf(drawChoices, PS.GetSettings().objectPlates)
+        end)
+        Choice(plates, "objects.objectPlates", "objectPlates", L["Drawn by"], drawChoices, L["Who draws the plates the game "
+            .. "gives objects (books, chests, ore, quest objects). PlateSmith draws them in Studio's Objects tab; "
+            .. "Blizzard's leaves the game's own plate untouched. Which objects get a plate is the game's choice."])
+        -- The whole plate fades while the game's icon says the object can't be used yet.
+        Check(plates, "objects.objectFadeUnable", "objectFadeUnable", L["Fade objects you can't use yet"])
+        SK.Add(plates, SK.ControlHelp(plates, L["Fades an object's plate while the game's icon says you can't use it yet, "
+            .. "such as a herb or vein your skill is too low for (object.unable). Off: they look like the rest."]))
+        -- Pointing at the plate's name (Nameplates/ObjectHover.lua): the player's own, not shared in Blueprints.
+        local hover = Section(objects, "objectHover", L["When you point at an object's plate"])
+        Check(hover, "objects.objectHoverCursor", "objectHoverCursor", L["Show the game's cursor"])
+        SK.Add(hover, SK.ControlHelp(hover, L["Pointing at an object's name on its plate shows the game's own cursor for "
+            .. "it, as over the object: gather, mine, read, loot, or greyed when it is out of reach or you can't use it "
+            .. "yet. Clicking and turning the camera work as before. Not in combat. Not shared in Blueprints."]))
+        Check(hover, "objects.objectHoverTooltip", "objectHoverTooltip", L["Show a tooltip"])
+        SK.Add(hover, SK.ControlHelp(hover, L["Pointing at an object's name on its plate shows a small tooltip: its "
+            .. "name, its type and, once one like it has been hovered in the world, what it needs (the Status text's "
+            .. "line). Not in combat. Not shared in Blueprints."]))
+        -- The interact key's rows in Interaction.SWITCHES' order, each with Game's setting (writes nothing) first.
+        local game = { value = "game", label = L["Game's setting"], help = L["PlateSmith leaves it as the game has it."] }
+        local onOff = { game, { value = "on", label = L["On"] }, { value = "off", label = L["Off"] } }
+        local range = { game }
+        for _, yards in ipairs({ "10", "15", "20", "30", "45", "60" }) do
+            range[#range + 1] = { value = yards, label = string.format(L["%s yards"], yards) }
+        end
+        local rows = {
+            { key = "interactTargeting", label = L["Interact key target"], choices = onOff, help = L["Objects, corpses "
+                .. "and NPCs near you become your interact key's target, so the key loots, gathers or talks without "
+                .. "clicking. On is always (the game's 3), Off is off (0)."] },
+            { key = "interactRange", label = L["Range"], choices = range, help = L["How far the interact key looks for "
+                .. "a target. Forever appears to drop the target past about 15 yards whatever this says."] },
+            { key = "interactArc", label = L["Direction"], help = L["Where it looks: only straight ahead, anywhere in "
+                .. "front of you, or all around you."], choices = { game, { value = "ahead", label = L["Straight ahead"] },
+                { value = "front", label = L["In front"] }, { value = "around", label = L["All around"] } } },
+            { key = "interactReach", label = L["Out of reach"], help = L["Whether it picks only what you can reach "
+                .. "from where you stand, or also what is out of reach (you then walk up to use it)."], choices = { game,
+                { value = "within", label = L["Only within reach"] }, { value = "beyond", label = L["Out of reach too"] } } },
+            { key = "interactNameplate", label = L["Plate on it"], choices = onOff, help = L["Shows a plate for the "
+                .. "object, corpse or NPC your interact key would use."] },
+            { key = "interactIcons", label = L["Icon over it"], choices = onOff, help = L["The game's icon over your "
+                .. "interact key's target (loot, talk, gather...)."] },
+            { key = "interactObjectIcons", label = L["Icons on objects too"], choices = onOff, help = L["Lets the game "
+                .. "show its interact icon on objects too, not just creatures."] },
+            { key = "interactMinorIcons", label = L["Icons on minor targets"], choices = onOff, help = L["Lets the game "
+                .. "show its interact icon on targets it ranks as minor too, not just the one your key would use."] },
+        }
+        Options.editorInteractRows = rows
+        local interact = Section(objects, "interactKey", L["Interact key"], function()
+            if not Interaction.AnySupported() then return L["Not on this game client"] end
+            local settings, set = PS.GetSettings(), 0
+            for _, entry in ipairs(rows) do
+                if Interaction.Supported(entry.key) and (settings[entry.key] or "game") ~= "game" then set = set + 1 end
+            end
+            if set == 0 then return L["Game's settings"] end
+            return string.format(L["Set by PlateSmith: %d"], set)
+        end)
+        SK.Add(interact, SK.Help(interact, L["The game's own settings: they pick the nearest object, corpse or NPC for "
+            .. "your interact key. They are shared with other addons such as Loot Sparkles, kept by this profile and not "
+            .. "shared in Blueprints. Game's setting leaves one alone; if another addon changes it after PlateSmith, "
+            .. "PlateSmith follows that instead of setting it back."]), Interaction.AnySupported)
+        for _, entry in ipairs(rows) do
+            local function Shown() return Interaction.Supported(entry.key) end
+            local get, set = Options.BindSetting(entry.key)
+            local row, dropdown = SK.DropdownRow(interact, entry.label, { choices = entry.choices, get = get, set = set,
+                name = WidgetName("editor_" .. entry.key, "Dropdown") })
+            SK.Add(interact, row, Shown)
+            SK.Add(interact, SK.ControlHelp(interact, entry.help), Shown)
+            Bind("objects." .. entry.key, dropdown)
+        end
+        SK.Add(interact, SK.Help(interact, L["This game client has none of the game's interact key settings, so there is "
+            .. "nothing to set here."]), function() return not Interaction.AnySupported() end)
     end)
 
     Define("stacking", function()
@@ -3340,8 +4273,9 @@ local function BuildSettingsPages(settingsContent)
 
     -- Relationships.
     Define("relations", function()
-        local relations = Page("relations", L["PvP colour takes priority over social colour when selected. "
-            .. "Icons use Blizzard's faction art. These apply outdoors; Blizzard protects friendly plates in dungeons and raids."])
+        local relations = Page("relations", L["A PvP-flagged ally's colour goes on a full plate's health bar, or on "
+            .. "the name of a names-only plate in place of its social colour. Icons use Blizzard's faction art. These "
+            .. "apply outdoors; Blizzard protects friendly plates in dungeons and raids."])
         local icons = Section(relations, "relationIcons", L["Icons"])
         Check(icons, "relations.showGroupIcon", "showGroupIcon", L["Show icon above group members"])
         Check(icons, "relations.showGuildIcon", "showGuildIcon", L["Show icon above guild members"])
@@ -3354,7 +4288,7 @@ local function BuildSettingsPages(settingsContent)
             return LabelOf(model.friendlyPvpChoices, PS.GetSettings().friendlyPvpStyle)
         end)
         Choice(pvp, "relations.friendlyPvpStyle", "friendlyPvpStyle", L["PvP-flagged players"], model.friendlyPvpChoices)
-        Colour(pvp, "relations.pvp", "pvp", L["PvP name colour"])
+        Colour(pvp, "relations.pvp", "pvp", L["PvP colour"])
     end)
 
     -- Experimental: tests of what the game allows, each off by default (the page header's "?" says so,
@@ -3411,14 +4345,15 @@ local function BuildSettingsPages(settingsContent)
         Controls.AttachTooltip(larger, L["Studio size"], { L["Make Blueprint Studio larger."] })
         local access = Section(studio, "accessibility", L["Accessibility"])
         Options.editorAccessCheckboxes = {}
-        -- Colour-blind friendly: by default the plates' threat palette decides (Settings › Threat).
+        -- Colour-blind friendly: by default the plates' threat palette decides (Modules › Threat).
         local colourBlindRow, colourBlind = SK.DropdownRow(access, L["Colour-blind friendly"], {
             name = WidgetName("studio_colourBlind", "Dropdown"), choices = Options.StudioColourBlindChoices,
             get = function() return Options:StudioColourBlindChoice() end,
             set = function(value) Options:SetStudioAccess("colourBlind", value) end })
         SK.Add(access, colourBlindRow)
-        SK.Add(access, SK.ControlHelp(access, L["Threat colours in the preview use blue and orange; Studio's lines are "
-            .. "thicker. It follows the plates' threat palette unless you choose On or Off."]))
+        SK.Add(access, SK.ControlHelp(access, L["Studio's lines are thicker and the preview's threat text uses blue and "
+            .. "orange; nothing changes on the plates. It follows the plates' threat palette (Settings › Modules › Threat › "
+            .. "Threat text & window colours) unless you choose On or Off."]))
         Options.editorAccessColourBlind = Register(colourBlind)
         for _, spec in ipairs({
             { "highContrast", L["High contrast"],
@@ -3467,11 +4402,11 @@ local function BuildSettingsPages(settingsContent)
                 .. "while a condition holds, such as \"when tagged, set colour grey\". Test values try them in the preview."] },
             { "helpSharing", L["Sharing"], L["Export gives a share code (or readable JSON) for the current profile. Import "
                 .. "takes one and lets you choose which sections to replace; press Save to keep them."] },
-            { "helpCommands", L["Commands"], L["/ps opens Studio and /ps config opens Settings. /ps save and /ps revert act on "
-                .. "unsaved changes; /ps profile <name> switches profile. /ps console shows or hides the threat windows. "
+            { "helpCommands", L["Commands"], L["/ps opens Studio. /ps console shows or hides the threat windows. "
                 .. "/ps diagnose opens a report to share when something looks wrong."] },
             { "helpThreat", L["Threat windows"], L["/ps console shows them: up to five, each a Threat meter (your group's "
-                .. "threat on your target) or Tank (every enemy in view and who holds it). Drag a title to move a window and "
+                .. "threat on your target), Tank (every enemy in view and who holds it) or Rescue (your group, coloured when "
+                .. "someone pulls or has aggro; click a member to taunt their target). Drag a title to move a window and "
                 .. "those snapped to it (Shift: alone); drop it on a side of Blizzard's damage meter to follow it. Right-click "
                 .. "a title for its menu; click a row to spotlight its plate."] },
         }) do
@@ -3498,9 +4433,36 @@ function Options:EditorSettingsPage(key)
     local build = settingsPageBuilders[key]
     if build then
         settingsPageBuilders[key] = nil
-        BuildLater("studio settings " .. key, build)
+        BuildLater("studio settings " .. key, build, { "studioPage", key })
+    elseif not pages[key] and self.ModuleSettingsBuilder then
+        -- A module's page (Studio/Modules.lua), "module:<id>".
+        build = self:ModuleSettingsBuilder(key)
+        if build then BuildLater("studio settings " .. key, build, { "studioPage", key }) end
     end
     return pages[key]
+end
+
+-- Opens Studio's Settings at the category key (a link to a page, such as the Objects tab's Object settings...).
+function Options:OpenSettingsCategory(key)
+    if not self:EditorSettingsPage(key) then return false end
+    self:SetEditorInspectorPage(key)
+    self:SetSettingsCategory(key)
+    return self.editorSettingsCategory == key
+end
+
+-- Where a bound control lives when it is not on the page its id names: id -> Settings page key. A page that moved
+-- keeps its controls' ids (Settings/ThreatPage.lua: "plate.colourByThreat" is on Modules › Threat).
+Options.settingsControlHomes = Options.settingsControlHomes or {}
+
+-- Opens Studio's Settings at the row of the control bound as id ("<page>.<setting>", editorSettingsControls):
+-- its section unfolded, scrolled to and flashed, as a search result opens it.
+function Options:OpenSettingsControl(id)
+    local key = type(id) == "string" and (self.settingsControlHomes[id] or id:match("^([^.]+)%.")) or nil
+    if not (key and self:EditorSettingsPage(key) and self.settingsSearch) then return false end
+    local control = self.editorSettingsControls and self.editorSettingsControls[id]
+    local row = control and control:GetParent()
+    if not row then return false end
+    return self.settingsSearch.Pick({ place = "studio", category = key, frame = row, section = row:GetParent() })
 end
 
 function Options:BuildStudioInspector(workbench)

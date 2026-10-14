@@ -47,26 +47,48 @@ local TEMPLATE_SAMPLES = {
     ["hostile"] = true, ["neutral"] = false, ["interruptible"] = true, ["interruptReady"] = true, ["questdrop"] = false, ["pvp"] = false,
     ["instance"] = false, ["ingroup"] = false, ["inguild"] = false,
     ["role.tank"] = false, ["threat.holding"] = false, ["threat.losing"] = false, ["threat.pulling"] = false,
-    ["threat.other"] = false, ["threat.offtank"] = false,
+    ["threat.other"] = false, ["threat.offtank"] = false, ["threat.loose"] = false,
     ["hastarget"] = true, ["inrange"] = true, ["quest.progress"] = "3/8", ["quest.percent"] = 38,
     ["combo"] = 3,
+    -- An object or NPC you can interact with (Test values' Object): a quest object, as the Objects tab's sample is,
+    -- within reach. object.id is the book's, unit.id an innkeeper's.
+    ["object.kind"] = "quest", ["object.unable"] = false, ["interact.inrange"] = true,
+    ["object.id"] = 175734, ["unit.id"] = 6740, ["object.quest"] = true,
+    -- What the object needs and whether your skill reaches it (Status text's sample: 65 against 72); Cultivation ready
+    -- (a herb's Status text adds it).
+    ["object.skill"] = 65, ["object.cangather"] = true, ["object.cancultivate"] = false,
 }
 -- Tokens other addons registered preview with their own sample (Template.RegisterToken).
 setmetatable(TEMPLATE_SAMPLES, { __index = function(_, token) return PS.Template.Sample(token) end })
 Options.templateSamples = TEMPLATE_SAMPLES
 
--- The sample unit's classification mark (Test values' elite, rare and boss).
-local function SampleClassification()
-    if TEMPLATE_SAMPLES.boss then return "worldboss" end
-    if TEMPLATE_SAMPLES.rare then return TEMPLATE_SAMPLES.elite and "rareelite" or "rare" end
-    return TEMPLATE_SAMPLES.elite and "elite" or nil
+-- The sample unit's classification (UnitClassification's word; nil: normal) from Test values' elite, rare and boss
+-- (samples: a view's own, Studio's by default).
+local function SampleClassification(samples)
+    samples = samples or TEMPLATE_SAMPLES
+    if samples.boss then return "worldboss" end
+    if samples.rare then return samples.elite and "rareelite" or "rare" end
+    return samples.elite and "elite" or nil
 end
+Options.SampleClassification = SampleClassification
+-- Test values' Elite / rare choice writes the flags it reads (one source: elite, rare, boss); a boss is elite too,
+-- as {elite} reads a world boss.
+Options.SAMPLE_CLASSIFICATIONS = {
+    { value = "normal", label = L["Normal"], elite = false, rare = false, boss = false },
+    { value = "elite", label = L["Elite"], elite = true, rare = false, boss = false },
+    { value = "rare", label = L["Rare"], elite = false, rare = true, boss = false },
+    { value = "rareelite", label = L["Rare elite"], elite = true, rare = true, boss = false },
+    { value = "worldboss", label = L["Boss"], elite = true, rare = false, boss = true },
+}
 local valueSourceByKey = {}
 for _, choice in ipairs(valueSourceChoices) do valueSourceByKey[choice.value] = choice end
 
-function PS.RegisterEditorComponent(key, definition)
-    if type(key) ~= "string" or not key:match("^[%a][%w_%.]*$") then
-        return false, "component key must be a stable namespaced identifier"
+-- A part in Studio's preview and tree only (docs/MODULES.md): nothing draws it on a plate. A module's key is in the
+-- module ID grammar ("<module>.<name>", Core/Modules.lua); the built-in keys and 1.2.0's forms ("_") still pass.
+function PS.RegisterEditorComponent(...)
+    local key, definition = PS._Args(...)
+    if type(key) ~= "string" or not (PS.IsModuleId(key, 2) or key:match("^[%a][%w_%.]*$")) then
+        return false, PS._IdReason("component", 2)
     end
     if type(definition) ~= "table" or type(definition.label) ~= "string" then
         return false, "component definition requires a label"
@@ -101,7 +123,8 @@ PS.RegisterEditorComponent("name", {
         component.previewText = component:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         component.previewText:SetPoint("CENTER")
         component.previewText:SetText(L["Training Raider"])
-        component.previewText:SetTextColor(1, 0.25, 0.2)
+        local hostile = PS.PlateColours.HOSTILE
+        component.previewText:SetTextColor(hostile[1], hostile[2], hostile[3])
     end,
     refresh = function(component, settings)
         if component.previewText then
@@ -151,7 +174,8 @@ PS.RegisterEditorComponent("health", {
         local bar = CreateFrame("StatusBar", nil, component)
         bar:SetAllPoints()
         bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-        bar:SetStatusBarColor(0.85, 0.12, 0.1)
+        local hostile = PS.PlateColours.HOSTILE
+        bar:SetStatusBarColor(hostile[1], hostile[2], hostile[3])
         bar:SetMinMaxValues(0, 100)
         bar:SetValue(72)
         component.previewBar = bar
@@ -165,14 +189,18 @@ PS.RegisterEditorComponent("health", {
             if settings.healthColourMode == "custom" and colour then
                 component.previewBar:SetStatusBarColor(colour.r, colour.g, colour.b)
             else
-                -- previewOwner: the import preview's plate this part belongs to (Studio's own: none).
-                local plateType = (component.previewOwner or Options).editorProfile
-                if plateType == "friendlyPlayer" then
-                    component.previewBar:SetStatusBarColor(0.25, 1, 0.45)
-                elseif plateType == "friendlyNPC" then
-                    component.previewBar:SetStatusBarColor(0.35, 0.9, 1)
+                -- As a plate's automatic bar: a flagged ally's PvP colour where the bar takes it (EditorPvPColour), else
+                -- the plates' base colour for its Test values (Options.SampleBaseColour). previewOwner: the import
+                -- preview's plate this part belongs to (Studio's own: none).
+                local owner = component.previewOwner or Options
+                local general = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
+                local pvp, onBar = nil, false
+                if general then pvp, onBar = owner:EditorPvPColour(general, settings) end
+                if pvp and onBar then
+                    component.previewBar:SetStatusBarColor(pvp.r, pvp.g, pvp.b)
                 else
-                    component.previewBar:SetStatusBarColor(0.85, 0.12, 0.1)
+                    component.previewBar:SetStatusBarColor(Options.SampleBaseColour(general, owner.templateSamples,
+                        owner.editorProfile))
                 end
             end
         end
@@ -221,7 +249,8 @@ PS.RegisterEditorComponent("cast", {
     end,
     -- Test values: casting fills it with the spell's name; one that cannot be interrupted is grey,
     -- or with Colour by interrupt, the colour interruptible and interruptReady choose.
-    -- The profile's cast options place the icon (left, right or off) and show the time and name.
+    -- The profile's cast options place the icon (left, right, inside the bar's left end or off) and show the time
+    -- and name, as the plates' CastLayout does (the name starts past an icon inside).
     refresh = function(component, settings)
         local scale = settings.scale or 1
         -- As on the plates: its own size, or the health bar's width and 3 px less height.
@@ -250,23 +279,34 @@ PS.RegisterEditorComponent("cast", {
             bar:SetStatusBarColor(0.95, 0.65, 0.12)
         end
         local showTime, side = settings.castTime ~= false, settings.castIcon or "left"
+        local inside = side == "inside"
         spell:SetText(casting and tostring(TEMPLATE_SAMPLES["cast.name"] or "") or "")
         spell:SetShown(settings.castName ~= false)
         spell:ClearAllPoints()
+        icon:SetSize(drawn, drawn)
+        icon:ClearAllPoints()
+        if side == "right" then
+            icon:SetPoint("LEFT", bar, "RIGHT", 2, 0)
+        elseif inside then
+            icon:SetPoint("LEFT", bar, "LEFT", 0, 0)
+        else
+            icon:SetPoint("RIGHT", bar, "LEFT", -2, 0)
+        end
+        icon:SetShown(casting and side ~= "off")
+        if inside then spell:SetPoint("LEFT", icon, "RIGHT", 3, 0) end
         if showTime then
-            spell:SetPoint("LEFT", bar, "LEFT", 3, 0)
+            if not inside then spell:SetPoint("LEFT", bar, "LEFT", 3, 0) end
             spell:SetPoint("RIGHT", time, "LEFT", -2, 0)
             spell:SetJustifyH("LEFT")
+        elseif inside then
+            spell:SetPoint("RIGHT", bar, "RIGHT", -3, 0)
+            spell:SetJustifyH("CENTER")
         else
             spell:SetPoint("CENTER")
             spell:SetJustifyH("CENTER")
         end
         time:SetText(casting and "1.2" or "")
         time:SetShown(showTime)
-        icon:SetSize(drawn, drawn)
-        icon:ClearAllPoints()
-        if side == "right" then icon:SetPoint("LEFT", bar, "RIGHT", 2, 0) else icon:SetPoint("RIGHT", bar, "LEFT", -2, 0) end
-        icon:SetShown(casting and side ~= "off")
         local size = math.max(7, math.floor(height * scale))
         if PS.ApplyNameplateFont then
             PS.ApplyNameplateFont(spell, size)
@@ -338,7 +378,13 @@ for index = 1, VALUE_SLOT_COUNT do
                         bar:SetMinMaxValues(0, 100)
                         component.previewShapeBar = bar
                     end
-                    component.previewShapeBar:SetValue(slot.source == "powerPercent" and 64 or 72)
+                    -- A module's bar: its token's sample through the plates' own scaling (ModuleSources.BarPercent).
+                    local module = PS.ModuleSources.SlotSource(slot)
+                    local fill = slot.source == "powerPercent" and 64 or 72
+                    if module then
+                        fill = PS.ModuleSources.BarPercent(module, TEMPLATE_SAMPLES[PS.ModuleSources.Bar(module).token]) or 0
+                    end
+                    component.previewShapeBar:SetValue(fill)
                     component.previewShapeBar:SetStatusBarColor(colour.r, colour.g, colour.b)
                     component.previewShapeBar:Show()
                     component.previewBar = component.previewShapeBar
@@ -350,7 +396,11 @@ for index = 1, VALUE_SLOT_COUNT do
                     if kind == "box" then
                         component.previewShape:SetColorTexture(colour.r, colour.g, colour.b, 0.85)
                     else
-                        component.previewShape:SetTexture(PS.ValueIconPaths and PS.ValueIconPaths[slot.icon or "raid8"])
+                        -- A module's icon: its sample (a question mark without one).
+                        local module = PS.ModuleSources.SlotSource(slot)
+                        component.previewShape:SetTexture(module
+                            and (PS.ModuleSources.Sample(module) or "Interface\\Icons\\INV_Misc_QuestionMark")
+                            or PS.ValueIconPaths and PS.ValueIconPaths[slot.icon or "raid8"])
                         component.previewShape:SetVertexColor(colour.r, colour.g, colour.b)
                     end
                     component.previewShape:Show()
@@ -568,6 +618,104 @@ PS.RegisterEditorComponent("raidIcon", {
     refresh = function(component, settings) MarkerSize(component, settings, 6, 16) end,
 })
 
+-- The Action icon as the plates draw it (Nameplates/ActionIcon.lua): the game's own cursor icon, here the one for
+-- Test values' Object (object.kind) from its file, Unable's when object.unable is ticked, greyed or hidden by the
+-- part's Can't use choice through the plates' own ActionIcon.Look, at the plates' size.
+PS.RegisterEditorComponent("actionIcon", {
+    label = L["Action icon"], x = 70, y = 0, width = 20, height = 20, visible = false,
+    create = function(component)
+        component.previewIcon = component:CreateTexture(nil, "OVERLAY")
+        component.previewIcon:SetAllPoints()
+    end,
+    refresh = function(component, profile)
+        local ActionIcon = PS.ActionIcon
+        local owner = component.previewOwner or Options
+        local samples = owner.templateSamples or TEMPLATE_SAMPLES
+        local size = math.floor(ActionIcon.Size(profile.nameFontSize) * (profile.scale or 1) + 0.5)
+        component:SetSize(size, size)
+        local unable = samples["object.unable"] == true
+        local name = ActionIcon.SAMPLES[samples["object.kind"]] or ActionIcon.SAMPLES.other
+        local icon = component.previewIcon
+        icon:SetTexture("Interface\\Cursor\\" .. (unable and "Unable" or "") .. name)
+        local styles = profile.styles
+        local shown, grey = ActionIcon.Look(unable, styles and styles.actionIcon and styles.actionIcon.iconUnable)
+        ActionIcon.Grey(icon, grey)
+        -- Hidden by Can't use: faint, so it can still be found and placed (as the quest mark off a quest unit).
+        icon:SetAlpha(shown and 1 or 0.3)
+    end,
+})
+
+-- The Loose mark as the plates draw it (Nameplates/LooseMark.lua): its icon through LooseMark.Paint, at the plates'
+-- size, shown when LooseMark.Shows says so for Test values' Loose (threat.loose) and the role (Threat colours' Role, or
+-- You tank), as the plates decide it. Not shown: faint, so it can still be found and placed.
+PS.RegisterEditorComponent("looseMark", {
+    label = L["Loose mark"], x = 70, y = 16, width = 18, height = 18, visible = false,
+    create = function(component)
+        component.previewIcon = component:CreateTexture(nil, "OVERLAY")
+        component.previewIcon:SetAllPoints()
+    end,
+    refresh = function(component, profile)
+        local LooseMark = PS.LooseMark
+        local owner = component.previewOwner or Options
+        local samples = owner.templateSamples or TEMPLATE_SAMPLES
+        local size = math.floor(LooseMark.Size(profile.nameFontSize) * (profile.scale or 1) + 0.5)
+        component:SetSize(size, size)
+        local style = profile.styles and profile.styles.looseMark
+        LooseMark.Paint(component.previewIcon, style)
+        local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or {}
+        local tank = PS.ThreatColours.IsTank(settings, function() return samples["role.tank"] == true end)
+        local shown = LooseMark.Shows(style, tank, samples["threat.loose"] == true and samples.combat ~= false)
+        component.previewIcon:SetAlpha(shown and 1 or 0.3)
+    end,
+})
+
+-- The Status text as the plates write it (Nameplates/ObjectStatus.lua): for Test values' Object a herb's, ore's or a
+-- locked chest's line through ObjectStatus' own Text route with a sample skill ("Mining 65" in the colour for 72, red (40) while
+-- Can't use yet is ticked; a herb adds "Cultivate ready" while Cultivation ready is). An object with no skill shows
+-- nothing on the plates: faint here, to be found and placed.
+PS.RegisterEditorComponent("statusText", {
+    label = L["Status text"], x = 0, y = -20, width = 140, height = 16, visible = false,
+    create = function(component)
+        component.previewText = component:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        component.previewText:SetPoint("CENTER")
+    end,
+    refresh = function(component, profile)
+        local owner = component.previewOwner or Options
+        local samples = owner.templateSamples or TEMPLATE_SAMPLES
+        local Status = PS.ObjectStatus
+        local text, colour = Status.Sample(samples["object.kind"], samples["object.unable"] == true,
+            samples["object.cancultivate"] == true)
+        component.previewText:SetText(text or L["No skill needed"])
+        local rgb = Status.COLOURS[colour or "plain"]
+        component.previewText:SetTextColor(rgb[1], rgb[2], rgb[3])
+        component.previewText:SetAlpha(text and 1 or 0.3)
+        if type(PS.ApplyNameplateFont) == "function" then
+            PS.ApplyNameplateFont(component.previewText, PS.ProfileSchema.PartTextSize("statusText", profile.nameFontSize))
+        end
+    end,
+})
+
+-- The Backdrop as the plates draw it (Nameplates/Backdrop.lua): its box through the plates' own Frame and Paint, filling
+-- the component, which Fit to parts anchors round the parts it wraps (Options:PlaceEditorBackdrop) and Fixed size sizes
+-- here and places like any part. Under every part, so a press over one picks that part.
+PS.RegisterEditorComponent("backdrop", {
+    label = L["Backdrop"], x = 0, y = 0, width = 120, height = 40,
+    create = function(component)
+        component.previewBox = PS.Backdrop.Frame(component)
+        component.previewBox:SetAllPoints(component)
+        component.previewBox:Show()
+    end,
+    refresh = function(component, profile)
+        local style = profile.styles and profile.styles.backdrop
+        PS.Backdrop.Paint(component.previewBox, style)
+        if PS.Backdrop.Fixed(style) then
+            local width, height = PS.Backdrop.Size(style)
+            local scale = profile.scale or 1
+            component:SetSize(width * scale, height * scale)
+        end
+    end,
+})
+
 PS.RegisterEditorComponent("relationshipIcon", {
     label = L["Relationship icon"], x = 0, y = 38, width = 16, height = 16, visible = false,
     create = function(component)
@@ -583,7 +731,8 @@ PS.RegisterEditorComponent("pvpIcon", {
     create = function(component)
         component.previewIcon = component:CreateTexture(nil, "OVERLAY")
         component.previewIcon:SetAllPoints()
-        component.previewIcon:SetTexture("Interface\\TargetingFrame\\UI-PVP-Alliance")
+        -- The plates' emblem, cropped as they draw it (PvPMark).
+        PS.PvPMark.Apply(component.previewIcon, "Alliance")
     end,
     refresh = function(component, settings) MarkerSize(component, settings, 4, 14) end,
 })
@@ -596,16 +745,33 @@ PS.RegisterEditorComponent("classification", {
         component.previewIcon = component:CreateTexture(nil, "OVERLAY")
         component.previewIcon:SetAllPoints()
     end,
-    -- The sample's mark (Test values' elite, rare, boss) in the chosen style: the plate's 18 px
-    -- icon, or its word.
+    -- The sample's mark (Test values' elite, rare, boss) in the plates' style (ClassificationMark: the same route
+    -- and sizes): its icon at Icon size, the classic dragon (placed round the level: PositionEditorComponent), its
+    -- word, or nothing here (Level suffix draws on the level, Bar frame round the health bar: the preview's own).
+    -- previewEmpty: nothing to show, so what is pinned to it takes its place, as on the plates.
     refresh = function(component, profile)
+        local owner = component.previewOwner or Options
         local settings = PS.GetSettings and PS.GetSettings()
-        local style = settings and settings.classificationStyle or "icon"
+        local style = owner.EditorMarkStyle and owner:EditorMarkStyle(settings) or "icon"
+        local Mark, Schema = PS.ClassificationMark, PS.ProfileSchema
         if type(PS.ApplyNameplateFont) == "function" then
             PS.ApplyNameplateFont(component.previewText, math.max(8, (profile.nameFontSize or 14) - 2))
         end
-        PS.ApplyClassificationMark(component.previewText, component.previewIcon, SampleClassification(), style)
-        local size = math.floor(18 * (profile.scale or 1) + 0.5)
+        local shown = Mark.Apply(component.previewText, component.previewIcon,
+            SampleClassification(owner.templateSamples), style)
+        component.previewEmpty = not shown or nil
+        component.previewDragon = nil
+        local scale = profile.scale or 1
+        if style == "dragon" then
+            local styles = profile.styles
+            local height = Schema.ScaledFontSize(Schema.StyledFontSize(Schema.PartTextSize("level", profile.nameFontSize),
+                styles and styles.level), settings and settings.textScale)
+            local dragon = Mark.DragonScale(height)
+            component.previewDragon = dragon
+            component:SetSize(Mark.DRAGON.WIDTH * dragon, Mark.DRAGON.HEIGHT * dragon)
+            return
+        end
+        local size = math.floor(Mark.IconSize(settings, profile, style) * scale + 0.5)
         local text = component.previewText
         local wordWidth = text:IsShown() and text.GetStringWidth and text:GetStringWidth() or 0
         component:SetSize(math.max(size, math.ceil(wordWidth)), size)
@@ -700,6 +866,47 @@ PS.RegisterEditorComponent("debuffs", {
     refresh = RefreshAuraPreview("debuffs"),
 })
 
+-- Modules' sources in a custom part's choices (Core/ModuleSources.lua, and a module's number or text token for custom
+-- text): "module:<id>" stands for source "template" with the text "{<id>}", which the inspector writes in one go.
+local MODULE_SOURCE = "module:"
+local function WithModules(base, sources)
+    local list = {}
+    for index, choice in ipairs(base) do list[index] = choice end
+    for _, source in ipairs(sources) do
+        list[#list + 1] = { value = MODULE_SOURCE .. source.id, label = source.label,
+            help = string.format(L["From another addon: %s."], source.id) }
+    end
+    return list
+end
+local function ModuleTokens()
+    local list = {}
+    for _, token in ipairs(PS.Template.ListTokens()) do
+        if not token.builtin and token.kind ~= "flag" and token.state ~= "disabled" then
+            list[#list + 1] = { id = token.id, label = token.label or token.id }
+        end
+    end
+    return list
+end
+-- The choice a part shows: a module's source as "module:<id>", else its source (an icon: its picture).
+local function SlotChoice(slot)
+    if type(slot) ~= "table" then return nil end
+    local id = PS.ModuleSources.SlotSource(slot)
+    if id then return MODULE_SOURCE .. id end
+    if slot.kind == "icon" then return slot.icon or "raid8" end
+    if not slot.kind and slot.source == "template" and type(slot.template) == "string" then
+        local token = slot.template:match("^{([%a%d%.]+)}$")
+        if token and PS.Template.IsExtension(token) then return MODULE_SOURCE .. token end
+    end
+    return slot.source
+end
+-- The fields a choice writes: a module's source, or the built-in value in field (source, or an icon's picture).
+local function ChoiceFields(value, field, kind)
+    local id = type(value) == "string" and value:sub(1, #MODULE_SOURCE) == MODULE_SOURCE and value:sub(#MODULE_SOURCE + 1)
+    if id then return { source = "template", template = PS.ModuleSources.Template(id) } end
+    if kind == "icon" then return { icon = value, source = "static" } end
+    return { [field] = value }
+end
+
 Options.editorCatalog = {
     editorDefaults = editorDefaults,
     editorOrder = editorOrder,
@@ -710,4 +917,10 @@ Options.editorCatalog = {
     iconChoices = iconChoices,
     valueSourceChoices = valueSourceChoices,
     valueSourceByKey = valueSourceByKey,
+    MODULE_SOURCE = MODULE_SOURCE,
+    BarSourceChoices = function() return WithModules(barSourceChoices, PS.ModuleSources.List("bar")) end,
+    IconChoices = function() return WithModules(iconChoices, PS.ModuleSources.List("icon")) end,
+    ValueSourceChoices = function() return WithModules(valueSourceChoices, ModuleTokens()) end,
+    SlotChoice = SlotChoice,
+    ChoiceFields = ChoiceFields,
 }

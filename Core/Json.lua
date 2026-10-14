@@ -24,16 +24,21 @@ function Json.IsArray(value)
     return true
 end
 
+-- One function for every escape (not a closure per string: an export encodes thousands).
+local function Escape(char)
+    if char == '\\' then return '\\\\' end
+    if char == '"' then return '\\"' end
+    if char == '\n' then return '\\n' end
+    if char == '\r' then return '\\r' end
+    if char == '\t' then return '\\t' end
+    return string.format('\\u%04x', string.byte(char))
+end
+
 local function EncodeString(value)
-    local escaped = tostring(value):gsub('[%z\1-\31\\"]', function(char)
-        if char == '\\' then return '\\\\' end
-        if char == '"' then return '\\"' end
-        if char == '\n' then return '\\n' end
-        if char == '\r' then return '\\r' end
-        if char == '\t' then return '\\t' end
-        return string.format('\\u%04x', string.byte(char))
-    end)
-    return '"' .. escaped .. '"'
+    local text = tostring(value)
+    -- Most keys and values need no escape: no gsub pass for them.
+    if not text:find('[%z\1-\31\\"]') then return '"' .. text .. '"' end
+    return '"' .. text:gsub('[%z\1-\31\\"]', Escape) .. '"'
 end
 
 local function EncodeNumber(value)
@@ -42,7 +47,13 @@ local function EncodeNumber(value)
     return string.format("%.14g", value)
 end
 
-local function EncodeValue(value, pretty, depth, out)
+-- Each object's sorted keys go in a list kept per depth and reused by every Encode (keyLists.busy: an
+-- Encode inside another, which never happens today, makes its own lists). The pieces are few: a
+-- member's separator, indent, key and colon are one string ('","name":'), which Lua keeps once however
+-- often it is made, so an export's buffer is about two pieces a value.
+local keyLists = { busy = false }
+
+local function EncodeValue(value, pretty, depth, out, lists)
     local kind = type(value)
     if kind == "string" then out[#out + 1] = EncodeString(value) return end
     if kind == "boolean" then out[#out + 1] = value and "true" or "false" return end
@@ -53,27 +64,30 @@ local function EncodeValue(value, pretty, depth, out)
     local count = array and #value or 0
     local keys
     if not array then
-        keys = {}
-        for key in pairs(value) do keys[#keys + 1] = tostring(key) end
+        keys = lists and lists[depth] or {}
+        if lists then lists[depth] = keys end
+        for key in pairs(value) do
+            count = count + 1
+            keys[count] = tostring(key)
+        end
+        for index = #keys, count + 1, -1 do keys[index] = nil end
         table.sort(keys)
-        count = #keys
     end
     if count == 0 then out[#out + 1] = array and "[]" or "{}" return end
 
     local newline = pretty and ("\n" .. string.rep("  ", depth + 1)) or ""
+    local colon = pretty and ": " or ":"
     out[#out + 1] = array and "[" or "{"
     for index = 1, count do
-        if index > 1 then out[#out + 1] = "," end
-        out[#out + 1] = newline
         if array then
-            EncodeValue(value[index], pretty, depth + 1, out)
+            out[#out + 1] = index > 1 and ("," .. newline) or newline
+            EncodeValue(value[index], pretty, depth + 1, out, lists)
         else
             local key = keys[index]
-            out[#out + 1] = EncodeString(key)
-            out[#out + 1] = pretty and ": " or ":"
+            out[#out + 1] = (index > 1 and ("," .. newline) or newline) .. EncodeString(key) .. colon
             local child = value[key]
             if child == nil then child = value[tonumber(key)] end
-            EncodeValue(child, pretty, depth + 1, out)
+            EncodeValue(child, pretty, depth + 1, out, lists)
         end
     end
     if pretty then out[#out + 1] = "\n" .. string.rep("  ", depth) end
@@ -82,7 +96,18 @@ end
 
 function Json.Encode(value, pretty)
     local out = {}
-    EncodeValue(value, pretty and true or false, 0, out)
+    local lists = not keyLists.busy and keyLists or nil
+    if lists then lists.busy = true end
+    local ok, failure = pcall(EncodeValue, value, pretty and true or false, 0, out, lists)
+    if lists then
+        lists.busy = false
+        -- The kept lists hold no keys between encodes.
+        for depth, keys in pairs(lists) do
+            if type(keys) == "table" then for index = #keys, 1, -1 do keys[index] = nil end end
+            if type(depth) == "number" and depth > 16 then lists[depth] = nil end
+        end
+    end
+    if not ok then error(failure, 0) end
     return table.concat(out)
 end
 
@@ -114,6 +139,13 @@ function Json.Decode(text, maxBytes, maxDepth)
 
     local function ParseString()
         position = position + 1
+        -- Most strings hold no escape: the text up to the closing quote, with no list of parts.
+        local first = text:find('["\\%z\1-\31]', position)
+        if first and text:byte(first) == 34 then
+            local value = text:sub(position, first - 1)
+            position = first + 1
+            return value
+        end
         local parts = {}
         while true do
             local stop = text:find('["\\%z\1-\31]', position)

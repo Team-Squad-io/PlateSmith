@@ -41,6 +41,46 @@ function Blend.Colour(stops, percent)
     return last.r, last.g, last.b
 end
 
+-- Which of a part's rules apply, for the plates (Lifecycle's ApplyPartRules) and Studio's preview (Test values,
+-- "Preview as if every condition is true") alike, so the two never disagree. In list order, of the rules that hold:
+-- the last that sets colour (a colour, or a blend by health) sets it, the last opacity rule the opacity, and any
+-- hide rule hides. A rule turned off never applies; an empty or blank condition always holds; forced makes every
+-- condition that compiles hold. read(token) gives the facts. No tables are made: this runs in a plate's flush.
+local Rules = {}
+PS.StyleRules = Rules
+
+function Rules.Holds(when, read, forced)
+    if when == nil or (type(when) == "string" and not when:find("%S")) then return true end
+    local tree = PS.Template.CompileCondition(when)
+    if tree == nil then return false end
+    return forced == true or PS.Template.Test(tree, read)
+end
+
+-- colourRule (nil: none), alpha (nil: none), hide (true or nil), after: the index after colourRule (1 with none),
+-- where colour rules a fold may still pick from begin (Lifecycle).
+function Rules.Resolve(list, read, forced)
+    local colourRule, alpha, hide, after = nil, nil, nil, 1
+    for index, rule in ipairs(list) do
+        if rule.enabled ~= false and Rules.Holds(rule.when, read, forced) then
+            local set = rule.set
+            if set == "colour" or set == "blend" then colourRule, after = rule, index + 1
+            elseif set == "alpha" then alpha = rule.alpha
+            elseif set == "hide" then hide = true end
+        end
+    end
+    return colourRule, alpha, hide, after
+end
+
+-- A colour rule's r, g, b: its colour, or its blend at read's health %; nothing for a protected or missing %.
+function Rules.Colour(rule, read)
+    if rule.set == "colour" then
+        local colour = rule.colour
+        if type(colour) == "table" then return colour.r, colour.g, colour.b end
+        return nil
+    end
+    return Blend.Colour(rule.stops, read("health.percent"))
+end
+
 -- A text's box drawn rounded (style boxShape): Blizzard's own nameplate level box, nine-sliced by the
 -- client to the box's size, on a texture over frame made the first time it is wanted. Rounded returns
 -- true while it shows, false when it is not wanted or the client lacks the atlas (the caller then draws
@@ -66,6 +106,53 @@ function StyleBox.Rounded(frame, wanted)
     if not art then return false end
     art:Show()
     return true
+end
+
+-- A readable positive number from a region's getter, else nil.
+local function Measure(region, method)
+    local value = region and PS.Secret.ReadNumber(region, method)
+    if type(value) == "number" and value > 0 then return value end
+    return nil
+end
+
+-- A text's line height in box's units: its font's size times its text scale (never its string, whose size
+-- the client may keep secret), or nil.
+local function LineHeight(text, box)
+    if not (text and text.GetFont) then return nil end
+    local ok, _, size = pcall(text.GetFont, text)
+    if not (ok and PS.Secret.IsReadable(size) and type(size) == "number" and size > 0) then return nil end
+    local textScale = Measure(text, "GetTextScale") or 1
+    -- A text without its own effective scale: its frame's times its own scale.
+    local from = Measure(text, "GetEffectiveScale")
+    if not from then
+        local frame = text.GetParent and text:GetParent()
+        from = frame and Measure(frame, "GetEffectiveScale")
+        from = from and from * (Measure(text, "GetScale") or 1)
+    end
+    local to = Measure(box, "GetEffectiveScale")
+    if not (from and to) then return nil end
+    return size * textScale * from / to
+end
+
+-- Places a text's box (the plates' and Studio's preview): Padding round the text; with boxHeight "parent", as tall
+-- as parent (the part the text is pinned to) drawn with a border of parentBorder px round it (a bar's style border), but
+-- never shorter than the text's line and Padding, centred on the text with Padding at its sides. Where a size cannot
+-- be read the box keeps the padded text's.
+function StyleBox.Place(box, text, style, parent, parentBorder)
+    local padding = style.padding or S.STYLE_DEFAULTS.padding
+    box:ClearAllPoints()
+    local height = style.boxHeight == "parent" and parent and Measure(parent, "GetHeight")
+    local parentScale, boxScale = Measure(parent, "GetEffectiveScale"), Measure(box, "GetEffectiveScale")
+    local line = height and LineHeight(text, box)
+    if height and parentScale and boxScale and line then
+        height = math.max((height + 2 * (parentBorder or 0)) * parentScale / boxScale, line + 2 * padding)
+        box:SetPoint("LEFT", text, "LEFT", -padding, 0)
+        box:SetPoint("RIGHT", text, "RIGHT", padding, 0)
+        box:SetHeight(height)
+        return
+    end
+    box:SetPoint("TOPLEFT", text, "TOPLEFT", -padding, padding)
+    box:SetPoint("BOTTOMRIGHT", text, "BOTTOMRIGHT", padding, -padding)
 end
 
 PS._CreatePlateStyles = function(context)
@@ -182,24 +269,80 @@ PS._CreatePlateStyles = function(context)
         return box
     end
 
+    -- Whether a boxed text is empty, from what PlateSmith wrote to it (never GetText, which may be
+    -- protected): true for nothing or blank readable text or a blank format; false for other readable
+    -- text; nil when unknown (protected text, formatted values), which keeps the box.
+    local function NoteText(region, text)
+        if not IsReadable(text) then
+            region.plateSmithEmpty = nil
+        elseif text == nil or (type(text) == "string" and text:match("^%s*$")) then
+            region.plateSmithEmpty = true
+        else
+            region.plateSmithEmpty = false
+        end
+    end
+
+    -- A box shows while its text shows and is not known to be empty.
+    local function SyncBox(region)
+        local box = region.plateSmithBox
+        if box and box.plateSmithStyled then box:SetShown(region:IsShown() and region.plateSmithEmpty ~= true) end
+    end
+    local function TextWritten(region, text)
+        NoteText(region, text)
+        SyncBox(region)
+    end
+    local function FormatWritten(region, format)
+        if IsReadable(format) and type(format) == "string" and format:match("^%s*$") then
+            region.plateSmithEmpty = true
+        else
+            region.plateSmithEmpty = nil
+        end
+        SyncBox(region)
+    end
+    -- The box follows each write, show and hide of its text as it happens, not only the plate's
+    -- visibility pass (SyncStyleBoxes). Hooked once per text, the first time it gets a box.
+    local function FollowText(region)
+        if region.plateSmithBoxHooked or type(hooksecurefunc) ~= "function" then return end
+        region.plateSmithBoxHooked = true
+        hooksecurefunc(region, "SetText", TextWritten)
+        hooksecurefunc(region, "SetFormattedText", FormatWritten)
+        hooksecurefunc(region, "Show", SyncBox)
+        hooksecurefunc(region, "Hide", SyncBox)
+        hooksecurefunc(region, "SetShown", SyncBox)
+    end
+
     -- A box behind a text part (the "level box"): fill, border and padding around the text. It
-    -- follows the text's size and, through SyncStyleBoxes, its shown state and opacity.
+    -- follows the text's size and, through SyncStyleBoxes and FollowText, its shown state and opacity.
     function Styles.StyledBox(data, key, region)
         local style = PartStyle(data, key)
         data.styleBoxes = data.styleBoxes or {}
         local box = data.styleBoxes[key]
+        local previous = box and box.plateSmithText
         if not (style and style.box and region) then
             if box then box:Hide() end
+            if previous then previous.plateSmithBox, box.plateSmithText = nil, nil end
             return
         end
         if not box then
             box = BoxFrame(data.overlay)
             data.styleBoxes[key] = box
         end
-        local padding = style.padding or S.STYLE_DEFAULTS.padding
-        box:ClearAllPoints()
-        box:SetPoint("TOPLEFT", region, "TOPLEFT", -padding, padding)
-        box:SetPoint("BOTTOMRIGHT", region, "BOTTOMRIGHT", padding, -padding)
+        if previous ~= region then
+            if previous then previous.plateSmithBox = nil end
+            box.plateSmithText, region.plateSmithBox = region, box
+            FollowText(region)
+        end
+        -- Matching its parent's height: the part the text is pinned to, with the border its style draws (StyledBar).
+        local parent, parentBorder
+        if style.boxHeight == "parent" and data.layout then
+            local parentKey = S.PinTarget(data.layout, key)
+            if parentKey then
+                parent = IS_VALUE_KEY[parentKey] and data.values and data.values[parentKey] or data[parentKey]
+                local parentStyle = type(parent) == "table" and parent.SetStatusBarTexture and PartStyle(data, parentKey)
+                parentBorder = parentStyle and parentStyle.border
+            end
+        end
+        StyleBox.Place(box, region, style, type(parent) == "table" and parent or nil, parentBorder)
         local rounded = StyleBox.Rounded(box, style.boxShape == "rounded")
         box.fill:SetShown(not rounded)
         for _, line in ipairs(box.edges) do line:SetShown(not rounded) end
@@ -246,8 +389,8 @@ PS._CreatePlateStyles = function(context)
         frame:Show()
     end
 
-    -- Text boxes follow their text: shown with it, at its opacity, just under its layer. A custom
-    -- part that is now a bar, box or icon has no text, so no box.
+    -- Text boxes follow their text: shown with it while it is not known to be empty, at its opacity,
+    -- just under its layer. A custom part that is now a bar, box or icon has no text, so no box.
     function Styles.SyncStyleBoxes(data)
         local boxes = data.styleBoxes
         if not boxes then return end
@@ -260,6 +403,7 @@ PS._CreatePlateStyles = function(context)
                 local region = data[key]
                 if slot then region = data.valueTexts and data.valueTexts[key] or data.values[key] end
                 local shown = region and region.IsShown and region:IsShown() and overlayShown
+                    and region.plateSmithEmpty ~= true
                 box:SetShown(shown and true or false)
                 if shown and region.GetAlpha then box:SetAlpha(region:GetAlpha() or 1) end
                 if data.layout and data.layout[key] then box:SetFrameLevel(math.max(0, LayerLevel(data, key) - 1)) end
@@ -344,7 +488,7 @@ PS._CreatePlateStyles = function(context)
         end
     end
 
-    -- A rule's colour picked inside the client (Threat colours' FoldForPlate): r, g, b may be
+    -- A rule's colour picked inside the client (ThreatColours.PickByHolder): r, g, b may be
     -- protected, so they only reach the setter, and the applied colour is marked folded instead of
     -- kept. The colour to go back to is kept as RuleColour keeps it. False when the setter refused.
     function Styles.FoldedRuleColour(region, r, g, b)
@@ -355,6 +499,33 @@ PS._CreatePlateStyles = function(context)
         local applied = Applied(region)
         applied[1], applied[2], applied[3], applied.folded = nil, nil, nil, true
         return true
+    end
+
+    -- A rule's colour as ApplyPartRules resolved it: folded (picked inside the client, possibly
+    -- protected) through FoldedRuleColour, the part's own if the setter refuses it; else RuleColour
+    -- (r nil: none).
+    function Styles.ApplyRuleColour(region, folded, r, g, b)
+        if not folded then
+            Styles.RuleColour(region, r, g, b)
+        elseif not Styles.FoldedRuleColour(region, r, g, b) then
+            Styles.RuleColour(region)
+        end
+    end
+
+    -- The colour a threat rule is folded over (ThreatColours.FoldRules): the resolved one (folded,
+    -- or readable r), else the one RuleColour would go back to now, as KeepBase picks it. True and
+    -- r, g, b (possibly protected, for a fold or a setter only); false when nothing says what it is.
+    function Styles.ColourUnderRule(region, folded, r, g, b)
+        if folded or r ~= nil then return true, r, g, b end
+        local set, readable, cr, cg, cb = ColourAccess(region)
+        if not set then return false end
+        local applied = region.plateSmithRuleColour
+        if readable and not Near(cr, cg, cb, applied) then return true, cr, cg, cb end
+        local base = applied and region.plateSmithBaseColour
+        if base then return true, base[1], base[2], base[3] end
+        local own = region.plateSmithOwnColour
+        if own then return true, own[1], own[2], own[3] end
+        return false
     end
 
     -- A part's own colour that may be protected (the cast bar's Colour by interrupt): written at

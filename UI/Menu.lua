@@ -3,9 +3,11 @@ local _, PS = ...
 -- PlateSmith's one menu: context menus (right-click on a HUD window, Studio's menus) and every
 -- dropdown's list (Controls.Dropdown). Its own frame rather than UIDropDownMenu or a StaticPopup,
 -- so opening it never touches Blizzard's shared menu state. items: { text, func, checked,
--- disabled, title, children, childWidth, tooltip = { title, text } } in order; { separator = true } draws a
--- gap. An item with children opens them in a submenu beside it (submenus nest up to MAX_LEVELS deep);
--- with a func as well, clicking it runs the func. A list longer than MAX_ROWS scrolls with the mouse wheel.
+-- disabled, title, children, childWidth, keepOpen, tooltip = { title, text } } in order; { separator = true }
+-- draws a gap. An item with children opens them in a submenu beside it (submenus nest up to MAX_LEVELS deep);
+-- with a func as well, clicking it runs the func. A keepOpen item (a multi-select's check) runs its func and
+-- leaves the menu open, its items read again (Toggle's items function) so the checks follow. A list longer
+-- than MAX_ROWS scrolls with the mouse wheel.
 PS.UI = PS.UI or {}
 local Menu = {}
 PS.UI.Menu = Menu
@@ -138,6 +140,13 @@ CreateRow = function(frame)
             return
         end
         Sound()
+        if item.keepOpen then
+            if item.func then item.func() end
+            if not frame:IsShown() then return end
+            if frame.level == 1 and Menu.source then frame.items = Menu.source() or frame.items end
+            Render(frame)
+            return
+        end
         Menu.Close()
         if item.func then item.func() end
     end)
@@ -174,16 +183,14 @@ Build = function(level)
         -- Escape closes the menu and nothing else (outside combat, where the key can be kept from
         -- the rest of the UI; in combat UISpecialFrames still closes it).
         frame:SetScript("OnKeyDown", function(owner, key)
-            local keep = key == "ESCAPE"
-            if owner.SetPropagateKeyboardInput then pcall(owner.SetPropagateKeyboardInput, owner, not keep) end
-            if keep then Menu.Close() end
+            if PS.UI.Window.KeepKey(owner, key == "ESCAPE") then Menu.Close() end
         end)
         frame:SetScript("OnHide", function(owner)
             if owner.UnregisterEvent then pcall(owner.UnregisterEvent, owner, "GLOBAL_MOUSE_DOWN") end
             if owner.EnableKeyboard then pcall(owner.EnableKeyboard, owner, false) end
             HideBelow(1)
             local field = Menu.owner
-            Menu.owner = nil
+            Menu.owner, Menu.source = nil, nil
             if field and field.OnMenuClosed then field:OnMenuClosed() end
         end)
         Menu.frame = frame
@@ -195,20 +202,21 @@ Build = function(level)
 end
 
 -- options: width (the menu's width; a dropdown passes its field's), owner (the frame that opened
--- it: clicking it again closes the menu, and the menu closes when it hides).
+-- it: clicking it again closes the menu, and the menu closes when it hides), source (a function
+-- returning the items again, read after a keepOpen item's click).
 function Menu.Open(anchor, items, options)
     options = options or {}
     HideBelow(1)
     if frames[1] and frames[1]:IsShown() then frames[1]:Hide() end
     local frame = OpenLevel(1, anchor, items, false, options.width)
-    Menu.owner = options.owner
+    Menu.owner, Menu.source = options.owner, options.source
     local owner = options.owner
     if owner and not owner.menuHideHooked and owner.HookScript then
         owner.menuHideHooked = true
         owner:HookScript("OnHide", function(instance) if Menu.owner == instance then Menu.Close() end end)
     end
     if frame.RegisterEvent then pcall(frame.RegisterEvent, frame, "GLOBAL_MOUSE_DOWN") end
-    if frame.EnableKeyboard and not PS.Secret.InCombat() then pcall(frame.EnableKeyboard, frame, true) end
+    PS.UI.Window.TakeKeyboard(frame, true)
     return frame
 end
 
@@ -221,6 +229,7 @@ function Menu.Toggle(owner, items, options)
     end
     options = options or {}
     options.owner = owner
+    if type(items) == "function" then options.source = items end
     return Menu.Open(owner, type(items) == "function" and items() or items, options)
 end
 

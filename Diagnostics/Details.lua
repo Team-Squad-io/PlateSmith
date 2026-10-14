@@ -30,12 +30,16 @@ local ROUTES = {
     { "performance.debugSettings", "performance", L["Client debug settings"] },
     { "performance.addQueue", "performance", L["Plate adds left for a later frame"] },
     { "performance.spares", "performance", L["Spare plates (built ahead)"] },
+    { "performance.memory.retained", "performance", L["PlateSmith's memory before and after a full collection"] },
+    { "performance.memory.frameSteps", "performance", L["plates.frame's memory by step (recent)"] },
+    { "performance.memory.actions", "performance", L["Profile and Studio actions' memory"] },
     { "target", "target" }, { "raid", "target", L["Raid marker"] },
     { "target.buffs", "auras", L["Buffs"] }, { "target.debuffs", "auras", L["Debuffs"] },
     { "target.blizzardAuras", "auras", L["Blizzard aura frames"] },
     { "target.threat", "threat" }, { "target.threatProbe", "threat", L["Probe"] },
     { "role", "threat", L["Your role"] },
     { "threatConsole", "threatWindows" }, { "blizzardMeter", "threatWindows", L["Blizzard damage meter"] },
+    { "meterSkin", "threatWindows", L["Damage meter skin"] },
     { "questProviders", "quest", L["Providers"] }, { "target.quest", "quest", L["Target"] },
     { "restrictions", "restrictions" }, { "protectedAction", "restrictions", L["Blocked action"] },
 }
@@ -60,6 +64,11 @@ local NAMES = {
     maxWaitMs = L["Longest wait, ms (session)"], recentMaxWaitMs = L["Longest wait, ms (recent)"],
     overdue = L["Run past the budget after waiting (session)"],
     recentOverdue = L["Run past the budget after waiting (recent)"],
+    beforeKb = L["Before, KiB"], afterKb = L["After (retained), KiB"], garbageKb = L["Garbage collected, KiB"],
+    heapBeforeKb = L["All Lua before, KiB"], heapAfterKb = L["All Lua after, KiB"], collectMs = L["Collection took, ms"],
+    kbPerPlate = L["Memory a plate holds, KiB (estimate)"], spareKb = L["Spares' memory, KiB (estimate)"],
+    platesKb = L["All plates' memory, KiB (estimate)"], restKbPerMinute = L["Outside the steps, KiB a minute"],
+    sessionKb = L["Session, KiB"], averageKb = L["Per run, KiB"], recentKb = L["Recent, KiB"],
 }
 
 -- The kinds of plate add and the phases of one (Performance.PLATE_ADDED, Performance.ADD_PHASES).

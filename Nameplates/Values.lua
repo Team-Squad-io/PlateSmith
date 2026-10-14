@@ -100,12 +100,21 @@ PS._CreatePlateValues = function(context)
     end
 
     -- Bars fill from their percentage; boxes and icons show while their part is on. Protected
-    -- percentages pass straight to the bar (SetValue takes them).
+    -- percentages pass straight to the bar (SetValue takes them). A bar or icon from a module's source
+    -- (Core/ModuleSources.lua) fills from its token or shows its reader's texture, hiding when it has none.
+    local Sources = PS.ModuleSources
     local function RenderGraphic(data, key, slot, graphic)
         if not graphic or not data.valueTexts or graphic == data.valueTexts[key] then return end
         local position = data.layout[key]
+        local module = slot.source == "template" and Sources.SlotSource(slot) or nil
         if not data.own or data.namesOnly or not position or position.visible == false or slot.source == "off" then
             graphic:Hide()
+        elseif module and slot.kind == "bar" then
+            local percent = Sources.BarPercent(module, Readers.Get(data)(Sources.Bar(module).token))
+            if HasValue(percent) and pcall(graphic.SetValue, graphic, percent) then graphic:Show() else graphic:Hide() end
+        elseif module then
+            local texture = Sources.IconTexture(module, data.unit)
+            if HasValue(texture) and pcall(graphic.SetTexture, graphic, texture) then graphic:Show() else graphic:Hide() end
         elseif slot.kind == "bar" then
             local percent
             if slot.source == "healthPercent" then

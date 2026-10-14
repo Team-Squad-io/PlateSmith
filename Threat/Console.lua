@@ -3,14 +3,16 @@ local _, PS = ...
 if not PS or type(PS.RegisterModule) ~= "function" then return end
 local L = PS.L
 
--- The threat windows (PS.ThreatConsole): up to five meter windows, each in threat meter or tank
--- mode with its own theme. They are saved in account state (they are HUD layout), move and
+-- The threat windows (PS.ThreatConsole): up to five meter windows, each in threat meter, tank or rescue
+-- mode (Threat/Rescue.lua) with its own theme. They are saved in account state (they are HUD layout), move and
 -- resize freely, snap edge to edge and move as a group, and can follow one of Blizzard's damage
 -- meter windows. All data comes from the one threat service.
 local Geometry = assert(PS.ThreatGeometry, "PlateSmith ThreatGeometry missing")
 local Themes = assert(PS.ThreatThemes, "PlateSmith ThreatThemes missing")
 local Meter = assert(PS.ThreatMeter, "PlateSmith ThreatMeter missing")
 local Sample = assert(PS.ThreatSample, "PlateSmith ThreatSample missing")
+local Rescue = assert(PS.ThreatRescue, "PlateSmith ThreatRescue missing")
+local RescueSecure = assert(PS.ThreatRescueSecure, "PlateSmith ThreatRescueSecure missing")
 local Secret = assert(PS.Secret, "PlateSmith Secret missing")
 local IsReadable = Secret.IsReadable
 
@@ -28,13 +30,16 @@ local SNAP_GLOW_WIDTH = 12 -- the target's glow band, centred on its edges
 local SNAP_PULSE_SPEED = 6 -- radians a second: about one breath a second
 
 local ranges = Geometry.WINDOW_RANGES
-local modes = { threat = true, tank = true }
+local modes = { threat = true, tank = true, rescue = true }
+-- The title's mode button: Threat meter, Tank, Rescue, round again.
+local NEXT_MODE = { threat = "tank", tank = "rescue", rescue = "threat" }
+local MODE_NAMES = { threat = L["Threat"], tank = L["Tank"], rescue = L["Rescue"] }
 local dockSides = { right = true, left = true, above = true, below = true }
 local DOCK_SIDE_ORDER = { "right", "left", "above", "below" }
 local dockSideLabels = { right = L["Right"], left = L["Left"], above = L["Above"], below = L["Below"] }
 
 local ThreatConsole = { version = 1, meters = {}, dirty = true, lastSnapshotRevision = -1, lastGroupRevision = -1,
-    watchedRecords = {}, tankShown = false }
+    lastRescueRevision = -1, watchedRecords = {}, tankShown = false, rescueShown = false, rescueBlocked = {} }
 
 local function Bounded(range, value, fallback)
     if type(value) ~= "number" or value ~= value then return fallback end
@@ -57,7 +62,7 @@ local function TrimName(name, fallback)
 end
 
 local function DefaultName(mode)
-    return mode == "threat" and L["Threat"] or L["Tank"]
+    return MODE_NAMES[mode] or L["Tank"]
 end
 
 -- Keeps a saved window wholly on screen, as its clamped frame is drawn. True when it moved.
@@ -94,6 +99,17 @@ local function NormalizeWindow(record, id)
     record.dockOwnWidth = record.dockOwnWidth == true
     -- Place in its follow chain: lower first.
     record.dockOrder = type(record.dockOrder) == "number" and record.dockOrder == record.dockOrder and record.dockOrder or 0
+    -- The size a Rescue window had before it became one: kept while nobody is listed, given back when it leaves Rescue.
+    local restoreWidth, restoreHeight = record.rescueRestoreWidth, record.rescueRestoreHeight
+    if record.mode == "rescue" and type(restoreWidth) == "number" and restoreWidth == restoreWidth
+        and type(restoreHeight) == "number" and restoreHeight == restoreHeight then
+        record.rescueRestoreWidth = math.floor(Bounded(ranges.width, restoreWidth, DEFAULT_WIDTH) + 0.5)
+        record.rescueRestoreHeight = math.floor(Bounded(ranges.height, restoreHeight, DEFAULT_HEIGHT) + 0.5)
+    else
+        record.rescueRestoreWidth, record.rescueRestoreHeight = nil, nil
+    end
+    -- Rescue's fields (layout, filter, In raids, sound), kept for every window so a switch keeps them.
+    Rescue.NormalizeRecord(record)
     KeepOnScreen(record)
     return record
 end
@@ -217,8 +233,68 @@ function ThreatConsole:EnsureMeter(record)
     end
     meter:Place()
     meter:Layout()
+    if record.mode == "rescue" then
+        Rescue.Enter(meter)
+    elseif meter.rescue then
+        Rescue.Leave(meter)
+    end
     if record.id == 1 or not self.window then self.window = meter.frame end
     return meter
+end
+
+-- Rescue windows hold still in combat once their secure buttons are their children (RESCUE_MODE.md 5.3).
+function ThreatConsole:IsHeld(id)
+    return Rescue.Held(self.meters[id])
+end
+
+-- Counts a refused combat action for /ps diagnose and says why, once per combat.
+function ThreatConsole:RefuseHeld(kind)
+    local blocked = self.rescueBlocked
+    blocked[kind] = (blocked[kind] or 0) + 1
+    if not self.heldReported then
+        self.heldReported = true
+        self:Notify(L["A Rescue window holds still in combat: its click areas are fixed until combat ends."])
+    end
+    return false
+end
+
+-- Account state: Rescue's clicks (on unless switched off; the developer probe's verdict may switch them off)
+-- and the bindings per class.
+function ThreatConsole:RescueClicksOn()
+    return self:GetState().rescueClicks ~= false
+end
+
+function ThreatConsole:RescueBindings()
+    local state = self:GetState()
+    if type(state.rescueBindings) ~= "table" then state.rescueBindings = {} end
+    return state.rescueBindings
+end
+
+-- Rebuilds every Rescue window (bindings, clicks, sample data); in combat each queues reason.
+function ThreatConsole:RebuildRescue(reason)
+    for _, meter in pairs(self.meters) do
+        if meter.config.mode == "rescue" then Rescue.Rebuild(meter, reason) end
+    end
+end
+
+-- Refused in combat: the windows' buttons cannot be rewritten then.
+function ThreatConsole:SetRescueClicks(on)
+    if Secret.InCombat() then return self:RefuseHeld("setting") end
+    self:GetState().rescueClicks = on ~= false and true or false
+    self:RebuildRescue("bindings")
+    return true
+end
+
+-- modifier: left, right, shiftLeft, ctrlLeft or altLeft; key: from the class's list, or "none".
+function ThreatConsole:SetRescueBinding(class, modifier, key)
+    if Secret.InCombat() then return self:RefuseHeld("setting") end
+    if not RescueSecure.ATTRIBUTES[modifier] or not (key == "none" or RescueSecure.Spell(class, key)) then return false end
+    local bindings = self:RescueBindings()
+    bindings[class] = bindings[class] or {}
+    bindings[class][modifier] = key
+    self:GetState().rescueBindings = RescueSecure.NormalizeBindings(bindings)
+    self:RebuildRescue("bindings")
+    return true
 end
 
 function ThreatConsole:CanCreateWindow()
@@ -270,14 +346,21 @@ function ThreatConsole:KeepWindowsOnScreen()
     self:EndDrag()
     for _, record in ipairs(self:GetWindows()) do
         local meter = self.meters[record.id]
-        if record.dockMeter == 0 and KeepOnScreen(record) and meter then meter:Place() end
+        if Rescue.Held(meter) then
+            -- Caught up when combat ends.
+            self.rescuePending = true
+        elseif record.dockMeter == 0 and KeepOnScreen(record) and meter then
+            meter:Place()
+        end
     end
 end
 
 function ThreatConsole:DeleteWindow(id)
     local list = self:GetWindows()
+    if self:IsHeld(id) then return self:RefuseHeld("delete") end
     for index, record in ipairs(list) do
         if record.id == id then
+            if self.meters[id] and self.meters[id].rescue then Rescue.Leave(self.meters[id]) end
             table.remove(list, index)
             local meter = self.meters[id]
             if meter then
@@ -312,10 +395,21 @@ end
 
 -- Validated writes for one window's options (mode, theme, locked, alpha, rowHeight, dockMeter,
 -- dockSide, shown, targetFirst). Returns false for an unknown key or a rejected value.
+-- In combat a held Rescue window changes nothing but its saved Shown (its hide waits for combat end), and no
+-- window switches into or out of Rescue; Rescue's own options are refused then too.
 function ThreatConsole:SetWindowOption(id, key, value)
     local record = self:GetWindow(id)
     if not record then return false end
-    if key == "mode" then
+    local rescueKey = Rescue.DEFAULTS[key] ~= nil
+    if Secret.InCombat() and ((self:IsHeld(id) and key ~= "shown") or rescueKey
+        or (key == "mode" and (value == "rescue" or record.mode == "rescue") and value ~= record.mode)) then
+        return self:RefuseHeld("setting")
+    end
+    local previousMode = record.mode
+    if rescueKey then
+        value = Rescue.CheckOption(key, value)
+        if value == nil then return false end
+    elseif key == "mode" then
         if not modes[value] then return false end
     elseif key == "theme" then
         if not Themes.IsValid(value) then return false end
@@ -343,8 +437,30 @@ function ThreatConsole:SetWindowOption(id, key, value)
     end
     local meter = self.meters[id]
     if meter then
+        local entering, leaving = record.mode == "rescue" and previousMode ~= "rescue", previousMode == "rescue"
+            and record.mode ~= "rescue"
+        if entering then
+            -- Rescue sizes the window to its members: the size it leaves is given back when it switches away.
+            record.rescueRestoreWidth, record.rescueRestoreHeight = record.width, record.height
+        end
+        if leaving then
+            Rescue.Leave(meter)
+            if record.rescueRestoreWidth and record.rescueRestoreHeight then
+                record.width, record.height = record.rescueRestoreWidth, record.rescueRestoreHeight
+                if record.dockMeter == 0 then KeepOnScreen(record) end
+                meter:Place()
+            end
+            record.rescueRestoreWidth, record.rescueRestoreHeight = nil, nil
+        end
         if key == "theme" then meter:ApplyTheme() else meter:Layout() end
         if key == "dockMeter" and value == 0 then meter:Place() end
+        if entering then
+            Rescue.Enter(meter)
+        elseif record.mode == "rescue" and (key == "theme" or key == "rowHeight" or key == "rescueLayout"
+            or key == "rescueFilter") then
+            -- The list's size follows its cells.
+            Rescue.Rebuild(meter, "layout")
+        end
     end
     if key == "shown" then
         if value then self:GetState().threatConsoleShown = true end
@@ -375,34 +491,53 @@ end
 -- tick, the refresh and the docking follow on only while something needs them.
 function ThreatConsole:ApplyVisibility()
     local on = self:GetState().threatConsoleShown == true
-    local anyShown, anyDocked, anyThreat, anyTank = false, false, false, false
+    local anyShown, anyDocked, anyThreat, anyTank, anyRescue = false, false, false, false, false
+    local inRaid = self.service ~= nil and self.service.isRaid == true
     for _, record in ipairs(self:GetWindows()) do
         local meter = self.meters[record.id]
-        local visible = on and record.shown
-        if meter then
+        -- A Rescue window with In raids off hides while you are in a raid.
+        local visible = on and record.shown and not (record.mode == "rescue" and not record.rescueInRaids and inRaid)
+        if Rescue.Held(meter) then
+            -- Its frame cannot show or hide in combat: applied when combat ends.
+            if visible ~= (meter.frame:IsShown() == true) then
+                self.rescuePending = true
+                if not visible then self.rescueBlocked.hide = (self.rescueBlocked.hide or 0) + 1 end
+            end
+            visible = meter.frame:IsShown() == true
+        elseif meter then
             if visible then
                 if not meter.frame:IsShown() then meter.frame:Show() end
             else
                 if self.drag and self.drag.meter == meter then self:EndDrag() end
                 for _, row in ipairs(meter.rows) do self:HideRowTooltip(row) end
+                Rescue.StopFlash(meter)
                 meter.frame:Hide()
             end
         end
         if visible then
             anyShown = true
             if record.dockMeter > 0 then anyDocked = true end
-            if record.mode == "threat" then anyThreat = true else anyTank = true end
+            if record.mode == "threat" then
+                anyThreat = true
+            elseif record.mode == "rescue" then
+                anyRescue = true
+            else
+                anyTank = true
+            end
         end
     end
     -- Rebuilt by the next render from the rows the tank windows show.
     for record in pairs(self.watchedRecords) do self.watchedRecords[record] = nil end
     self.tankShown = anyTank
+    self.rescueShown = anyRescue
+    self.rescueInRaid = inRaid
     if PS.Ticker then
         PS.Ticker.SetEnabled("threat.console", anyShown)
         PS.Ticker.SetEnabled("threat.dock", anyDocked)
     end
     local service = self.service
     if service and service.SetGroupThreatWanted then service:SetGroupThreatWanted(anyThreat) end
+    if service and service.SetRescueWanted then service:SetRescueWanted(anyRescue) end
     if service and service.SyncTicker then service:SyncTicker() end
     if anyShown then
         self:MarkDirty()
@@ -460,11 +595,23 @@ function ThreatConsole:Refresh(force)
         snapshotRevision = service.snapshotRevision
     end
     local groupRevision = service.groupThreatRevision
+    if self.rescueShown then
+        -- Rescue's backstop: a few members' situations, targets, ranges and deaths each tick.
+        service:BackstopMemberSituations(Rescue.BACKSTOP)
+        for _, meter in pairs(self.meters) do
+            if meter.config.mode == "rescue" and meter.frame:IsShown() then
+                if Rescue.Tick(meter, Rescue.BACKSTOP) then self.dirty = true end
+                Rescue.TickCooldown(meter)
+            end
+        end
+    end
+    local rescueRevision = service.rescueRevision
     if not force and not self.dirty and snapshotRevision == self.lastSnapshotRevision
-        and groupRevision == self.lastGroupRevision then
+        and groupRevision == self.lastGroupRevision and rescueRevision == self.lastRescueRevision then
         return false
     end
-    self.lastSnapshotRevision, self.lastGroupRevision = snapshotRevision, groupRevision
+    self.lastSnapshotRevision, self.lastGroupRevision, self.lastRescueRevision = snapshotRevision, groupRevision,
+        rescueRevision
     self.dirty = false
     for record in pairs(self.watchedRecords) do self.watchedRecords[record] = nil end
     local source = self:Source()
@@ -492,6 +639,7 @@ function ThreatConsole:SetSampleData(on)
     if on == Sample.enabled then return true end
     if on then Sample.Build() end
     Sample.enabled = on
+    self:RebuildRescue("roster")
     self:Refresh(true)
     return true
 end
@@ -504,6 +652,19 @@ end
 local function AddNameLine(name, unit, opaque, hasOpaque)
     if hasOpaque and pcall(GameTooltip.AddLine, GameTooltip, opaque, 1, 1, 1) then return end
     GameTooltip:AddLine(name or unit or L["Unknown"], 1, 1, 1)
+end
+
+-- Whom the plates' threat colours colour as now, and why (ThreatColours.ColouringAs); with legend,
+-- what each of that role's plate colours means. For the title's and the rows' tooltips.
+function ThreatConsole:AddColouringLines(legend)
+    local colours = PS.ThreatColours
+    if not colours or not GameTooltip or type(PS.GetSettings) ~= "function" then return end
+    local settings = PS.GetSettings()
+    GameTooltip:AddLine(colours.ColouringAsText(settings), 1, 0.82, 0, true)
+    if not legend or type(settings) ~= "table" or settings.colourByThreat ~= true then return end
+    local tank = colours.ColouringAs(settings)
+    if tank == nil then return end
+    for _, line in ipairs(colours.LegendLines(settings, tank)) do GameTooltip:AddLine(line, 0.8, 0.8, 0.8, true) end
 end
 
 -- Row tooltips: enemies list who is attacking and targeting them; members their threat.
@@ -552,6 +713,8 @@ function ThreatConsole:ShowActivityTooltip(row)
             math.max(0, math.floor(GetTime() - entry.keptAt))), 0.62, 0.72, 0.82)
     end
     GameTooltip:AddLine(" ")
+    self:AddColouringLines(true)
+    GameTooltip:AddLine(" ")
     GameTooltip:AddLine(L["Left-click spotlights this exact visible unit."], 0.55, 0.8, 1)
     GameTooltip:AddLine(L["Click its world plate to target it."], 0.62, 0.72, 0.82)
     GameTooltip:Show()
@@ -585,6 +748,8 @@ function ThreatConsole:ShowMemberTooltip(row)
     elseif entry.hasOpaquePercent or entry.hasOpaqueRaw then
         GameTooltip:AddLine(L["The game shows this threat but keeps the numbers private."], 0.62, 0.72, 0.82)
     end
+    GameTooltip:AddLine(" ")
+    self:AddColouringLines(true)
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine(L["Left-click spotlights the enemy being measured."], 0.55, 0.8, 1)
     GameTooltip:Show()
@@ -734,6 +899,10 @@ function ThreatConsole:StartDrag(meter)
     -- A following window is dragged alone: dropped away from the meter it stops following.
     local alone = config.dockMeter > 0 or free
     local group = alone and { [config.id] = true } or Geometry.Group(rects, config.id)
+    -- A group with a held Rescue window stays together: the whole drag is refused.
+    for id in pairs(group) do
+        if self:IsHeld(id) then return self:RefuseHeld("drag") end
+    end
     local followers = {}
     for id in pairs(group) do
         local other = self.meters[id]
@@ -909,9 +1078,25 @@ function ThreatConsole:StopSnapFeedback()
     if PS.Ticker and not self.drag then PS.Ticker.SetEnabled("threat.snap", false) end
 end
 
+-- Whether a drag moves a held Rescue window (the lead or a window snapped to it).
+local function DragHeld(drag)
+    if Rescue.Held(drag.meter) then return true end
+    for _, follower in ipairs(drag.followers) do
+        if Rescue.Held(follower.meter) then return true end
+    end
+    return false
+end
+
 function ThreatConsole:StopDrag(meter)
     local drag = self.drag
     if not drag or (meter and drag.meter ~= meter) then return false end
+    if DragHeld(drag) then
+        -- Combat began mid-drag (PLAYER_REGEN_DISABLED ends drags before the lockdown; this is the backstop): a
+        -- window with secure buttons cannot be stopped or placed now, so the drop is finished when combat ends.
+        self.drag, self.pendingDrag, self.rescuePending = nil, drag, true
+        self:StopSnapFeedback()
+        return self:RefuseHeld("drag")
+    end
     self.drag = nil
     self:StopSnapFeedback()
     local lead = drag.meter
@@ -929,14 +1114,14 @@ function ThreatConsole:StopDrag(meter)
     config.left, config.top = math.floor(rect.left + dx + 0.5), math.floor(rect.top + dy + 0.5)
     -- Dropped against a side of a Blizzard meter window: the window follows it on that side.
     -- Dropped against another window: it joins that window's row (its top and height) or column
-    -- (its left and width).
+    -- (its left and width). A Rescue window sizes itself to its members: it snaps but does not join.
     local meterIndex, side, joined
     for _, target in ipairs({ xTarget or 0, yTarget or 0 }) do
         local dropped = Geometry.Rect(config.left, config.top, config.width, config.height)
         if not side and scratchMeterIndex[target] then
             side = Geometry.DockSide(dropped, others[target])
             if side then meterIndex = scratchMeterIndex[target] end
-        elseif not side and not joined and others[target] then
+        elseif not side and not joined and others[target] and config.mode ~= "rescue" then
             local left, top, width, height = Geometry.Join(dropped, others[target])
             if left then
                 joined = true
@@ -1047,7 +1232,8 @@ function ThreatConsole:LinkSizing(meter, alone)
     local rects = self:WindowRects(true)
     for key in pairs(rects) do
         local record = self:GetWindow(key)
-        if key ~= id and record and record.locked then rects[key] = nil end
+        -- A Rescue window's size is its members': it neither resizes with a row nor is pushed.
+        if key ~= id and record and (record.locked or record.mode == "rescue") then rects[key] = nil end
     end
     Geometry.Line(rects, id, false, sizingRow)
     Geometry.Line(rects, id, true, sizingColumn)
@@ -1097,6 +1283,8 @@ end
 -- on screen. A transient OnUpdate on the grip runs it while the button is held.
 function ThreatConsole:StartSizing(meter)
     if meter.config.locked then return false end
+    if Rescue.Held(meter) then return self:RefuseHeld("resize") end
+    if meter.config.mode == "rescue" and not Rescue.Resizable(meter) then return false end
     self:StopSizing()
     local x, y = CursorPosition()
     if not x then return false end
@@ -1107,7 +1295,7 @@ function ThreatConsole:StartSizing(meter)
     state.width, state.height = rect.right - rect.left, rect.top - rect.bottom
     state.startWidth = meter.config.width
     self.sizing = meter
-    self:LinkSizing(meter, ShiftDown())
+    self:LinkSizing(meter, ShiftDown() or meter.config.mode == "rescue")
     local grip = meter.grip
     if grip and grip.SetScript then grip:SetScript("OnUpdate", function() self:UpdateSizing() end) end
     return true
@@ -1118,6 +1306,7 @@ end
 function ThreatConsole:UpdateSizing(final)
     local meter = self.sizing
     if not meter then return end
+    if Rescue.Held(meter) then return self:HoldSizing(meter) end
     if not final and type(IsMouseButtonDown) == "function" and IsMouseButtonDown("LeftButton") == false then
         -- The button came up where the grip could not hear it.
         return self:StopSizing(meter)
@@ -1128,6 +1317,8 @@ function ThreatConsole:UpdateSizing(final)
     local screenWidth = ScreenSize()
     local width = math.min(state.width + x - state.x, screenWidth - state.left, state.maxWidth or math.huge)
     local height = math.min(state.height - (y - state.y), state.top, state.maxHeight or math.huge)
+    -- A Rescue list's height fits its rows: the grip changes its width only.
+    if config.mode == "rescue" then height = config.height end
     width, height = Bounded(ranges.width, width, config.width), Bounded(ranges.height, height, config.height)
     local rect = ScratchRect("sizing", state.left, state.top, width, height)
     local others = self:OtherRects(self.sizingGroup)
@@ -1156,6 +1347,7 @@ function ThreatConsole:UpdateSizing(final)
         height = math.min(Bounded(ranges.height, height - dBottom, height), state.maxHeight or math.huge)
         rect = ScratchRect("sizing", state.left, state.top, width, height)
     end
+    if config.mode == "rescue" then height = config.height end
     width, height = math.floor(width + 0.5), math.floor(height + 0.5)
     if width ~= config.width or height ~= config.height then
         config.width, config.height = width, height
@@ -1186,10 +1378,20 @@ function ThreatConsole:AbortSizing(meter)
     return true
 end
 
+-- Combat began mid-resize (PLAYER_REGEN_DISABLED ends resizes before the lockdown; this is the backstop): a window
+-- with secure buttons keeps its frame's size until combat ends, when its rebuild sizes and places it.
+function ThreatConsole:HoldSizing(meter)
+    self:AbortSizing(meter)
+    if meter.rescue then meter.rescue.pending.layout = true end
+    self.rescuePending = true
+    return self:RefuseHeld("resize")
+end
+
 -- Ends a resize: the size reached is kept (it was saved as it changed).
 function ThreatConsole:StopSizing(meter)
     local sizing = self.sizing
     if not sizing or (meter and sizing ~= meter) then return false end
+    if Rescue.Held(sizing) then return self:HoldSizing(sizing) end
     self:UpdateSizing(true)
     self:AbortSizing(sizing)
     local config = sizing.config
@@ -1232,6 +1434,40 @@ function ThreatConsole:MaxDockOrder()
     return highest
 end
 
+-- A following window about to move or resize to this rectangle takes the free windows snapped to it along, as a
+-- dragged group keeps together: each keeps its size and stays on the edge it shares (Geometry.FollowGroup). Locked
+-- windows, and windows being dragged or resized, hold still. A held Rescue window among them holds the whole group,
+-- the following window too, until combat ends. False when held.
+function ThreatConsole:CarryGroup(record, left, top, width, height)
+    local rects = self:WindowRects(true)
+    rects[record.id] = Geometry.Rect(record.left, record.top, record.width, record.height)
+    local group = Geometry.Group(rects, record.id)
+    local fixed = {}
+    local drag, sizing = self.drag, self.sizing
+    for id in pairs(group) do
+        if id ~= record.id then
+            if self:IsHeld(id) then
+                self.rescuePending = true
+                return false
+            end
+            local other = self:GetWindow(id)
+            if (other and other.locked) or (drag and drag.group[id]) or (sizing and sizing.config.id == id) then
+                fixed[id] = true
+            end
+        end
+    end
+    local moved = Geometry.FollowGroup(rects, record.id, Geometry.Rect(left, top, width, height), fixed)
+    for id, rect in pairs(moved) do
+        local other, otherMeter = self:GetWindow(id), self.meters[id]
+        if other and otherMeter then
+            other.left, other.top = math.floor(rect.left + 0.5), math.floor(rect.top + 0.5)
+            KeepOnScreen(other)
+            otherMeter:Place()
+        end
+    end
+    return true
+end
+
 -- Follows the Blizzard meter windows, on the side each window chose. Several windows following
 -- one meter on one side chain: the first sits flush against the meter, each next one against
 -- the one before, in window order. Left and right match the meter's height with the titles
@@ -1259,7 +1495,15 @@ function ThreatConsole:UpdateDocking()
     for index = 1, count do
         local record = dockQueue[index]
         local meter = self.meters[record.id]
-        if meter and meter ~= dragged and on and record.shown then
+        local held = Rescue.Held(meter)
+        -- A held Rescue window catches up after combat; the chain behind it follows where it is.
+        if held and on and record.shown then
+            self.rescuePending = true
+            local key = dockKeys[record.dockMeter][record.dockSide]
+            if chainEnds[key] == nil then chainMeters[key] = self:ReadMeterRect(record.dockMeter) or false end
+            if chainMeters[key] then chainEnds[key] = ScratchRect(key, record.left, record.top, record.width, record.height) end
+        end
+        if meter and meter ~= dragged and on and record.shown and not held then
             local key = dockKeys[record.dockMeter][record.dockSide]
             local anchor = chainEnds[key]
             if anchor == nil then
@@ -1269,7 +1513,10 @@ function ThreatConsole:UpdateDocking()
             if anchor then
                 local meterRect, vertical = chainMeters[key], record.dockSide == "above" or record.dockSide == "below"
                 local span
-                if vertical then
+                if record.mode == "rescue" then
+                    -- Its size is its members'.
+                    span = false
+                elseif vertical then
                     span = not record.dockOwnWidth and meterRect.right - meterRect.left
                 else
                     span = meterRect.top - meterRect.bottom
@@ -1279,8 +1526,12 @@ function ThreatConsole:UpdateDocking()
                 height = math.floor(Bounded(ranges.height, height, record.height) + 0.5)
                 left, top = Geometry.OnScreen(left, top, width, height, ScreenSize())
                 if left ~= record.left or top ~= record.top or width ~= record.width or height ~= record.height then
-                    record.left, record.top, record.width, record.height = left, top, width, height
-                    meter:Place()
+                    if self:CarryGroup(record, left, top, width, height) then
+                        record.left, record.top, record.width, record.height = left, top, width, height
+                        meter:Place()
+                    else
+                        left, top, width, height = record.left, record.top, record.width, record.height
+                    end
                 end
                 chainEnds[key] = ScratchRect(key, left, top, width, height)
             end
@@ -1288,15 +1539,10 @@ function ThreatConsole:UpdateDocking()
     end
 end
 
--- Settings are protected in combat: then the shared route queues the main page instead.
+-- The windows' settings are Studio › Settings › Modules › Threat › Threat windows, which opens in combat too.
 function ThreatConsole:OpenSettings()
-    if Secret.InCombat() and PS.Commands and PS.Commands.OpenSettings then return PS.Commands.OpenSettings() end
-    if type(PS.OpenOptions) ~= "function" then return end
-    PS.OpenOptions()
-    local category = PS.Options and PS.Options.moduleSettings and PS.Options.moduleSettings.threatWindows
-    if category and Settings and Settings.OpenToCategory and category.GetID then
-        pcall(Settings.OpenToCategory, category:GetID())
-    end
+    if type(PS.OpenModuleSettings) ~= "function" then return false end
+    return PS.OpenModuleSettings("threat", "windows")
 end
 
 function ThreatConsole:PromptRename(id)
@@ -1357,6 +1603,7 @@ end
 function ThreatConsole:DetachWindow(id)
     local record, meter = self:GetWindow(id), self.meters[id]
     if not record or not meter or record.locked or not self:IsGrouped(id) then return false end
+    if Rescue.Held(meter) then return self:RefuseHeld("detach") end
     self:EndDrag()
     self:StopSizing()
     if record.dockMeter > 0 then self:SetWindowOption(id, "dockMeter", 0) end
@@ -1384,20 +1631,27 @@ function ThreatConsole:MenuItems(meter)
             self:RefreshOptions()
         end
     end
+    -- In combat a held Rescue window offers only what it can do then; no window switches into or out of Rescue.
+    local held, combat = self:IsHeld(id), Secret.InCombat()
+    local rescueSwitch = combat and config.mode == "rescue"
     local items = {
         { text = string.format(L["Window %d: %s"], id, config.name), title = true },
-        { text = L["Threat meter"], checked = config.mode == "threat", func = Set("mode", "threat") },
-        { text = L["Tank"], checked = config.mode == "tank", func = Set("mode", "tank") },
+        { text = L["Threat meter"], checked = config.mode == "threat", disabled = rescueSwitch, func = Set("mode", "threat") },
+        { text = L["Tank"], checked = config.mode == "tank", disabled = rescueSwitch, func = Set("mode", "tank") },
+        { text = L["Rescue"], checked = config.mode == "rescue", disabled = combat and config.mode ~= "rescue",
+            func = Set("mode", "rescue") },
         { text = L["Target first"], checked = config.targetFirst ~= false, disabled = config.mode ~= "tank",
             func = Set("targetFirst", config.targetFirst == false) },
         { separator = true },
     }
     for _, theme in ipairs(Themes.list) do
-        items[#items + 1] = { text = theme.label, checked = config.theme == theme.id, func = Set("theme", theme.id) }
+        items[#items + 1] = { text = theme.label, checked = config.theme == theme.id, disabled = held,
+            func = Set("theme", theme.id) }
     end
     items[#items + 1] = { separator = true }
-    items[#items + 1] = { text = config.locked and L["Unlock"] or L["Lock"], func = Set("locked", not config.locked) }
-    items[#items + 1] = { text = L["Detach from group"], disabled = config.locked or not self:IsGrouped(id),
+    items[#items + 1] = { text = config.locked and L["Unlock"] or L["Lock"], disabled = held,
+        func = Set("locked", not config.locked) }
+    items[#items + 1] = { text = L["Detach from group"], disabled = held or config.locked or not self:IsGrouped(id),
         func = function()
             self:DetachWindow(id)
             self:RefreshOptions()
@@ -1406,9 +1660,10 @@ function ThreatConsole:MenuItems(meter)
     -- then which of Blizzard's meter windows while following.
     items[#items + 1] = { separator = true }
     items[#items + 1] = { text = L["Follow damage meter"], title = true }
-    items[#items + 1] = { text = L["Off"], checked = config.dockMeter == 0, func = Set("dockMeter", 0) }
+    items[#items + 1] = { text = L["Off"], checked = config.dockMeter == 0, disabled = held, func = Set("dockMeter", 0) }
     for _, side in ipairs(DOCK_SIDE_ORDER) do
         items[#items + 1] = { text = dockSideLabels[side], checked = config.dockMeter > 0 and config.dockSide == side,
+            disabled = held,
             func = function()
                 self:SetWindowOption(id, "dockSide", side)
                 if config.dockMeter == 0 then self:SetWindowOption(id, "dockMeter", 1) end
@@ -1418,7 +1673,7 @@ function ThreatConsole:MenuItems(meter)
     if config.dockMeter > 0 then
         for index = 1, METER_WINDOWS do
             items[#items + 1] = { text = string.format(L["Meter window %d"], index), checked = config.dockMeter == index,
-                func = Set("dockMeter", index) }
+                disabled = held, func = Set("dockMeter", index) }
         end
     end
     items[#items + 1] = { separator = true }
@@ -1426,7 +1681,7 @@ function ThreatConsole:MenuItems(meter)
         func = function() self:OnButton(meter, "new-window") end }
     items[#items + 1] = { text = L["Rename..."], func = function() self:PromptRename(id) end }
     items[#items + 1] = { text = L["Hide window"], func = Set("shown", false) }
-    items[#items + 1] = { text = L["Delete window..."], func = function() self:ConfirmDelete(id) end }
+    items[#items + 1] = { text = L["Delete window..."], disabled = held, func = function() self:ConfirmDelete(id) end }
     items[#items + 1] = { text = L["Sample data"], checked = self:IsSampleData(), disabled = Secret.InCombat(),
         func = function()
             self:SetSampleData(not self:IsSampleData())
@@ -1451,7 +1706,7 @@ function ThreatConsole:OnButton(meter, kind)
     elseif kind == "lock" then
         self:SetWindowOption(config.id, "locked", not config.locked)
     elseif kind == "mode" then
-        self:SetWindowOption(config.id, "mode", config.mode == "threat" and "tank" or "threat")
+        self:SetWindowOption(config.id, "mode", NEXT_MODE[config.mode] or "threat")
     elseif kind == "new-window" then
         -- At the limit the button already looks unavailable; nothing to report.
         if not self:CanCreateWindow() then return end
@@ -1467,17 +1722,120 @@ function ThreatConsole:Report()
         local meter = self.meters[record.id]
         windows[#windows + 1] = { id = record.id, mode = record.mode, theme = record.theme, shown = record.shown,
             visible = meter and meter.frame:IsShown() or false, dock = record.dockMeter > 0 and
-                string.format("meter %d %s", record.dockMeter, record.dockSide) or "none" }
+                string.format("meter %d %s", record.dockMeter, record.dockSide) or "none",
+            rescue = record.mode == "rescue" and meter and Rescue.Report(meter, self) or nil }
     end
+    local blocked = {}
+    for kind, count in pairs(self.rescueBlocked) do blocked[kind] = count end
     return { on = self:GetState().threatConsoleShown == true, windows = windows,
-        sample = Sample.enabled == true, lastClick = self.lastHighlightCheck or "none" }
+        sample = Sample.enabled == true, lastClick = self.lastHighlightCheck or "none",
+        rescueBlockedActions = blocked, rescueClicks = self:RescueClicksOn() and "on" or "off" }
+end
+
+-- Combat ended: one pass applies what Rescue windows queued (their lists, bindings and layout, then shown
+-- state, docking and screen position).
+function ThreatConsole:OnCombatEnd()
+    self.heldReported = false
+    self:UpdateCloseButtons(false)
+    local pendingDrag = self.pendingDrag
+    if pendingDrag then
+        -- A drop held back in combat (StopDrag's backstop) is finished now.
+        self.pendingDrag, self.drag = nil, pendingDrag
+        self:StopDrag(pendingDrag.meter)
+    end
+    if not self.rescuePending then
+        local any = false
+        for _, meter in pairs(self.meters) do
+            if meter.rescue and next(meter.rescue.pending) then any = true break end
+        end
+        if not any then return false end
+    end
+    self.rescuePending = false
+    for _, meter in pairs(self.meters) do
+        if meter.config.mode == "rescue" then Rescue.OnCombatEnd(meter) end
+    end
+    self:ApplyVisibility()
+    self:KeepWindowsOnScreen()
+    self:UpdateDocking()
+    self:MarkDirty()
+    return true
+end
+
+-- A window whose secure buttons are its children cannot hide in combat (RESCUE_MODE.md 5.3): its close button looks
+-- unavailable then. combat: true from PLAYER_REGEN_DISABLED, which comes just before the lockdown; else the client's.
+function ThreatConsole:UpdateCloseButtons(combat)
+    if combat == nil then combat = Secret.InCombat() end
+    for _, meter in pairs(self.meters) do
+        meter:SetButtonAvailable("close", not (combat and RescueSecure.Attached(meter)))
+    end
+end
+
+-- The taunt cooldown in shown Rescue windows' headers follows SPELL_UPDATE_COOLDOWN.
+function ThreatConsole:OnSpellCooldown()
+    if not self.rescueShown then return end
+    for _, meter in pairs(self.meters) do
+        if meter.config.mode == "rescue" and meter.frame:IsShown() then Rescue.UpdateCooldown(meter) end
+    end
+end
+
+-- A druid who learns a form may find Bear Form in another slot of the form bar: its [form:N] is rewritten (at
+-- combat end if this comes in combat).
+function ThreatConsole:OnFormsChanged()
+    local service = self.service
+    if not service or not service.BearFormSlot then return end
+    local slot
+    for _, meter in pairs(self.meters) do
+        local rescue = meter.config.mode == "rescue" and meter.rescue
+        if rescue and rescue.formNeeded then
+            if slot == nil then slot = service:BearFormSlot() or false end
+            if slot and slot ~= rescue.formSlot then Rescue.Rebuild(meter, "bindings") end
+        end
+    end
+end
+
+-- A spell learned or lost (SPELLS_CHANGED): a Rescue window whose bound spell's known state changed rebinds (at
+-- combat end if this comes in combat).
+function ThreatConsole:OnSpellsChanged()
+    for _, meter in pairs(self.meters) do
+        if meter.config.mode == "rescue" and Rescue.BindingsStale(meter) then Rescue.Rebuild(meter, "bindings") end
+    end
+end
+
+-- Combat is about to start (PLAYER_REGEN_DISABLED comes just before the lockdown): a drag or resize still running
+-- ends now, while a window with secure buttons may still be stopped, placed and sized. Sample data goes off.
+function ThreatConsole:OnCombatStart()
+    self:EndDrag()
+    self:StopSizing()
+    if self:IsSampleData() then
+        self:SetSampleData(false)
+        self:RefreshOptions()
+    end
+    self:UpdateCloseButtons(true)
+end
+
+-- In raids off: a raid joined or left while no Rescue window draws (so nothing refreshes) shows or hides it.
+function ThreatConsole:OnGroupChanged()
+    local service = self.service
+    if not service then return end
+    local watched = false
+    for _, record in ipairs(self:GetWindows()) do
+        if record.mode == "rescue" and not record.rescueInRaids then watched = true break end
+    end
+    if not watched then return end
+    -- The service's own handler for this event may not have run yet.
+    service:MarkRosterDirty()
+    service:FlushPending()
+    if (service.isRaid == true) ~= (self.rescueInRaid == true) then self:ApplyVisibility() end
 end
 
 function ThreatConsole:OnInitialize()
     self.service = PS.ThreatService or PS:GetModule("platesmith.threat-service")
     if not self.service then error("ThreatService must load before ThreatConsole") end
+    local state = self:GetState()
+    if state.rescueBindings ~= nil then state.rescueBindings = RescueSecure.NormalizeBindings(state.rescueBindings) end
+    if state.rescueClicks ~= nil and state.rescueClicks ~= false then state.rescueClicks = nil end
     local list = NormalizeWindows(self:GetWindows())
-    self:GetState().threatWindows = list
+    state.threatWindows = list
     if #list == 0 then self:CreateWindow() end
     for _, record in ipairs(list) do self:EnsureMeter(record) end
     self:UpdateWindowButtons()
@@ -1493,7 +1851,8 @@ function ThreatConsole:OnDisable()
     self:Hide(false)
 end
 
-ThreatConsole._Test = { NormalizeWindows = NormalizeWindows, NameLength = NAME_LENGTH, RefreshInterval = REFRESH_INTERVAL }
+ThreatConsole._Test = { NormalizeWindows = NormalizeWindows, NameLength = NAME_LENGTH, RefreshInterval = REFRESH_INTERVAL,
+    NextMode = NEXT_MODE }
 
 local registered = PS:RegisterModule("platesmith.threat-console", ThreatConsole)
 if registered then PS.ThreatConsole = registered end
@@ -1511,10 +1870,19 @@ ThreatConsole.screenEvents = screenEvents
 PS._RegisterEvent(screenEvents, "UI_SCALE_CHANGED", "platesmith.threat-console")
 PS._RegisterEvent(screenEvents, "DISPLAY_SIZE_CHANGED", "platesmith.threat-console")
 PS._RegisterEvent(screenEvents, "PLAYER_REGEN_DISABLED", "platesmith.threat-console")
+-- Rescue windows apply what they queued in combat, and follow In raids.
+PS._RegisterEvent(screenEvents, "PLAYER_REGEN_ENABLED", "platesmith.threat-console")
+PS._RegisterEvent(screenEvents, "GROUP_ROSTER_UPDATE", "platesmith.threat-console")
+-- Rescue's header cooldown, and a druid's Bear Form slot.
+PS._RegisterEvent(screenEvents, "SPELL_UPDATE_COOLDOWN", "platesmith.threat-console")
+PS._RegisterEvent(screenEvents, "UPDATE_SHAPESHIFT_FORMS", "platesmith.threat-console")
+PS._RegisterEvent(screenEvents, "SPELLS_CHANGED", "platesmith.threat-console")
 screenEvents:SetScript("OnEvent", function(_, event)
-    if event ~= "PLAYER_REGEN_DISABLED" then return ThreatConsole:KeepWindowsOnScreen() end
-    if ThreatConsole:IsSampleData() then
-        ThreatConsole:SetSampleData(false)
-        ThreatConsole:RefreshOptions()
-    end
+    if event == "SPELL_UPDATE_COOLDOWN" then return ThreatConsole:OnSpellCooldown() end
+    if event == "UPDATE_SHAPESHIFT_FORMS" then return ThreatConsole:OnFormsChanged() end
+    if event == "SPELLS_CHANGED" then return ThreatConsole:OnSpellsChanged() end
+    if event == "PLAYER_REGEN_ENABLED" then return ThreatConsole:OnCombatEnd() end
+    if event == "PLAYER_REGEN_DISABLED" then return ThreatConsole:OnCombatStart() end
+    if event == "GROUP_ROSTER_UPDATE" then return ThreatConsole:OnGroupChanged() end
+    return ThreatConsole:KeepWindowsOnScreen()
 end)

@@ -1,7 +1,7 @@
 local _, PS = ...
 local L = PS.L
 
--- Bar textures and fonts. Built-in choices always exist; when the optional
+-- Bar textures, fonts and alert sounds. Built-in choices always exist; when the optional
 -- LibSharedMedia-3.0 is loaded its registered media are offered as well.
 -- Stored LSM choices are "lsm:<name>", so a missing library or a removed
 -- media entry falls back to the built-in default instead of failing.
@@ -50,23 +50,34 @@ end
 function Media.IsStatusBar(value) return statusBarByKey[value] ~= nil or IsSharedReference(value) end
 function Media.IsFont(value) return fontByKey[value] ~= nil or IsSharedReference(value) end
 
+-- The built-in choices, then LibSharedMedia's of kind. Kept per kind while LSM's list is the same table at the
+-- same length (it only grows as addons register media), so a refresh of every font and texture field (Studio
+-- asks on each) makes no list; read only.
+local sharedChoices = {}
 local function SharedChoices(builtIn, kind)
+    local library = SharedMedia()
+    local names
+    if library and type(library.List) == "function" then
+        local ok, list = pcall(library.List, library, kind)
+        if ok and type(list) == "table" then names = list end
+    end
+    local kept = sharedChoices[kind]
+    if kept and kept.names == names and kept.count == (names and #names or 0) then return kept.choices end
     local choices = {}
     for _, entry in ipairs(builtIn) do choices[#choices + 1] = { value = entry.value, label = entry.label } end
-    local library = SharedMedia()
-    if library and type(library.List) == "function" then
-        local ok, names = pcall(library.List, library, kind)
-        if ok and type(names) == "table" then
-            for _, name in ipairs(names) do
-                if type(name) == "string" then choices[#choices + 1] = { value = LSM_PREFIX .. name, label = name } end
-            end
-        end
+    for _, name in ipairs(names or {}) do
+        if type(name) == "string" then choices[#choices + 1] = { value = LSM_PREFIX .. name, label = name } end
     end
+    sharedChoices[kind] = { names = names, count = names and #names or 0, choices = choices }
     return choices
 end
 
+-- Both lists are kept (SharedChoices) and shared: read only.
 function Media.StatusBarChoices() return SharedChoices(statusBars, "statusbar") end
 function Media.FontChoices() return SharedChoices(fonts, "font") end
+-- Sounds: the caller's own built-in list ({ value, label }; one caller, Rescue's alerts), then LibSharedMedia's.
+function Media.SoundChoices(builtIn) return SharedChoices(builtIn, "sound") end
+Media.IsSharedReference = IsSharedReference
 
 local function Fetch(kind, value)
     if type(value) ~= "string" or value:sub(1, #LSM_PREFIX) ~= LSM_PREFIX then return nil end
@@ -81,6 +92,9 @@ function Media.StatusBarPath(value)
     if entry then return entry.path end
     return Fetch("statusbar", value) or statusBars[1].path
 end
+
+-- An "lsm:<name>" sound's file while LibSharedMedia has it, else nil (the caller plays its own default).
+function Media.SoundPath(value) return Fetch("sound", value) end
 
 function Media.StatusBarAtlas(value)
     local entry = statusBarByKey[value]
@@ -206,6 +220,25 @@ function Media.FamilyAvailable()
     return type(rawget(_G, "CreateFontFamily")) == "function" and BlizzardFaces() ~= nil
 end
 
+-- Sets a text's font object and keeps its colour: the client's SetFontObject gives the text the object's colour
+-- too (a family's white), and a font or style sets only face, size and outline, so a colour set before it (the
+-- name's friendly green, the guild line's) must stay. The colour is handed straight back, never compared, so a
+-- protected one (a class colour from the client's sink) stays as well. A text that already has object from here,
+-- with no face of its own set since (plateSmithOwnFace), is left alone: a restyle sets the same object again and
+-- again, and plates restyle in bursts. False when the object does not take.
+function Media.SetFontObject(fontString, object)
+    if fontString.plateSmithFontObject == object and not fontString.plateSmithOwnFace then return true end
+    local read, r, g, b, a = false, nil, nil, nil, nil
+    if fontString.GetTextColor then read, r, g, b, a = pcall(fontString.GetTextColor, fontString) end
+    if not pcall(fontString.SetFontObject, fontString, object) then
+        fontString.plateSmithFontObject = nil
+        return false
+    end
+    fontString.plateSmithFontObject = object
+    if read and fontString.SetTextColor then pcall(fontString.SetTextColor, fontString, r, g, b, a) end
+    return true
+end
+
 -- Draws text in path at size through its family (FontFamily), sized with SetTextScale; with exact,
 -- through the family made at size itself. False when that cannot be done (no API, no family, or a
 -- text whose earlier SetFont face the client keeps over a font object: plateSmithOwnFace), so the
@@ -215,7 +248,7 @@ function Media.SetFamilyFont(fontString, path, size, flags, exact)
         return false
     end
     local family = Media.FontFamily(path, flags, exact and size or nil)
-    if not family or not pcall(fontString.SetFontObject, fontString, family) then return false end
+    if not family or not Media.SetFontObject(fontString, family) then return false end
     if fontString.plateSmithOwnFace then
         local wantPath, wantHeight, wantFlags = Media.ReadFont(family)
         local nowPath, nowHeight, nowFlags = Media.ReadFont(fontString)

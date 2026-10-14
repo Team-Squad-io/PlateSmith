@@ -2,6 +2,499 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.3.0
+
+### New
+
+- **Four new ways to mark elites, rares and bosses.** The Elite / rare mark's **Style** (Studio › Enemies ›
+  Elite / rare mark) now offers, besides Blizzard icons, Words and Letters:
+  - **Classic dragon**: the classic client's gold dragon (silver for rares and rare elites) wrapped round the
+    level, which moves to the health bar's right end; a world boss shows its skull in the level's place inside
+    the gold dragon.
+  - **Before the name**: the small winged icon (a skull for a boss) right before the name, at the name's text
+    height, with the level before it; on a normal mob the level closes up to the name.
+  - **Level suffix**: no icon; the level reads **60+** (gold), **60R** (silver), **60R+** (silver with a gold +),
+    and a boss's **??** turns red.
+  - **Bar frame**: no icon; a thin gold (elite) or silver (rare) frame round the health bar, silver round gold for
+    a rare elite, and a 2 px dark red frame with a black line inside for a boss. Your target's gold edge, the
+    tank warning and Threat colours on the bar's edge stay the outermost line, outside the frame.
+  Each style says what it does in the menu. Classic dragon and Before the name place the mark and the level
+  themselves: your own placement of those parts is kept and comes back when you pick another style (Placement
+  says why it is unavailable meanwhile). Where the game keeps the classification private, no mark shows; a
+  protected level shows on its own (in the mark's colour with Level suffix when the classification is known).
+- **Icon size** for the Elite / rare mark: **Auto** (18 px beside the bar, the name's text height before the
+  name), **18 px** or **Text height**.
+- **Test values › Elite / rare**: one choice for the sample's classification (Normal, Elite, Rare, Rare elite,
+  Boss) in place of the Elite, Rare and Boss boxes, so the preview shows each style at once.
+
+Your profiles keep Blizzard icons and look exactly as before, and the looks still use Blizzard icons. Blueprints
+using a new style or Icon size are `!PSB4!`.
+
+- **Shape the soft target glow.** Plate settings › Target highlight (with Soft glow behind) has new rows, per
+  plate type and design:
+  - **Glow wrap**: **Fit to parts** follows your plate's parts as they show and hide, as before, and **Glow
+    parts** picks which: Name, Health bar, Power bar and Cast bar (all by default), so the glow can light just
+    the name or just the bar. **Fixed size** is a box of your size centred on the health bar instead (140 x 40 to
+    start: picking it clears Same width and height).
+  - **Glow width** and **Glow height** (Glow width replaces Glow size): with Fit to parts, the room the glow
+    adds around the parts, left and right and up and down, the same on both sides; with Fixed size, the glow's
+    whole size. **Same width and height** (on) sets both with Glow width, as Glow size did; untick it to give
+    Height its own slider. **Glow offset X** and **Y** still move the glow's centre.
+  Your glows look exactly as before. Blueprints using any of these are `!PSB4!`. Studio's preview wraps the
+  name's text as your plates do, not the wider box you grab it by, so a glow round just the name ends at the name.
+- **Clicking**: Settings › Behaviour & display › Clicking sets whether **Friendly players**, **Friendly NPCs** and
+  **Enemies** (and **Your own plate**, where the game has a switch for it) are **Clickable** or **Click through**,
+  separately from how they look. Studio's Players and Friendly NPCs tabs have the same choice as **Clicks** in Plate
+  settings › Friendly plates, next to Show as. Each covers every plate of its kind, not one plate.
+  - Friendly players: Click through turns on the game's "friendly players: names only" option outside dungeons &
+    raids while PlateSmith draws them, which leaves their plates nothing to click; PlateSmith still draws its own
+    look, names only or full plates.
+  - Friendly NPCs and enemies: Click through shrinks the game's click area for them to nothing (or uses the game's
+    click-through switch, on clients that have one). The game has one click setting for every friendly plate, so
+    Friendly NPCs' Click through makes friendly players click through too: the Players row then reads **Click
+    through (shared with NPCs)** and is locked until NPCs are clickable again. Friendly NPCs' choice applies outside
+    dungeons & raids; enemies' everywhere.
+  Clickable is the default everywhere, so nothing changes until you pick Click through. PlateSmith records the game's
+  value first, waits for combat to end before changing it, and puts it back when you choose Clickable, turn
+  PlateSmith off, switch profile or log out; Blueprints leave it out.
+- **Objects tab: books, chests and quest objects get plates of their own.** When the game gives an object a
+  nameplate (a book on the ground, Shipment of Iron, Alliance Chest), PlateSmith drew it as an enemy: a red name,
+  level 0 and an empty health bar. Objects are now a plate type of their own, with a fifth Studio tab, **Objects**:
+  the object's name in gold in a small tooltip-like box (a dark background with a thin grey-gold edge), plus a quest
+  mark beside it when the object is part of a quest; no level, bars, auras, threat or target highlight. Edit it
+  like any plate type: the name's font, size and colour rules, the box (the Backdrop part, below), where the quest
+  mark sits, and designs of its own for dungeons & raids, battlegrounds & arenas and cities & inns. Every look has
+  an Objects style of its own (Blizzard's is closest to the game's tooltip, Minimal's a faint box); your profiles get
+  the default above. Clicking an object still opens or loots it.
+  - **Backdrop** (a new part, on the Objects tab): the box, like the game's tooltip. **Fit to parts** wraps the parts you
+    tick under Style › **Wraps** (the name, the Status text and the Action icon by default; the quest marker too if you
+    like) while they show, so a herb's box grows to hold its Status text and shrinks back when it hides, with Padding
+    round them; with nothing to show it hides. **Fixed size** is a box of your own Width and Height that you place and
+    drag like any part. Style it as a text's box (Square or Blizzard's Rounded, Fill, Border colour and width). The
+    parts it wraps drag and nudge freely in the preview; it follows them. Every look's Objects style uses it, and the
+    name has no box of its own there. Hovering anywhere on the box shows the object's cursor and tooltip.
+  - **Action icon**: right of the name, inside the box, the game's own icon for what you can do with the object, the one
+    your cursor shows over it: a herb, ore, a book, a chest, a quest. When the game says you cannot yet (a herb
+    your skill is too low for), it shows its own "can't" icon; the part's **Can't use** choice shows that as the
+    game gives it (the default), greyed, or hidden. Move it, scale it or turn it off like any part. **Friendly NPCs**
+    have the part too, off: turn it on to see the game's talk, trainer, vendor or flight icon by their names (a
+    Blueprint with it changed is `!PSB4!`). Where the game gives no icon, none shows.
+  - **Rules and custom text by what an object is**: `object.kind = herb` (or ore, skin, loot, quest, inspect,
+    interact, talk, trainer, vendor, flight, repair, mail, other), read from that icon, never from object names;
+    `object.unable` (the icon says you can't yet); `interact.inrange` (within reach); `object.id = 175734` (the
+    object's ID from the game, to style one object of your choice) and `unit.id` (an NPC's); `object.quest` (the
+    optional PlateSmith_QuestieDB companion lists the object in a quest: a quest in your log needs it, or it starts
+    or ends one). `{object.kind}`, `{object.id}` and `{unit.id}` show them in custom text. `==` now works as `=`.
+    Something the game does not say is unknown, so a rule on it does not apply.
+  - **Type** beside Design: **All objects**, or one type of object as the game's icon says it is: **Herbs**,
+    **Ore**, **Chests & loot**, **Quest objects**, **Books & lore**, **Talk & services** (a mailbox) or **Other**.
+    Pick a type and change anything (the name's colour, font and box, the Action icon's size and place, which parts
+    show, or **Hide these plates** under Plate settings › This type): that type keeps those changes and follows All
+    objects in everything else, in every place (on top of a dungeon or city design). Changed rows get the gold mark,
+    with **Reset to All objects** on each and for the whole type. An object the game gives no icon draws as All
+    objects, and one that changes (a chest emptied) follows at once. Your profiles have no type changes, so every
+    object looks as before; each look sets a few (herbs green, ore stone grey, chests gold, quest objects yellow,
+    and the Status text on herbs and ore; Classic and Blizzard keep the game's gold names). Blueprints carry them
+    (`!PSB4!`), imported with the context designs.
+  - **Status text** (a new part, off on All objects, centred under the name inside the box): what the object needs and
+    whether your skill reaches it, such as **Mining 65** in the game's own gathering colours for your skill (orange: a
+    skill point every time, yellow: most times, green: now and then, grey: no more, red: too low; hovering the plate
+    adds your own skill and what the colour means). It comes from the
+    game's own tooltip: hover one Tin Vein once and every Tin Vein's plate shows it from then on, in any profile (up to 300 objects are
+    remembered for your account; never shared in Blueprints). The skill is found by your own skill names, in any
+    language. Herbs and ore veins need no hovering: where the game's tooltip names no requirement (WoW Forever's shows
+    only the name), the original game's levels are used, by the object's ID (a Tin Vein **Mining 65**, Liferoot
+    **Herbalism 150**; from the open-source VMangos database via pfQuest, credited in the README). For anything
+    else, until an object like it has been hovered, or for one that needs none of your skills, it shows nothing.
+    Rules and custom text read `object.skill` (the skill it needs) and `object.cangather`.
+  - **Cultivation** (the Tauren racial): if you know it, herb plates' Status text says **Cultivate ready** (green,
+    beside the Herbalism part in its own colour) or **Cultivate in 23m** (the spell's own cooldown, following each
+    minute while herbs are in view), and the herb you cultivated says **Cultivated** until it respawns. A herb above
+    your level (its Herbalism skill / 5: a herb of 150 needs level 30) says **Cultivate at level 30** in red. A herb you can cultivate is not faded by Fade objects you can't
+    use, Herbalism or not. Rules and custom text read `object.cancultivate`; Test values' **Cultivation ready** shows
+    it in the preview. Nothing changes for players without it.
+  - **Fade objects you can't use yet** (Studio › Settings › Objects & interacting, off unless a look turns it on): an
+    object whose icon says you can't use it yet (a herb above your skill) fades to half, unless your skill reaches it
+    after all (`object.cangather`) or you can cultivate it.
+  - **Copy style from a look...** (the Objects tab's Plate settings): gives your profile a look's Objects style (All objects,
+    its types and the fade) without changing anything else. Your Objects designs for places stay. It asks first when
+    you have changed the Objects tab; like any change it needs Save, and Revert undoes it.
+  - **Show the game's cursor** and **Show a tooltip** (Studio › Settings › Objects & interacting › When you point at
+    an object's plate, both on): pointing at an object's name on its plate shows the game's own cursor for it, as over
+    the object itself (gather, mine, read, loot, greyed when it is out of reach where the game allows it), and a small
+    tooltip with its name, its type and, once one like it has been hovered in the world, what it needs. Clicking the object and turning the camera work as before. Nothing changes
+    in combat. Kept by your profile, not shared in Blueprints.
+  - **Test values › Object** (Herb, Ore, Book, Chest, Quest, Talk, Trainer) and **Can't use yet** show each in the
+    preview with the game's icon and its Status text; choosing a Type picks its sample.
+- **New profiles remember their look.** A profile made with Profile › **New from preset** or a first-run look card
+  records which look it came from; the Profile menu's tooltip and `/ps diagnose` name it. Your existing profiles have
+  none, and it is never shared in Blueprints (an import keeps yours).
+- **Studio › Settings › Objects & interacting**, a new page for everything about objects that is not their look
+  (the Objects tab's Plate settings keeps the design: Copy style from a look, This type, Scale, and an **Object
+  settings...** button to this page). **Object plates**: **Drawn by** PlateSmith (the Objects design) or Blizzard's
+  (the game's own object plate, untouched) and Fade objects you can't use yet. **When you point at an object's
+  plate**: Show the game's cursor and Show a tooltip. **Interact key**: the game's own settings for the object, corpse
+  or NPC your interact key picks, each **Game's setting** (the default: nothing changes) or a choice of its own:
+  **Interact key target** (On or Off), **Range** (10 to 60 yards; WoW Forever appears to drop the target past about
+  15 yards whatever it says), **Direction** (Straight ahead, In front, All around), **Out of reach** (Only within
+  reach, or Out of reach too), **Plate on it**, **Icon over it**, **Icons on objects too** and **Icons on minor
+  targets** (On or Off). Range, Direction, Out of reach and Icons on minor targets are new. They are the same
+  settings addons such as Loot Sparkles use: if another addon changes one after PlateSmith, PlateSmith follows it
+  rather than setting it back, and it puts the game's value back when you choose Game's setting, Revert, turn
+  PlateSmith off, switch to a profile that leaves it to the game, or log out. A row shows only where the game client
+  has that setting. Where objects show at all is the game's: it has no switch for object plates. Blueprints carry
+  your Objects design (`!PSB4!` when it differs from the default) but never the interact key settings.
+- **Rescue, a third threat window mode.** Pick **Rescue** in a threat window's menu, its mode button or Studio ›
+  Settings › Modules › Threat › Threat windows › Mode. It lists your group in a fixed order (a party as a list, tanks first; a raid as
+  a grid, one column per group) and colours a member orange when they pull and red, with a pulsing glow, when an
+  enemy is on them; a tank holding stays calm. **Click a member to taunt their target** (Warrior: Taunt,
+  right-click Mocking Blow, Shift-click Challenging Shout; Druid: Growl, Challenging Roar, in Bear Form only, and a
+  row's tooltip says when Bear Form is needed; Paladin: Judgement, Shift-click Blessing of Protection on them), or use
+  **Taunt my target** in its header. Its settings: Layout, Show (Everyone, Healers only, Healers and ranged, My group
+  only), In raids, Clicks, what each click casts, and three optional alerts: a sound (built-in, plus
+  LibSharedMedia's sounds when it is installed), a flash of the window's border when someone newly gets aggro, and
+  your taunt's cooldown in the header ("Taunt 6s", "Taunt ready"). A Rescue window holds still in combat (no moving,
+  resizing or hiding until it ends; a drag or resize under way when combat starts ends there; its close button looks
+  unavailable then) and catches up with group changes, newly learned spells and role changes when combat ends. Opened in an older PlateSmith, a Rescue window becomes a Tank window.
+- **Skin Blizzard's damage meter** (optional, off by default): Studio › Settings › Modules › Threat › Threat windows ›
+  **Damage meter**. Blizzard's damage meter takes the threat windows' look, so a threat window following it and the
+  meter look like one set: the frame and title, the minimise, settings and session buttons, the bars and their dark
+  track, the row and header text, the scroll bar and the breakdown pop-out, in Forge, Ledger or Glass (the theme of
+  the threat window following that meter window, else of your first shown one; Forge for the other themes). Rows the
+  meter adds later, a second or third meter window and a theme change follow. Only the look changes: Edit Mode
+  still places and sizes the meter, and its clicks, menus and numbers are Blizzard's. Turning it off puts Blizzard's
+  look back at once. The setting is for every character and is not part of Blueprints.
+  It sizes itself to the members it lists; with nobody to list (solo) it keeps the size the window had and says
+  "Not in a group. Rescue lists your party or raid.", and switching it to another mode gives that size back.
+- **Blizzard, with PlateSmith extras is a real choice.** With **Who draws the plates** set to it, Blizzard draws its
+  own plates (PlateSmith never moves, resizes or restyles them) and PlateSmith adds its extras on top, attached to
+  Blizzard's name and health bar. Choose them in Studio › Settings › Behaviour & display › **Extras on Blizzard's
+  plates**, where a sample of Blizzard's plate shows each one:
+  - **Quest markers**, left of Blizzard's name (with their progress where your Enemies' quest marker shows it).
+  - **Threat**: **Text** (your threat % and lead over the name), **Edge** (a thin edge round Blizzard's health bar in
+    the Threat colours for your role), **Text and edge**, or **Off**.
+  - **Target glow**: the soft glow behind your target's plate, in your Target highlight's glow colour, size and pulse.
+  - **Loose mark** (below), right of Blizzard's name.
+  Objects (books, chests, herbs) keep PlateSmith's own plates, which have no Blizzard style. Blizzard already draws
+  raid marks and elite icons, so PlateSmith adds none. Friendly plates in dungeons & raids are Blizzard's protected
+  plates and get nothing. Beside another nameplate addon's plates only the quest markers and threat text show, as
+  before. Your **Who draws the plates** is unchanged; a profile saved before keeps what this choice drew then (quest
+  markers and threat text), and new profiles have all four. Blueprints carry the extras (`!PSB4!` away from that).
+- **Loose mark.** A new part on **Enemies** plates (+ Add › Icons): a small mark beside the name while a mob is loose,
+  attacking someone who is not a tank (the Tank window's LOOSE), with two quick blinks as it gets loose. Its
+  **Display** sets **Show for** (Tanks, the default, or Everyone), **Icon** (the game's alert or the Tank window's LOOSE
+  icon) and **Pulse**. Where the game will not say who holds a mob, no mark shows. It is off in your profiles and in
+  every look but **Tank**, which shows it (TAGGED moves after it and takes its place while the mob is not loose).
+  Rules and custom text can read the same as `threat.loose`; **Test values › Loose** shows it in the preview (with
+  **You tank**). Blueprints using its options are `!PSB4!`.
+- **For addon authors: the module API is public.** The download now carries `Docs/MODULES.md` (the versioned API
+  reference, with a ten-minute first module) and `Examples/PlateSmith_ExampleModule`. Every call takes
+  `PlateSmith:Call` and `PlateSmith.Call` alike; one ID grammar covers modules, tokens, facts, formatters, Blueprint
+  fields and preview parts (older IDs still register); new helpers `ReportError`, `Locale`, `IsReadable`,
+  `ReadNumber`, `ReadText` and `InvalidateFact` (read a module's fact again when no plate event says it changed).
+  The QuestieDB companion uses only this public API. `RegisterModuleSettings` still works but is deprecated, and
+  `RegisterEditorComponent` is documented as a preview part only.
+- **Studio › Settings › Modules.** A group at the end of Settings' categories (the list scrolls when it is long)
+  with a page per module, each with its icon: **Threat** (PlateSmith's own), **QuestieDB** with the companion, and
+  any addon that adds one. Module pages look and work like Studio's own: folding sections, `?` help, Settings
+  search, and they open in combat. A module's profile settings light up Save, Revert undoes them and Blueprints
+  share them; settings a module keeps itself are saved at once and say so in their tooltip. A row's gold dot means
+  unsaved changes; a module whose page cannot show is greyed, with the reason in its tooltip. For addon authors:
+  `PlateSmith:RegisterStudioSettings` (`Docs/MODULES.md`).
+- **Other addons' data in your custom parts.** With an addon that provides them, a custom bar's **Source** can be its
+  value (such as a cooldown), a custom icon's **Picture** its icon, and custom text's **Source** its text, listed by
+  name beside PlateSmith's own; the preview shows them from the addon's samples. **Test values** gets a box for each
+  such addon's yes/no fact, to try your rules on it. For addon authors: `RegisterBarSource`, `RegisterIconSource`.
+
+### Changed
+
+- **The threat settings live in Studio › Settings › Modules › Threat.** Your role (**This character tanks**, now in
+  one place, with whom you are treated as now), **Threat colours** (from Behaviour & display, which keeps a link),
+  **Threat text & window colours**, the **Spotlight** and the **Threat windows**: the same settings and values as
+  before, on one page you can open in combat. The threat windows' **Threat window settings...** opens it at Threat
+  windows. Chat says once where they went.
+- **Game Options › AddOns › PlateSmith › Threat** (and each module's page there, such as **QuestieDB**) is now a
+  short page saying where its settings are, with an **Open in Studio** button. **QuestieDB**'s switches and status
+  are in Studio › Settings › Modules › QuestieDB.
+
+- **Refreshed looks for new profiles.** Each look's enemy plates (Profile › **New from preset** and the first-run
+  look cards) now match their card and are calmer: the name in a warm white, the level in gold (before the
+  name, or where the look puts it), a slim cast bar without a border and with the spell's icon inside it, and
+  what shows only in a fight (the elite and quest marks, auras, combo points) smaller. Bold's threat % sits
+  unboxed under the bars and its marks are back beside the bar; Tank's threat lead is small and unboxed; Healer's
+  enemy plates dim only while you target another mob; Compact's cast bar takes the cast colour. Names are 10 to
+  12 pt (most looks' were 14) and easy to read: Minimal's is 11 pt over a 100 x 8 bar, Compact's 11 pt inside a
+  100 x 12 bar with 11 pt cast text and 10 pt threat text, Sleek's and Healer's 10 pt. Blizzard's level box is
+  exactly as tall as the health bar beside it and centred on it, on every plate type, as on Blizzard's own plates,
+  with the enemy level 10 pt. Combo points show only while you have some (no empty row). The friendly plates
+  follow: their names are the enemy name's size where the look shows full friendly plates (Healer 10 pt) and 1 pt
+  larger where it shows names only (PlateSmith, Classic, Bold and Tank 13 pt, Minimal and Compact 12, Sleek 11),
+  with the level in the look's gold (Friz Quadrata, as on its enemy plates) and the guild line at least 9 pt
+  (Sleek's 10); Blizzard's keep Blizzard's 12 pt. Compact shows no level on friendly names either, and its
+  friendly players' PvP and relationship icons sit beside the name instead of above the bar's corners. Blizzard's
+  friendly players' bars take their class colour, as on Blizzard's own plates (the name stays white, but a
+  PvP-flagged ally's name is Blizzard's green beside the faction icon; the bar keeps the class colour). Each look
+  has an elite, rare and boss mark of its own (below). The looks'
+  smaller aura rows leave room for their countdowns, so neighbouring times ("2m", "15m") never run together: a row
+  of small icons has a wider gap, and the smallest (12 px buffs) a 7 pt countdown. Only profiles
+  you make from a look from now on get them: your existing profiles, including ones made from a look, keep their
+  look exactly.
+- **Each look's own elite mark.** A profile made from a look now marks elite, rare and boss enemies in a style that
+  suits it (Studio › Elite / rare mark › Style): **Classic** the classic gold or silver dragon round the level at
+  the bar's right end (its name sits a little higher, clear of the dragon); **Sleek** the level's suffix (**60+**,
+  **60R**, **60R+**, **??** in red for a boss); **Bold** and **Healer** a gold or silver frame round the health bar
+  (Bold's name, cast bar and raid mark sit a pixel or two further out, clear of it); **Tank** Blizzard's icon at its
+  full 18 px left of the bar; **PlateSmith**, **Minimal** and **Compact** a small icon right before the name
+  (Minimal now shows it, with its raid mark after the name); **Blizzard** keeps Blizzard's icons. Your existing
+  profiles, including ones made from a look, keep their mark.
+- **A PvP-flagged ally's colour goes on the health bar.** With PvP icon › Display on **Colour and icon** (or
+  **Colour**, until now "Name colour"), a flagged ally's full plate turned both the name and the health bar green.
+  Now the bar takes the colour and the name keeps its own (its social or class colour), so a group or guild member
+  still reads as one. Names-only plates, and full plates whose bar has a colour of its own (a Custom colour, a
+  colour rule that always applies such as the Healer look's blend, or class colours with **Colour social
+  relationships** off, as on the Blizzard look), colour the name instead. This applies to your existing profiles
+  too. The swatch is now **PvP colour**, Studio's preview shows the same, and the Blizzard look uses it in place of
+  its extra name rule (its white name rule now skips flagged allies).
+- **Tank threat colours: Other tank has it is teal.** Its pale blue was easy to mistake for **Holding**'s
+  periwinkle; new installs and new profiles (and every look) now use a teal. Your existing profiles keep their
+  colours, which you can change in Threat colours.
+- **A text box as tall as its bar.** Style › Box behind › **Height** has a new choice, **Match its parent**: the
+  box is as tall as the part the text is pinned to (the health bar beside a level, with its border), centred on
+  the text, with Padding only at its sides; it never gets shorter than the text and Padding. **Fit the text**
+  stays the default, so your profiles look as before. Blueprints that use it are `!PSB4!`.
+- **A new rule starts as "low health turns red".** **+ Add rule** used to start with "tagged → grey", which plates
+  already do on their own. It now starts as `health.percent < 35` in red (or half see-through for parts without a
+  colour); change the condition and colour to whatever you need.
+- **Three slash commands.** `/ps help` (and this page) lists `/ps`, `/ps diagnose` and `/ps console`; everything
+  else is in Studio and Settings. The other commands still work. `/ps quest on|off` and `/ps threat on|off` are
+  gone: they said "Updated" but changed nothing (use Studio › Settings › **Show on plates**).
+- **Fewer rule presets.** Rules › Presets no longer offers the two **Threat colours** presets, **Cast colours by
+  interrupt**, **Fade non-targets** or **Fade out of range**: Threat colours, the cast bar's **Colour by
+  interrupt** and Settings › **Fading** do those jobs (and Colour by interrupt keeps working where the game hides
+  the answer). Rules you already made from them stay and keep working.
+- **Importing a look keeps who draws your plates.** A Blueprint import no longer changes **Who draws the plates**:
+  that depends on the nameplate addons you have, not on the look (importing someone's "PlateSmith" beside Plater
+  drew two sets of plates). Exports are unchanged.
+- **Friendly plates in one place, per plate type.** Studio's **Plate settings** on the **Players** and
+  **Friendly NPCs** tabs now start with **Friendly plates**: **Show as** (Names only, Full plates or Blizzard
+  plates), which each tab now chooses on its own; on Players, a line saying whether **Hide unstyled names** is on,
+  which opens it in Settings › Names; **Show in**, the same switches as Settings › Where plates show; and a button
+  to the **Dungeons & raids** design, which now has **‹ Back to World design** at the top. Your profiles keep their
+  one choice for both until you change one. Settings › Behaviour & display no longer has **Friendly units**; a
+  button there opens the new section, and searching for it finds it. **Hide unstyled names** (no longer "outdoors"
+  in its name) stays in Settings › Names, as it changes the game's own name settings for friendly players and
+  their pets, guardians, minions and totems; its help now says what it hides, when, and that PlateSmith keeps it
+  so even if another addon turns those names on. The
+  preview's switch reads **Editing: Names only | Full plate** and follows Show as at once; its gold mark for the
+  layout your plates use no longer disappears after Studio refreshes. Blizzard's own names-only box in the
+  Dungeons & raids design is now **Blizzard: names only in dungeons**, so it is not mistaken for Show as.
+  Blueprints carry each plate type's choice (`!PSB4!` only when Players and Friendly NPCs differ).
+- **A tagged mob's health bar is grey, as on Blizzard's plates.** A new health bar option, **Grey when tagged by
+  others** (Studio › Health bar), turns an enemy's bar grey while another player or group has tagged it, so you
+  can see at a glance that it gives you no credit. It wins over Threat colours; a colour rule on the health bar
+  still wins over it. New profiles and every look have it on, with the **TAGGED** word turned off (it stays in
+  the parts tree: its eye brings it back). Your profiles keep their TAGGED word and colours; the Health bar
+  inspector offers **Grey bar instead** to switch. The **Grey when tagged** rule preset is no longer offered;
+  rules you made from it keep working. Where the game hides whether a mob is tagged, the bar keeps its colour.
+  Studio's Test values › **Tagged** shows the grey bar.
+- **Cast bar icon inside the bar.** Cast bar › **Icon** has a new choice, **Inside**: the spell's icon sits inside
+  the bar's left end, as tall as the bar, with the spell's name after it, so nothing sticks out beside the bar.
+  It works on names-only casts drawn inside their bar too (under a slim bar, it stays beside it). Blueprints that
+  use it are `!PSB4!`.
+- **Quieter placeholders in Studio.** The dashed outlines for hidden parts (a cast bar while Casting is off, a
+  turned-off Target of target) are faint grey at rest, light up when you point at or select them, and never
+  cross a part that shows.
+- **Stacking & distance is always editable.** There is no **Manage Blizzard's plate stacking** box to tick first:
+  every Blizzard setting on the page can be changed at any time. A setting you change is PlateSmith's from then
+  on (marked, saved with your profile, and put back as it was when you log out, as before); the ones you leave
+  alone stay the game's own and just show its current value, even when you change it in Blizzard's options while
+  the page is open. The arrow beside a changed setting gives it back to the game. **Reset Blizzard's stacking to game defaults** stays, and now also gives every setting back. If you
+  never ticked the old box, nothing changes: PlateSmith still sets none of these (values a profile kept while it
+  was off are cleared, and **Match frame size to layout** and **Stack only in combat** are off, as they did
+  nothing then). If you had it ticked, every setting you had stays applied. `/ps diagnose` says how many of
+  Blizzard's settings PlateSmith sets.
+- **View distance is shown but can't be changed.** The game keeps nameplates to a fixed range (about 60 yards)
+  and has ignored this setting for a long time, so PlateSmith no longer writes it (not from the slider, a preset or
+  Reset); the row is dimmed and says why. A value your profile kept stays saved but unused.
+- **Stack plates and Show offscreen plates.** On WoW Forever, Blizzard's options stack enemy and friendly plates
+  separately and can keep plates of units off the screen at its edge; Stacking & distance now has both (where the
+  game has them) in place of the old note that one setting stacks both. **Stack plates** works like Blizzard's own
+  Stack Nameplates: a dropdown that reads the units that stack ("Enemy Units, Friendly Units", one of them, or
+  None) and opens a list where you tick **Enemy Units** and **Friendly Units** separately. Ticking one never
+  changes the other, and the arrow beside the row gives both back to the game. The presets turn enemy stacking on
+  there, and **Stack only in combat** stacks enemy plates. `/ps diagnose` also lists every nameplate setting the
+  game has, with its value and default.
+- **Developer commands are no longer in the download.** `/ps status`, `/ps perf`, `/ps testname`,
+  `/ps console sample`, `/ps fetch` and `/ps playerprobe` were test tools for PlateSmith's developers; typed now,
+  each answers "That's a developer command (PlateSmith_Dev)." and does nothing. Everything a player needs is still
+  under `/ps`, `/ps diagnose` and `/ps console`: the threat windows' sample data is Studio › Settings ›
+  Modules › Threat › Threat windows › **Show sample data**, and the live Performance tab is in `/ps diagnose`'s window. `/ps scale`, still
+  unlisted, now says what it changes: the Enemies' World design's scale only.
+- **Automatic switching: scenarios and delves are open world.** Settings › Profiles › Automatic switching used
+  to switch to your **Dungeons** profile in a scenario or delve, while Studio's designs treat those places as open
+  world, so that profile then drew its World design anyway. Both now read the place the same way: a scenario or
+  delve uses your **Open world** rule (or keeps the profile you have). Your rules are unchanged and still apply in
+  dungeons, raids, battlegrounds and arenas. The section also says when to use a design per place instead.
+- **Clearer labels where two settings looked alike.** The Threat page's palette section is now **Threat text &
+  window colours** and says the colours on health bars and names are Studio's **Threat colours**; Studio's
+  **Colour-blind friendly** says it changes Studio and the preview, never the plates. **Warn when you lose a mob
+  you tank** moved from Show on plates into **Threat colours**, below Apply to, where it is unavailable (and says
+  why) while **Health bar edge** gives the edge the threat colours. Friendly plates' **Show as** says Blizzard's
+  plates still show and that **Show in** hides them; **Quest icons** says where the QuestieDB companion's options
+  are; the combo points' **Position** says Placement is off while the row sits on the bar. Nothing you saved
+  changes.
+
+### Fixed
+
+- **Threat windows snapped together follow the damage meter together.** Docking a window to Blizzard's damage meter
+  (by dropping it there or from Follow damage meter), or the meter moving, took that window along but left the
+  windows snapped to it behind, overlapping or hanging off. They now move with it, each keeping its own size and
+  staying on the edge it shared, as when the group is dragged. A locked window stays put, and a group with a Rescue
+  window holds still in combat and follows when combat ends.
+- **Threat text on another addon's plates follows the fight.** With Who draws the plates on Automatic beside another
+  nameplate addon (or Blizzard, with PlateSmith extras), the threat text PlateSmith adds was written when the plate
+  appeared and when your target changed, and could then stay as it was. It now updates as the fight goes, as on
+  PlateSmith's own plates.
+- **The PvP faction icon is full size.** A PvP-flagged friendly player's Alliance, Horde or FFA icon drew the
+  game's whole icon file, in which the emblem fills only a corner, so it showed as a small dot beside the bar or
+  name. It now fills its box, about as tall as the name, on full and names-only plates and in Studio's preview. This
+  applies to your existing profiles too.
+- **Blizzard look: a PvP-flagged ally's name in Blizzard's green.** New profiles promise a flagged ally's name in
+  Blizzard's green beside the faction icon, but the Blizzard look drew it white. A profile made from the Blizzard
+  look from now on colours it green (Colour and icon, its white name rule skipping flagged allies), on full and
+  names-only plates, and the bar keeps the class colour. Your existing profiles keep their look: to get the green on one made from the Blizzard look,
+  add a rule to Players › Name, `pvp` → colour green, below the white one (or make the profile again from the look).
+  The other looks already show it.
+- **Where plates show: Players works on WoW Forever.** Its switch is named differently there
+  (`nameplateShowFriendlyPlayers`), so unticking Players in a place did nothing. It now uses whichever switch the
+  game has.
+- **Friendly player plates can be clicked again.** With the game's "friendly players: names only" option on, the
+  game takes away a friendly player plate's click area, so PlateSmith's plates for friendly players (names only or
+  full plates) could not be clicked to target them. Outside dungeons & raids, while PlateSmith draws friendly
+  players, it now keeps that game option off (you see PlateSmith's plates either way; **Clicking** › Friendly players
+  › Click through turns it on instead, above). Your own setting comes back
+  when you show friendly players as Blizzard's plates, turn PlateSmith off or log out; in dungeons & raids,
+  **Dungeon friendly names only** still decides. If you or another addon turn it on meanwhile, PlateSmith gives that
+  back later and turns it off again. If the game closes without a logout (a crash), your own setting comes back at
+  the next login instead of staying off, as long as you had logged out normally once since PlateSmith first changed it.
+- **Settings given back during combat are not forgotten.** Giving a **Stacking & distance** setting or one of the
+  interact key settings (Objects & interacting) back to the game during combat, then setting it again before combat ended (switching
+  profiles, Revert, turning PlateSmith off and on), could record PlateSmith's own value as yours, so logging out left
+  PlateSmith's value instead of your own. Your value now waits with its record until combat ends.
+- **No blocked-action warning from Escape in combat.** With Blizzard's Options open over Studio (or a PlateSmith
+  menu, the first-run setup or the Blueprint window's preview open), pressing a key in combat could raise "PlateSmith
+  has been blocked from an action only available to the Blizzard UI". PlateSmith no longer tries to keep a key in
+  combat. Opening Blizzard's Options also no longer moves other addons' windows in the list Escape closes.
+- **Friendly NPCs say when the game hides their plates.** With the game's own switch for friendly NPC plates off,
+  the green names over NPCs are the game's floating names, which cannot be clicked. Studio › Friendly NPCs › Plate
+  settings › Friendly plates now says so, with a button to **Where plates show**, which says where to turn them on.
+- **Stacking & distance follows changes made outside PlateSmith.** A setting PlateSmith doesn't set (Target scale,
+  say) now shows the value you choose in Blizzard's options or another addon, and the open page updates by
+  itself; PlateSmith never writes it. A setting it does set stays PlateSmith's, and chat says once that it was
+  put back: the value you chose outside becomes the one PlateSmith gives back when you log out or click the
+  row's arrow, instead of the older one it first found. Before, logging out could undo your newer choice. On
+  another character (the game keeps settings like Target scale per character) PlateSmith no longer puts back a
+  value it recorded on the last one. Values the game holds outside PlateSmith's slider ranges show as they are
+  (WoW Forever's -100000 yd for Farthest opacity from read 0 yd), and the preview's other plates no longer go
+  invisible where Non-target opacity is -1 ("not used").
+- **Styled text keeps its colour.** A part with its own font or outline (Style › Font, as several looks give the
+  name and guild line) could lose its colour and draw white: on your plates the guild line and the grey TAGGED
+  word, and in Studio's preview a friendly name (green, or its class colour) and guild line. Setting the font took
+  the font's own white with it; the text now keeps its colour. This applies to your existing profiles too.
+- **Switching profile by dual spec works on WoW Forever.** Settings › Profiles › Automatic switching said "This
+  client has no specializations to switch by". It now offers **Primary talents** and **Secondary talents**, even
+  before you learn dual spec, so you can set them up ahead.
+- **Plates appear faster right after logging in.** After a login, a `/reload` or a loading screen, names could
+  wait several seconds (up to 8 in a busy city) before PlateSmith drew them, while the game ran slowly. For the
+  first seconds PlateSmith now spends more of those slow frames drawing them, so the first wave shows within a
+  second; spare plates are made straight away afterwards (extra ones for a crowd in cities and instances). Once
+  the game runs normally the usual limits that stop hitches in cities apply again. `/ps diagnose` shows the wait
+  (`addQueue.loginBurst`).
+- **Less memory in quiet zones and when changing profiles.** In a quiet zone PlateSmith kept spare plates for a
+  crowd that was not there and made garbage for the game to clean up (about 2 MB a minute with no plate in
+  view). It now makes the extra spare
+  plates only in cities and instances, or when a crowd arrives (in the open world it makes the usual number); its
+  every-frame plate updates rest while no plate is in view and nothing waits to be drawn, instead of running every
+  frame with nothing to do; it no longer reads the quest log for quest marks while no plate is showing (with the
+  QuestieDB companion, every quest's objectives on every quest log change); and a mob coming back into view, or
+  the mouse passing over one, no longer reads its tooltip and quests again until your quest log changes. Plates,
+  quest marks and spares look and behave as before. `/ps diagnose` now shows PlateSmith's memory before and after
+  a full clean-up (`performance.memory.retained`: what it keeps and what was waiting to be cleaned up), an
+  estimate of what its plates hold (`performance.spares`), and which part of the plates' every-frame work made
+  garbage (`performance.memory.frameSteps`). Making a profile from a preset (Profile › New from preset) made about
+  5 MB of garbage each time with Studio open; it now makes about half, as it loads and draws the new look once
+  instead of the defaults first and Studio redraws once instead of up to three times. Switching profiles makes
+  about half what it did, deleting one almost none, and making, loading and deleting profiles again and again no
+  longer adds to what PlateSmith keeps. Editing in Blueprint Studio made the most garbage of all: every change
+  redrew all of Studio, about 0.7 MB each time, including Settings pages and parts' rows you could not see. A
+  change now makes a small fraction of that (about a twentieth), as Studio keeps what did not change and refreshes
+  a Settings page or a part's rows when you open them; picking a part, changing the plate type tab and Revert (now
+  one redraw, not two) make far less too. Your profiles, Studio and the plates look and behave as before. `/ps
+  diagnose` names these actions too (`performance.memory.actions`: New from preset, switch, Save, Revert, Delete,
+  Studio's redraw and opening).
+- **Less memory churn.** PlateSmith made less garbage for the game to clean up: plates no longer make new
+  tables when a cast bar or aura row comes and goes in combat (about 1.2 MB a minute with a dozen casters), and
+  quest marks read each kind of quest mob's tooltip and each quest's objectives once per refresh instead of
+  once per plate. `/ps diagnose` lists what allocates most (`performance.memory`).
+- **Blizzard's name over a PlateSmith plate.** When the game gave a nameplate to a new unit before telling
+  PlateSmith the old one had gone, the late notice could take the new unit's plate down and leave Blizzard's
+  own large name showing until the unit left view. `/ps diagnose` now counts the nameplates PlateSmith draws
+  against the game's, and any showing Blizzard's plate (`context.ownership`).
+- **Big Blizzard names over friendly players in cities.** With **Hide unstyled names** on, the game's large
+  floating names could still show over friendly players in a crowd: the game makes at most 40 nameplates, and
+  writes its own name over everyone past them when its friendly player names are on. PlateSmith turned those
+  names off only at login and loading screens, so anything that turned them back on later (another addon's
+  city preset, such as Hyperframe's, or the game's Names options) won until the next loading screen. They now
+  stay off while the option is on, outside dungeons & raids; what turned them on gets its choice back when you
+  turn the option off or log out. Players past the 40 then show no name. The option's help says what it does.
+- **`/ps diagnose` ownership counts.** `context.ownership` showed none of the game's nameplates as drawn by
+  PlateSmith (`owned` and `shouldDraw` 0) while it drew them all, because the game hides which unit a nameplate
+  belongs to; it now matches each nameplate to the plate PlateSmith drew on it. It also shows whether Hide
+  unstyled names is being kept (`worldNames.watch`).
+- **`/ps diagnose` "script ran too long".** With Keep history on and several saved captures, opening the report
+  could stop with this error; the saved captures are now counted once instead of on every refresh.
+- **`/ps diagnose` full report scrolls.** The Report tab (Show full report) opened with the whole report
+  selected and the keyboard in it, and the mouse wheel could not move it far. It now opens at the top with
+  nothing selected and the keyboard free; the wheel scrolls it from anywhere over the text, as does the scroll
+  bar. **Select all** selects it for Ctrl+C. The Summary still opens selected, and **Copy full report** still
+  selects the one-line code.
+- **Closing Blizzard's Options keeps PlateSmith open.** Closing the game's Options (its Close button, the x or
+  Escape) also closed Blueprint Studio and any other PlateSmith window. They now stay as they were. While the
+  Options window is open, Escape closes the PlateSmith window over it first, then Options. Studio's search and
+  Profile › **Switch automatically...**, which open a setting in Blizzard's Options, step Studio aside without
+  asking about unsaved changes and bring it back when you close Options.
+- **Threat rules without Colour by threat.** On mobs whose threat the game hides (in dungeons and raids), a
+  colour rule on threat (`threat.holding`, `tanking`, `threat.other`, `threat.offtank`, and rules from the old
+  **Threat colours (tank)** and **(DPS/healer)** presets) did not apply; with Colour by threat on, Threat colours painted the bar
+  instead, so the rule only seemed to need that box. The game now picks the rule's colour from its hidden answers,
+  as it does for Threat colours, with the box on or off, and a rule's colour still wins over Threat colours.
+  `threat.losing` and `threat.pulling` stay unknown there.
+- **Threat colours for a raid tank.** In a raid, a mob that was targeting you while the game hid its threat
+  could read as held by someone else (a tank saw **Another tank has it**), because your raid slot was not
+  recognised as you. It now is; when the game will not say who you are, nothing is guessed.
+- **Target highlight Off means off.** With Plate settings › Target highlight › **Off**, your target's health bar
+  no longer gets PlateSmith's gold edge either (a threat-coloured edge still shows). Profiles you already have
+  keep the gold edge they had with Off; Target highlight then says so and offers **No gold edge**.
+- **Tank warning follows the profile's role.** "Warn when you lose a mob you tank" now uses the same role as Threat
+  colours. Only an older profile or Blueprint that always colours as DPS (Threat colours shows "This profile always
+  colours as: DPS & healer") notices: it no longer gets the tank's red edge. **Follow my role** puts it back.
+- **No empty boxes.** A text part with **Show a box** (the Tank look's threat lead before 1.3.0, a boxed threat
+  text or level) drew a small hollow square beside the health bar while it had nothing to say, such as out of
+  combat. The box now shows only while its text does.
+- **Neutral mobs are in the Tank window.** A yellow mob you can attack (a Snapjaw, a quest mob) was left out of
+  the Tank window until it was in combat, while red ones were listed idle. It is now listed the same way: IDLE
+  until the fight, below the mobs you are fighting. Critters and pets are still left out, and so are friendly
+  units and objects. Targeting it, the Threat meter measures it, and in combat its plate colours by threat and
+  shows threat text as a red mob's does.
+- **Studio's preview colours as the plates do.** The preview worked out rules and colours with its own copy of
+  the plates' logic, and they had drifted: an enemy's bar and name were a different red, a friendly NPC's bar a
+  different blue, your own sample ignored the group colour you set, and a rule whose condition is only spaces
+  applied on the plates but not in the preview. **Test values** and **Preview as if every condition is true** now
+  use the plates' own rule evaluator and base colours, so for the same facts the preview shows what a plate shows.
+  The friendly player sample is you, in your group and PvP-flagged, so its PvP colour goes on the bar or the name
+  as on a plate, and rules on `pvp` and `ingroup` hold for it. A part a rule hides still shows faintly in the
+  preview, so you can select it.
+
 ## 1.2.0
 
 A big feature update: a design for each kind of place, an Enemy players tab, Where plates show, a soft target
@@ -96,6 +589,18 @@ Blueprints that use nothing new start `!PSB3!` and still import into 1.1.1; ones
 - **Studio's colour-blind friendly** follows your plates' colour-blind palette unless you pick On or Off.
 
 ### Fixed
+
+- **A druid in Cat Form is no longer coloured as a tank.** With This character tanks on Adaptive, Cat Form, caster
+  form, Moonkin and Tree of Life now always count as not tanking, even with a specialization the game calls a tank,
+  and they replace an earlier Bear Form at once: in a group that lists you as DPS you get the DPS & healer colours.
+  Bear Form still makes you the tank even when the group finder lists you as DPS or Healer, and a group Tank role
+  still counts first; warriors and paladins still go by Defensive Stance and Righteous Fury. **Always** and **Never**
+  still win over everything.
+- **See whom threat colours colour you as.** Studio's Threat colours and Settings › Threat › Your role now say
+  "Colouring as: Tank (Bear Form)", "DPS (Cat Form)", "DPS (group role)" and so on, with a small legend of what each of that role's
+  colours means (tank: holding, losing it, another tank has it, someone else has it; DPS & healer: safe, pulling,
+  aggro). A threat window's title tooltip says the same, and each row's tooltip adds the legend. `/ps diagnose`
+  reports the role's reason and the same line.
 
 - **Adaptive tank role in group-finder groups.** A bear tank given a DPS or Healer role by the group finder saw
   the mobs it held as LOOSE. What you're doing now (bear form, a tanking stance, Righteous Fury) now counts before

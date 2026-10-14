@@ -86,12 +86,13 @@ function Controls.Label(parent, text, x, y, template)
 end
 
 -- title (text, or a function returning it when shown) plus lines; each line is text or { text, r, g, b }.
+-- title and lines may be functions, read each time the tooltip shows.
 function Controls.AttachTooltip(owner, title, lines)
     local function Show(instance)
         if not GameTooltip then return end
         GameTooltip:SetOwner(instance, "ANCHOR_RIGHT")
         GameTooltip:SetText(type(title) == "function" and title() or title)
-        for _, line in ipairs(lines or {}) do
+        for _, line in ipairs((type(lines) == "function" and lines()) or lines or {}) do
             if type(line) == "table" then
                 GameTooltip:AddLine(line[1], line[2] or 1, line[3] or 0.82, line[4] or 0.45, true)
             else
@@ -339,6 +340,9 @@ end
 -- spec: label, choices (array of { value, label, help, children } or a function returning one),
 -- x, y, width, get, set, name, placeholder, help (adds a "?" button and hover text). A choice's
 -- children (choices too) open beside it; the choice's own value, if any, is set by clicking it.
+-- spec.multi: a multi-select, as Blizzard's own options draw one: get() returns the ticked values
+-- ({ [value] = true }), each choice is a check item that stays open on click and calls set(value, ticked),
+-- and the field reads the ticked choices' labels joined by ", " (spec.placeholder, else "None", when none).
 -- The field starts 16 px right of x and is width + 20 wide (where Blizzard's dropdown drew its
 -- field), so callers keep their coordinates.
 function Controls.Dropdown(parent, spec)
@@ -356,7 +360,26 @@ function Controls.Dropdown(parent, spec)
         end
     end
     local dropdown
+    local function Ticked()
+        local ticked = spec.get()
+        return type(ticked) == "table" and ticked or {}
+    end
+    local function MultiItems(choices)
+        local items, ticked = {}, Ticked()
+        for _, choice in ipairs(choices) do
+            local value = choice.value
+            local item = { text = choice.label, checked = ticked[value] == true, keepOpen = true }
+            if choice.help then item.tooltip = { title = choice.label, text = choice.help } end
+            item.func = function()
+                spec.set(value, Ticked()[value] ~= true)
+                dropdown:Refresh()
+            end
+            items[#items + 1] = item
+        end
+        return items
+    end
     local function Items(choices, current)
+        if spec.multi then return MultiItems(choices) end
         local items = {}
         for _, choice in ipairs(choices) do
             local selected = choice
@@ -389,8 +412,25 @@ function Controls.Dropdown(parent, spec)
             if child then return choice.value == nil and choice or child end
         end
     end
+    -- spec.labelFor(value), when given, names the current value without the choices (a list built on each call
+    -- that a refresh need not build); nil falls back to them.
     function dropdown:Refresh()
+        if spec.labelFor and not spec.multi then
+            local label = spec.labelFor(spec.get())
+            if label then
+                self:SetText(label)
+                return
+            end
+        end
         local choices = Choices()
+        if spec.multi then
+            local ticked, labels = Ticked(), {}
+            for _, choice in ipairs(choices) do
+                if ticked[choice.value] == true then labels[#labels + 1] = choice.label end
+            end
+            self:SetText(#labels > 0 and table.concat(labels, ", ") or spec.placeholder or L["None"])
+            return
+        end
         local found = Find(choices, spec.get())
         self:SetText(found and found.label or spec.placeholder or (choices[1] and choices[1].label) or "")
     end

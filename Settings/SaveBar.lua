@@ -56,8 +56,11 @@ function SaveBar.Create(parent, makeButton)
     end)
     save:HookScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
     revert:SetScript("OnClick", function()
+        local Options = PS.Options
+        local refreshes = Options and Options.refreshes
         Profiles.Revert()
-        if PS.Options then PS.Options:Refresh() end
+        -- Open, Studio has redrawn the load already (its profile listener refreshes every control): not twice.
+        if Options and Options.refreshes == refreshes then Options:Refresh() end
     end)
     bar:SetScript("OnShow", function(owner) owner:Refresh() end)
     -- A hidden bar skips profile changes; its OnShow refreshes it.

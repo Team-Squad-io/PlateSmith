@@ -139,11 +139,12 @@ function Conflicts.Notice(found, mode)
     local names = Conflicts.JoinNames(labels)
     local own = mode == "own"
     local notice = { key = Conflicts.SetKey(found), own = own, disable = removable,
-        title = L["Another nameplate addon is running"], hint = L["Change later: /ps mode"],
+        title = L["Another nameplate addon is running"], hint = L["Change later in Studio: Who draws the plates"],
         keep = own and L["Close"] or L["Keep overlay"] }
     if own then
-        notice.body = string.format(L["PlateSmith found %s. PlateSmith is set to draw its own plates (/ps mode own), "
-            .. "so you may see two sets of plates. Disable %s and reload, or use /ps mode auto."], names, names)
+        notice.body = string.format(L["PlateSmith found %s. PlateSmith is set to draw its own plates (Who draws the "
+            .. "plates: PlateSmith), so you may see two sets of plates. Disable %s and reload, or set Who draws the "
+            .. "plates to Automatic."], names, names)
     else
         notice.body = string.format(L["PlateSmith found %s. PlateSmith is running as a light overlay on its plates "
             .. "(quest markers and threat), so you don't see two sets of plates. To use PlateSmith's own plates, "

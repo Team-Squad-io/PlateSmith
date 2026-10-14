@@ -14,11 +14,24 @@ local state = {}
 
 local function Settings() return type(PS.GetSettings) == "function" and PS.GetSettings() or nil end
 
--- The design the marks are about: the open one, or for Enemy players their layer (the Enemies'
--- "players" design, marked against the Enemies' World).
+-- The design the marks are about: the open one, for Enemy players their layer (the Enemies'
+-- "players" design, marked against the Enemies' World), or for an object type its layer (the Objects'
+-- "<type>" design, marked against All objects: the open place's design).
 local function MarkDesign(self)
     if self.editorProfile == "enemyPlayer" then return "enemy", Designs.PLAYERS end
+    local objectType = self.EditorObjectType and self:EditorObjectType()
+    if objectType then return self.editorProfile, objectType end
     return self.editorProfile, self.editorDesign or "world"
+end
+
+-- What a mark's "World" is: the Enemies' World for Enemy players, the open place's design for an object type, else
+-- the plate type's World.
+local function BaseTarget(self)
+    local plateType, design = MarkDesign(self)
+    if Designs.TYPE_SET[design] and (self.editorDesign or "world") ~= "world" then
+        return plateType .. "@" .. self.editorDesign
+    end
+    return plateType
 end
 
 -- The open design's changed areas (here; nil on World), and on World every stored design's (others:
@@ -39,11 +52,19 @@ function Options:EditorChangedAreas()
                     areas = Designs.ChangedAreas(db, plateType, entry.context) }
             end
         end
+        -- On All objects: what each object type changes too.
+        for _, objectType in ipairs(plateType == Designs.TYPED and Designs.TYPES or {}) do
+            if Designs.Record(db, plateType, objectType) then
+                state.others[#state.others + 1] = { context = objectType,
+                    areas = Designs.ChangedAreas(db, plateType, objectType) }
+            end
+        end
     end
     self.editorMarkBuilds = self.editorMarkBuilds + 1
-    -- Enemy players reset to what the Enemies have.
+    -- Enemy players reset to what the Enemies have, an object type to All objects.
     if self.editorMarkConfig then
-        self.editorMarkConfig.resetLabel = design == Designs.PLAYERS and L["Reset to Enemies"] or L["Reset to World"]
+        self.editorMarkConfig.resetLabel = design == Designs.PLAYERS and L["Reset to Enemies"]
+            or Designs.TYPE_SET[design] and L["Reset to All objects"] or L["Reset to World"]
     end
     return state
 end
@@ -57,7 +78,7 @@ end
 -- changed-here mark. While a design other than World is open (or Enemy players), a note under its row
 -- (rows: under a block of them) says it changes every design. shown: the row's own visibility.
 function Options:EditorSharedNoteShown()
-    return self.editorProfile == "enemyPlayer" or (self.editorDesign or "world") ~= "world"
+    return self.editorProfile == "enemyPlayer" or (self.editorDesign or "world") ~= "world" or self:EditorObjectType() ~= nil
 end
 
 function Options.SharedSettingNote(K, section, shown, rows)
@@ -70,10 +91,26 @@ function Options.SharedSettingNote(K, section, shown, rows)
     return note
 end
 
--- An entry area of key in the open view's layout (sub: placement, eye, presence or label).
+-- An area made once and kept (memo[key]), read only: every refresh asks each mark for its area.
+local function Kept(memo, key, kind, sub, field)
+    local area = memo[key]
+    if not area then
+        area = { kind = kind, key = key, sub = sub, field = field }
+        memo[key] = area
+    end
+    return area
+end
+local entryAreas = {}
+
+-- An entry area of key in the open view's layout (sub: placement, eye, presence or label). Read only.
 function Options:EditorEntryArea(key, sub)
     if not key then return nil end
-    return { kind = "entry", key = key, sub = sub, field = self:EditorMarkField() }
+    local field = self:EditorMarkField()
+    local byField = entryAreas[field] or {}
+    entryAreas[field] = byField
+    local bySub = byField[sub or false] or {}
+    byField[sub or false] = bySub
+    return Kept(bySub, key, "entry", sub, field)
 end
 
 local function EntryMarks(areas, area)
@@ -148,9 +185,9 @@ local function Describe(value)
     return L["its own"]
 end
 
--- What World has for area (for Enemy players, the Enemies' World).
+-- What World has for area (for Enemy players, the Enemies' World; for an object type, All objects here).
 local function WorldText(self, area)
-    local world = PS.GetPlateProfileSettings((MarkDesign(self)))
+    local world = PS.GetPlateProfileSettings(BaseTarget(self))
     if type(world) ~= "table" then return L["default"] end
     local kind, key, sub = area.kind, area.key, area.sub
     if kind == "option" then
@@ -189,11 +226,14 @@ function Options:EditorMarkTip(area)
         if self.editorProfile == "enemyPlayer" then
             return { string.format(L["Changed here (Enemies: %s)"], WorldText(self, area)) }
         end
+        if Designs.TYPE_SET[marks.design] then
+            return { string.format(L["Changed here (All objects: %s)"], WorldText(self, area)) }
+        end
         return { string.format(L["Changed here (World: %s)"], WorldText(self, area)) }
     end
     local labels = {}
     for _, other in ipairs(marks.others) do
-        if Has(other.areas, area) then labels[#labels + 1] = Designs.LABELS[other.context] end
+        if Has(other.areas, area) then labels[#labels + 1] = Designs.LABELS[other.context] or Designs.TYPE_LABELS[other.context] end
     end
     if #labels == 0 then return nil end
     return { string.format(L["Also changed in: %s"], table.concat(labels, ", ")) }
@@ -229,15 +269,22 @@ local function Selected() return Options.editorSelectedGroup or Options.selected
 Options.editorMarkAreas = {
     Option = function(key) return { kind = "option", key = key } end,
     Aura = function(kind, field) return { kind = "aura", key = kind, sub = field } end,
-    Style = function(field) return function()
-        local key = Options.selectedComponent
-        return key and { kind = "style", key = key, sub = field } or nil
-    end end,
+    -- Kept per part (Kept): the same area each time a mark asks.
+    Style = function(field)
+        local memo = {}
+        return function()
+            local key = Options.selectedComponent
+            return key and Kept(memo, key, "style", field) or nil
+        end
+    end,
     Entry = function(sub) return function() return Options:EditorEntryArea(Selected(), sub) end end,
-    Part = function(kind) return function()
-        local key = Options.selectedComponent
-        return key and { kind = kind, key = key } or nil
-    end end,
+    Part = function(kind)
+        local memo = {}
+        return function()
+            local key = Options.selectedComponent
+            return key and Kept(memo, key, kind) or nil
+        end
+    end,
 }
 
 -- The kit's config.marks (Inspector's kit).

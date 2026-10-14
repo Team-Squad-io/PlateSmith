@@ -16,6 +16,9 @@ local PLACE_HEADERS = { world = L["World"], dungeon = L["Dungeons & raids"], pvp
     city = L["Cities & inns"], inCombat = L["In combat"], noCombat = L["Out of combat"] }
 -- Said under the grid and in the eye's tooltip on the Enemy players tab.
 local ENEMY_PLAYERS_NOTE = L["Enemy players show and hide with the Enemies row: Blizzard has one switch for every enemy plate."]
+-- Objects have no row: the game has no switch for object plates, so where they show is the game's.
+local OBJECTS_NOTE = L["Objects show wherever the game gives them a plate: the game has no switch for object plates, "
+    .. "so they have no row here."]
 -- The grid's label column and the header's height.
 local GRID_LABEL_W, HEADER_H = 128, 40
 -- The eye's icon (the tree's, 26 wide) and its count's colours.
@@ -54,14 +57,17 @@ local function CombatValue(inCombat, noCombat)
     return "never"
 end
 
+-- A plate type without switches of its own (Objects follow the game) always reads as shown.
 local function Get(plateType, column)
     local keys, settings = V.keys[RowType(plateType)], Settings()
+    if not (keys and settings) then return true end
     if column == "inCombat" or column == "noCombat" then return CombatHas(settings[keys.combat], column) end
     return settings[keys[column]] ~= false
 end
 
 local function Set(plateType, column, on)
     local keys, settings = V.keys[RowType(plateType)], Settings()
+    if not keys then return false end
     local ok
     if column == "inCombat" or column == "noCombat" then
         local inCombat, noCombat = Get(plateType, "inCombat"), Get(plateType, "noCombat")
@@ -83,7 +89,7 @@ end
 local function HiddenPlaces(plateType, settings)
     local hidden, keys = {}, V.keys[RowType(plateType)]
     for _, place in ipairs(V.PLACES) do
-        if settings and settings[keys[place]] == false then hidden[#hidden + 1] = place end
+        if keys and settings and settings[keys[place]] == false then hidden[#hidden + 1] = place end
     end
     return hidden
 end
@@ -99,7 +105,7 @@ function Options:PlateVisibilityShownText(plateType, settings)
     settings = settings or Settings()
     local keys, shown = V.keys[RowType(plateType or self.editorProfile)], {}
     for _, place in ipairs(V.PLACES) do
-        if not (settings and settings[keys[place]] == false) then shown[#shown + 1] = PLACE_HEADERS[place] end
+        if not (keys and settings and settings[keys[place]] == false) then shown[#shown + 1] = PLACE_HEADERS[place] end
     end
     if #shown == 0 then return L["Shown nowhere."] end
     return string.format(L["Shown in: %s"], table.concat(shown, ", "))
@@ -217,16 +223,56 @@ function Options.BuildPlateVisibilitySettings(SK, section, Bind)
         .. "switches, and shows them again when you leave. Friendly plates in dungeons & raids are Blizzard's: they can be "
         .. "shown or hidden here, but PlateSmith does not draw them."]))
     SK.Add(section, SK.Help(section, ENEMY_PLAYERS_NOTE))
+    SK.Add(section, SK.Help(section, OBJECTS_NOTE))
     local sharedNote = SK.Help(section, L["This game client has one switch for all friendly plates, so Players and "
         .. "Friendly NPCs show and hide together (the Friendly row)."])
     SK.Add(section, sharedNote, Visibility.FriendlyShared)
+    -- A plate type whose game switch is off (not by PlateSmith) shows nowhere, whatever is ticked: these switches
+    -- only turn it off, so the way to turn it on is the game's own option.
+    local gameOff = {}
+    for _, plateType in ipairs(V.TYPES) do
+        local note = SK.Help(section, "")
+        gameOff[plateType] = note
+        SK.Add(section, note, function() return RowType(plateType) == plateType and Visibility.GameHides(plateType) end)
+    end
+    Options.editorPlateVisibilityGameOff = gameOff
     -- The labels follow the client (Friendly when the switch is shared).
     Options.RegisterControl({ Refresh = function()
         for _, row in ipairs(rows) do
             if row.label then row.label:SetText(PlateLabel(row.plateType)) end
         end
+        for plateType, note in pairs(gameOff) do
+            note.text:SetText(string.format(L["%s: the game's own switch for these plates is off, so they show nowhere, "
+                .. "whatever is ticked here. Turn it on in the game's Options › Nameplates; PlateSmith only turns it off "
+                .. "where you untick a place."], PlateLabel(plateType)))
+        end
     end })
     return section
+end
+
+-- Plate settings › Friendly plates › Show in (Inspector builds the section): the open plate type's row of the
+-- grid as a box per kind of place, reading and writing the same settings (Get, Set). Returns the first row.
+function Options.BuildPlateShowIn(K, section, label, help)
+    local first
+    for index, place in ipairs(V.PLACES) do
+        local row, checkbox = K.CheckRow(section, index == 1 and label or nil, {
+            text = PLACE_HEADERS[place], name = WidgetName("editor_showIn_" .. place, "Checkbox"),
+            get = function() return Get(Options.editorProfile, place) end,
+            set = function(on) return Set(Options.editorProfile, place, on) end,
+        })
+        K.Add(section, row)
+        if index == 1 then
+            first = row
+            K.AttachHelp(row, help)
+        end
+        Options.RegisterControl(checkbox)
+        Options.editorShowInChecks = Options.editorShowInChecks or {}
+        Options.editorShowInChecks[place] = checkbox
+    end
+    K.Add(section, K.Help(section, L["Also in Settings › Where plates show."]))
+    K.Add(section, K.Help(section, L["Shared with Players: this game client has one switch for every friendly plate."]),
+        function() return Options.editorProfile == "friendlyNPC" and Visibility.FriendlyShared() end)
+    return first
 end
 
 -- The eye's look: open while every place shows the plates, half while some do, shut while none do.
@@ -272,6 +318,7 @@ function Options:RefreshPlateVisibilityEye(settings)
     eye:SetWidth(EYE_ICON + 3 + math.ceil(eye.count:GetStringWidth()) + 2)
     eye.tip[1] = { self:PlateVisibilityShownText(self.editorProfile, settings), 1, 1, 1 }
     -- Enemy players have no switch of their own.
-    eye.tip[3] = self.editorProfile == "enemyPlayer" and ENEMY_PLAYERS_NOTE or nil
+    eye.tip[3] = self.editorProfile == "enemyPlayer" and ENEMY_PLAYERS_NOTE
+        or self.editorProfile == "object" and OBJECTS_NOTE or nil
     PaintEye(eye)
 end

@@ -373,6 +373,74 @@ function Geometry.Group(rects, start)
     return group
 end
 
+-- Where rect goes when the window it shares an edge with moves from old to new (rectangles): it keeps its own size
+-- and stays on that edge. Beside it, it keeps its offset from that window's top; stacked, from its left; either
+-- way still overlapping along the edge (else lined up with its top or left). Returns left and top, or nil when
+-- rect shares no edge with old.
+function Geometry.FollowEdge(old, new, rect, tolerance)
+    tolerance = tolerance or Geometry.TOUCH_TOLERANCE
+    local width, height = rect.right - rect.left, rect.top - rect.bottom
+    local alongY = Overlaps(rect.bottom, rect.top, old.bottom, old.top, -tolerance)
+    local alongX = Overlaps(rect.left, rect.right, old.left, old.right, -tolerance)
+    local left, top
+    if alongY and math.abs(rect.left - old.right) <= tolerance then
+        left = new.right
+    elseif alongY and math.abs(rect.right - old.left) <= tolerance then
+        left = new.left - width
+    end
+    if left then
+        top = rect.top + new.top - old.top
+        if not Overlaps(top - height, top, new.bottom, new.top, 0) then top = new.top end
+        return left, top
+    end
+    if alongX and math.abs(rect.top - old.bottom) <= tolerance then
+        top = new.bottom
+    elseif alongX and math.abs(rect.bottom - old.top) <= tolerance then
+        top = new.top + height
+    end
+    if not top then return nil end
+    left = rect.left + new.left - old.left
+    if not Overlaps(left, left + width, new.left, new.right, 0) then left = new.left end
+    return left, top
+end
+
+-- The windows joined to rects[start] through shared edges, carried along when it moves or resizes to moved: each
+-- follows the window it rests on (FollowEdge), nearest first. A key in fixed holds still, and so does whatever rests
+-- only on it. Fills into (cleared; optional) with key -> new rectangle for each window that moves, start left out.
+function Geometry.FollowGroup(rects, start, moved, fixed, into)
+    local placed = into or {}
+    for key in pairs(placed) do placed[key] = nil end
+    local keys = {}
+    for key in pairs(rects) do keys[#keys + 1] = key end
+    table.sort(keys, function(a, b)
+        if type(a) == type(b) then return a < b end
+        return tostring(a) < tostring(b)
+    end)
+    local seen, queue, after = { [start] = true }, { start }, { [start] = moved }
+    local index = 1
+    while queue[index] do
+        local parentKey = queue[index]
+        local old, new = rects[parentKey], after[parentKey]
+        for _, key in ipairs(keys) do
+            local rect = rects[key]
+            if not seen[key] and Geometry.Touching(old, rect) then
+                seen[key] = true
+                queue[#queue + 1] = key
+                local left, top
+                if not (fixed and fixed[key]) then left, top = Geometry.FollowEdge(old, new, rect) end
+                if left and (left ~= rect.left or top ~= rect.top) then
+                    after[key] = Geometry.Rect(left, top, rect.right - rect.left, rect.top - rect.bottom)
+                    placed[key] = after[key]
+                else
+                    after[key] = rect
+                end
+            end
+        end
+        index = index + 1
+    end
+    return placed
+end
+
 -- Our window beside a Blizzard meter window (or the window before it in a chain of followers):
 -- anchor is that rectangle already in UIParent units. Sides: right and left sit level with its
 -- top (the titles line up) and take span as the height; above and below take span as the width.

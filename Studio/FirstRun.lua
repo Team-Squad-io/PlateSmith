@@ -16,7 +16,7 @@ local PANEL = { width = 1060, height = 720, cardWidth = 236, gap = 16, top = 144
 local SKETCH = { scale = 1.2, height = 68, inset = 8, health = 0.72, cast = 0.6 }
 -- A role card's threat colour sample: a bar per state, straight on the card.
 local SAMPLE = { top = 108, height = 120, row = 26, bar = 64, barHeight = 13 }
--- The look step 2 starts on when the role suggests none (PlateSmith's own defaults).
+-- The look step 2 starts on when the role suggests none (PlateSmith's own look).
 local DEFAULT_LOOK = "platesmith"
 local STEPS = 2
 local SETS_ON = L["Colour by threat: On"]
@@ -79,7 +79,7 @@ local function SuggestedLook(id)
     return role and role.look or DEFAULT_LOOK
 end
 
--- A visible text custom part on the health bar (Sleek's health %, Tank's boxed lead), or nil.
+-- A visible text custom part on the health bar (Sleek's health %, Tank's threat lead), or nil.
 local function BarValue(profile)
     for index = 1, 8 do
         local key = "value" .. index
@@ -135,8 +135,11 @@ local function DrawSketch(box, settings)
     castBack:SetPoint("TOPLEFT", cast, "TOPLEFT", 0, 0)
     castBack:SetSize(width, castHeight)
 
+    -- The texts at the plate's own sizes (the name's style Font size first) at the sketch's scale: the looks'
+    -- Enemies plates are their sketches (1.3.0), so the sketch draws what the plate draws.
+    local function Scaled(points) return math.max(9, math.floor(points * k + 0.5)) end
     local name = bar:CreateFontString(nil, "OVERLAY")
-    local size = math.max(9, math.floor(profile.nameFontSize * k * 0.82 + 0.5))
+    local size = Scaled(nameStyle.fontSize or profile.nameFontSize)
     local flags = OUTLINES[nameStyle.outline or "outline"] or "OUTLINE"
     name:SetFont(Media.FontPath(nameStyle.font) or Options.studioChrome.FONT, size, flags)
     name:SetText(L["Defias Pillager"])
@@ -147,8 +150,9 @@ local function DrawSketch(box, settings)
     end
     local layout = profile.layout
     local namePlace, levelPlace = layout.name or {}, layout.level or {}
+    local levelStyle = styles.level or {}
     local level = bar:CreateFontString(nil, "OVERLAY")
-    level:SetFont(Options.studioChrome.FONT, math.max(9, size - 2), flags)
+    level:SetFont(Options.studioChrome.FONT, levelStyle.fontSize and Scaled(levelStyle.fontSize) or math.max(9, size - 2), flags)
     level:SetText("60")
     level:SetTextColor(1, 0.82, 0)
     local levelShown = levelPlace.visible ~= false and not levelPlace.removed
@@ -160,6 +164,9 @@ local function DrawSketch(box, settings)
     elseif namePlace.parent == "level" and levelShown then
         level:SetPoint("BOTTOMLEFT", bar, "TOPLEFT", 2, 3)
         name:SetPoint("LEFT", level, "RIGHT", 3, 0)
+    elseif namePlace.parent == "health" and namePlace.attach == "top" then
+        -- Pinned over the bar: the pin's gap at the sketch's scale.
+        name:SetPoint("BOTTOM", bar, "TOP", 0, math.floor((namePlace.y or 0) * k + 0.5))
     else
         name:SetPoint("BOTTOM", bar, "TOP", 0, 3 + math.floor((namePlace.y or 19) / 8))
     end
@@ -171,8 +178,10 @@ local function DrawSketch(box, settings)
     end
 
     local valueKey, valuePlace = BarValue(profile)
+    local valueSlot = valueKey and profile.valueSlots[valueKey]
     local value = bar:CreateFontString(nil, "OVERLAY")
-    value:SetFont(Options.studioChrome.FONT, math.max(9, math.floor(size * 0.8)), "OUTLINE")
+    value:SetFont(Options.studioChrome.FONT, valueSlot and valueSlot.fontSize and Scaled(valueSlot.fontSize)
+        or math.max(9, math.floor(size * 0.8)), "OUTLINE")
     value:SetText("72%")
     value:SetShown(valueKey ~= nil)
     if valuePlace and valuePlace.attach == "right" then
@@ -182,12 +191,11 @@ local function DrawSketch(box, settings)
         value:SetPoint("RIGHT", bar, "RIGHT", -3, 0)
     end
     -- A rounded level box: Blizzard's art behind the level (Blizzard's look).
-    local levelStyle = styles.level or {}
     local levelBox
     if levelShown and levelStyle.box and levelStyle.boxShape == "rounded" then
         levelBox = CreateFrame("Frame", nil, bar)
-        levelBox:SetPoint("TOPLEFT", level, "TOPLEFT", -3, 3)
-        levelBox:SetPoint("BOTTOMRIGHT", level, "BOTTOMRIGHT", 3, -3)
+        -- As tall as the bar where the look's box matches it (boxHeight), as the plates place it.
+        PS.StyleBox.Place(levelBox, level, { padding = 3, boxHeight = levelStyle.boxHeight }, bar, border)
         PS.StyleBox.Rounded(levelBox, true)
         -- The digits on the box's own frame, so the art (its background) stays under them.
         level:SetParent(levelBox)
@@ -401,7 +409,7 @@ local function BuildPicker(options)
     for index, role in ipairs(ROLES) do picker.roleCards[index] = CreateRoleCard(picker.rolePage, role, index) end
     local later = Text(picker.rolePage, 12, { 0.62, 0.60, 0.56 })
     later:SetPoint("TOP", picker.rolePage, "TOP", 0, -(PANEL.top + PANEL.roleHeight + 22))
-    later:SetText(L["Change both later in Settings › Behaviour & display › Threat colours."])
+    later:SetText(L["Change both later in Settings › Modules › Threat."])
     picker.roleLater = later
 
     -- Step 2: the look cards.
@@ -439,9 +447,7 @@ local function BuildPicker(options)
     -- stays open); every other key passes on. In combat the key cannot be kept: Escape closes Studio
     -- with it, and OnHide counts that as Skip.
     picker:SetScript("OnKeyDown", function(owner, key)
-        local keep = key == "ESCAPE"
-        if owner.SetPropagateKeyboardInput then pcall(owner.SetPropagateKeyboardInput, owner, not keep) end
-        if keep then Options:FinishFirstRun("escape") end
+        if PS.UI.Window.KeepKey(owner, key == "ESCAPE") then Options:FinishFirstRun("escape") end
     end)
     picker:SetScript("OnHide", function(owner)
         if owner.EnableKeyboard then pcall(owner.EnableKeyboard, owner, false) end
@@ -469,7 +475,7 @@ function Options:ShowFirstRunIfPending()
     picker.message:SetText("")
     UpdatePicker(picker)
     picker:Show()
-    if picker.EnableKeyboard and not PS.Secret.InCombat() then pcall(picker.EnableKeyboard, picker, true) end
+    PS.UI.Window.TakeKeyboard(picker, true)
     return true
 end
 

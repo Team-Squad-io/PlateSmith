@@ -15,16 +15,26 @@ Summary.sectionOrder = { "context", "restrictions", "settings", "target", "raid"
 local colours = { problem = "|cffff5a4a", limited = "|cffffc94a", heading = "|cff60d4ff", muted = "|cff9a9a9a" }
 local function Colour(kind, text) return colours[kind] .. text .. "|r" end
 
+-- Reports repeat the same few words ("readable", "none"...), so each string's answer is kept;
+-- the table is emptied when it grows past SEVERITY_CACHE_LIMIT (false: no severity).
+local SEVERITY_CACHE_LIMIT = 4000
+local severityCache, severityCached = {}, 0
 local function Severity(value)
     if type(value) ~= "string" then return nil end
-    local lowered = value:lower()
+    local known = severityCache[value]
+    if known ~= nil then return known or nil end
+    local lowered, found = value:lower(), false
     for _, pattern in ipairs(Summary.problemStates) do
-        if lowered:find(pattern) then return "problem" end
+        if lowered:find(pattern) then found = "problem" break end
     end
-    for _, pattern in ipairs(Summary.limitedStates) do
-        if lowered:find(pattern) then return "limited" end
+    if not found then
+        for _, pattern in ipairs(Summary.limitedStates) do
+            if lowered:find(pattern) then found = "limited" break end
+        end
     end
-    return nil
+    if severityCached >= SEVERITY_CACHE_LIMIT then severityCache, severityCached = {}, 0 end
+    severityCache[value], severityCached = found, severityCached + 1
+    return found or nil
 end
 -- "problem", "limited" or nil for a report value (the Details view marks rows with it).
 Summary.Severity = Severity
@@ -124,7 +134,7 @@ Summary.tickBudgetMs, Summary.frameBudgetMs, Summary.maxProblems = TICK_BUDGET_M
 -- Report paths a named check below already explains; the generic walk skips them.
 local EXPLAINED = { "^questProviders", "^protectedAction", "^dungeonFriendlyOverlay", "^target%.debuffs%.nativeContainerError",
     "^target%.buffs%.nativeContainerError", "^target%.%a+%.container%.", "^conflicts", "^addons", "^modules",
-    "^stacking%.originals" }
+    "^stacking%.originals", "^nameplateCVars" }
 
 local function Field(value, ...)
     for index = 1, select("#", ...) do
@@ -291,12 +301,28 @@ local function TargetText(target)
     return string.format(L["Target: %s %s · %s · %s"], side, who, layout, highlightText)
 end
 
+-- How many of Blizzard's stacking settings PlateSmith sets (a capture from before 1.3.0 says only
+-- whether it managed them all).
+local function StackingOwned(stacking)
+    local owned = Field(stacking, "owned")
+    if type(owned) == "number" then return owned end
+    return Field(stacking, "managed") == true and 1 or 0
+end
+
 -- nil for a report without a stacking section (a capture from an older build).
 local function StackingText(stacking)
     if type(stacking) ~= "table" then return nil end
     if stacking.state then return string.format(L["Stacking: %s"], Text(stacking.state)) end
-    if stacking.managed ~= true then return L["Stacking: not managed"] end
-    local text = string.format(L["Stacking: managed, preset %s"], Text(stacking.preset))
+    local owned = stacking.owned
+    local text
+    if type(owned) ~= "number" then
+        text = string.format(L["Stacking: preset %s"], Text(stacking.preset))
+    elseif owned == 0 then
+        text = L["Stacking: all the game's own settings"]
+    else
+        text = string.format(owned == 1 and L["Stacking: PlateSmith sets %d setting, preset %s"]
+            or L["Stacking: PlateSmith sets %d settings, preset %s"], owned, Text(stacking.preset))
+    end
     if Field(stacking, "options", "combatStacking") == true then
         text = string.format(L["%s · combat stacking %s"], text, Text(stacking.combatSwitch))
     end
@@ -346,9 +372,9 @@ function Summary.Problems(report, extras)
         local ok, live = pcall(PS.Stacking.Report)
         stacking = ok and live or nil
     end
-    if Field(stacking, "managed") == true and Field(stacking, "originals") == "missing" then
-        Add(L["Stacking is managed, but PlateSmith has no record of your earlier stacking settings; turning "
-            .. "management off restores Blizzard's defaults."])
+    if StackingOwned(stacking) > 0 and Field(stacking, "originals") == "missing" then
+        Add(L["PlateSmith has no record of your earlier stacking settings; a setting given back to the game in "
+            .. "Stacking & distance goes to Blizzard's default."])
     end
     local conflictNames, conflictCount = ConflictNames(report)
     if conflictCount >= 2 then
