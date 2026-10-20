@@ -1,7 +1,8 @@
 -- Cultivation, the Tauren racial on Forever (spell 20552): it grows a duplicate of a nearby herb that you can harvest
--- without Herbalism, once per herb, on a cooldown of about an hour. What Objects plates read from it: whether you know
--- it, whether it is ready (the spell's own cooldown), and the herbs you cultivated, by their GUID (a node that respawns
--- has a new GUID, so it is ready again). Readable answers only; anything else is unknown. The plate side (events and a
+-- without Herbalism, once per herb, on the spell's own cooldown (an hour at first, 15 minutes since a Forever patch:
+-- nothing here assumes its length). What Objects plates read from it: whether you know it, whether it is ready (the
+-- spell's own cooldown), and the herbs you cultivated, by their GUID (a node that respawns has a new GUID, so it is
+-- ready again). Readable answers only; anything else is unknown. The plate side (events and a
 -- slow ticker entry while herb plates are up) is ObjectStatus' (Nameplates/ObjectStatus.lua).
 local _, PS = ...
 local Secret = assert(PS.Secret, "PlateSmith Secret missing")
@@ -20,7 +21,7 @@ Cultivation.LIMIT = 32
 -- SPELL_UPDATE_COOLDOWN, which comes with every global cooldown, only while a herb plate is up too).
 Cultivation.KNOWN_EVENT = "SPELLS_CHANGED"
 Cultivation.EVENTS = { "SPELL_UPDATE_COOLDOWN", "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_SUCCEEDED",
-    "UNIT_SPELLCAST_CHANNEL_UPDATE", "UNIT_SPELLCAST_CHANNEL_STOP" }
+    "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_CHANNEL_UPDATE", "UNIT_SPELLCAST_CHANNEL_STOP" }
 -- A herb needs this much Herbalism per level of yours: a herb of skill 150 needs level 30, one of 300 level 60.
 Cultivation.SKILL_PER_LEVEL = 5
 -- The units whose game object a cast is aimed at, in order: the interaction target, then the hovered object.
@@ -75,7 +76,9 @@ end
 local marks, order = {}, {}
 Cultivation._marks = marks
 
+local Settle
 function Cultivation.Cultivated(guid)
+    Settle()
     return guid ~= nil and marks[guid] == true
 end
 
@@ -99,11 +102,15 @@ end
 local pending
 function Cultivation.Aim() pending = AimedGUID() end
 
--- Cultivation is channelled on Forever: UNIT_SPELLCAST_SUCCEEDED comes as the channel starts, so the herb is marked
--- only when the channel runs to its end (CHANNEL_STOP at or after its end time); stopping it early marks nothing.
--- channel: { guid, ends } (ends: GetTime seconds) while your Cultivation channels, else nil.
-local channel
+-- Cultivation is channelled on Forever: UNIT_SPELLCAST_SUCCEEDED comes as the channel starts, before
+-- UNIT_SPELLCAST_CHANNEL_START (so the channel may not be readable yet), and the herb is marked only when the channel
+-- runs to its end (CHANNEL_STOP at or after its end time); stopping it early marks nothing.
+-- channel: { guid, ends } (ends: GetTime seconds, nil while unreadable) while your Cultivation channels, else nil.
+-- held: { guid, at } after a success with no channel yet: CHANNEL_START makes it the channel; with none within HOLD
+-- seconds it was a plain cast and the herb is marked then (Settle).
+local channel, held
 local CHANNEL_SLACK = 0.25
+Cultivation.HOLD = 1
 
 -- The player's Cultivation channel end time (GetTime seconds), or nil when not channelling it or unreadable.
 local function ChannelEnds()
@@ -114,16 +121,35 @@ local function ChannelEnds()
     return endMS and endMS / 1000 or nil
 end
 
--- It succeeded (UNIT_SPELLCAST_SUCCEEDED): a channel starts waiting for its end; a plain cast marks at once.
--- True when the herb was marked now.
+local function Now() return type(GetTime) == "function" and Number(GetTime()) or nil end
+
+-- Whether a finished cast went through, by the spell's own cooldown: false when it is known not to be cooling down
+-- (a cancelled or failed cast starts none), else true (cooling down, or unknown: then the channel's end time decides).
+local function WentThrough()
+    local remaining = Cultivation.Remaining()
+    return not (remaining ~= nil and remaining <= 0)
+end
+
+-- It succeeded (UNIT_SPELLCAST_SUCCEEDED): a channel already readable waits for its end; otherwise the success is
+-- held for CHANNEL_START (ChannelStarted). Never marks at once, so a channel stopped early marks nothing.
 function Cultivation.Succeeded()
-    local ends = ChannelEnds()
+    local guid, ends = pending or AimedGUID(), ChannelEnds()
+    pending = nil
     if ends then
-        channel = { guid = pending or AimedGUID(), ends = ends }
-        pending = nil
-        return false
+        channel, held = { guid = guid, ends = ends }, nil
+    else
+        held = { guid = guid, at = Now() or 0 }
     end
-    return Cultivation.Mark() ~= nil
+    return false
+end
+
+-- The channel started (UNIT_SPELLCAST_CHANNEL_START): the held success's herb waits for its end.
+function Cultivation.ChannelStarted()
+    local guid = held and held.guid or (channel and channel.guid)
+    held = nil
+    if guid == nil then guid = pending or AimedGUID() end
+    pending = nil
+    channel = { guid = guid, ends = ChannelEnds() }
 end
 
 -- The channel was pushed back (UNIT_SPELLCAST_CHANNEL_UPDATE): its new end.
@@ -131,15 +157,28 @@ function Cultivation.ChannelUpdated()
     if channel then channel.ends = ChannelEnds() or channel.ends end
 end
 
--- The channel stopped (UNIT_SPELLCAST_CHANNEL_STOP): marked only if it ran to its end. True when marked.
+-- The channel stopped (UNIT_SPELLCAST_CHANNEL_STOP): marked only if it ran to its known end (an unreadable end marks
+-- nothing) and the spell is cooling down (WentThrough). True when marked.
 function Cultivation.ChannelStopped(now)
     local current = channel
-    channel = nil
-    if not current then return false end
-    now = now or (type(GetTime) == "function" and GetTime()) or 0
-    if now + CHANNEL_SLACK < current.ends then return false end
+    channel, held = nil, nil
+    if not (current and current.ends) then return false end
+    now = now or Now() or 0
+    if now + CHANNEL_SLACK < current.ends or not WentThrough() then return false end
     return Cultivation.Mark(current.guid) ~= nil
 end
+
+-- A held success with no channel after HOLD seconds was a plain cast: its herb is marked now if the spell is cooling
+-- down (WentThrough). True when marked.
+Settle = function(now)
+    if not held then return false end
+    now = now or Now()
+    if not (now and now >= held.at + Cultivation.HOLD) then return false end
+    local guid = held.guid
+    held = nil
+    return guid ~= nil and WentThrough() and Cultivation.Mark(guid) ~= nil
+end
+Cultivation.Settle = Settle
 
 -- Marks that herb as cultivated. The GUID marked, or nil when none was readable.
 function Cultivation.Mark(guid)

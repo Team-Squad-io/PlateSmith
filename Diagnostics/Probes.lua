@@ -574,8 +574,8 @@ PS._CreateDiagnosticProbes = function(context)
                 end
             end
             report.target.plate.shownValues = shownValues
-            local filter = db.debuffSource == "mine" and "HARMFUL|PLAYER" or "HARMFUL"
-            local buffFilter = db.buffSource == "mine" and "HELPFUL|PLAYER" or "HELPFUL"
+            local filter = targetData.profile.debuffSource == "mine" and "HARMFUL|PLAYER" or "HARMFUL"
+            local buffFilter = targetData.profile.buffSource == "mine" and "HELPFUL|PLAYER" or "HELPFUL"
             local buffPosition = targetData.layout.buffs
             local debuffPosition = targetData.layout.debuffs
             local shownBuffIcons, shownDebuffIcons = 0, 0
@@ -585,7 +585,8 @@ PS._CreateDiagnosticProbes = function(context)
                 if debuff and debuff:IsShown() then shownDebuffIcons = shownDebuffIcons + 1 end
             end
             report.target.buffs = {
-                enabled = PS.GetPartShownState("showBuffs") ~= "none", source = db.buffSource, own = targetData.own == true,
+                enabled = PS.GetPartShownState("showBuffs") ~= "none", source = targetData.profile.buffSource,
+                own = targetData.own == true,
                 layout = buffPosition.visible ~= false,
                 position = { x = buffPosition.x, y = buffPosition.y, scale = buffPosition.scale or 1 },
                 rowShown = targetData.buffs:IsShown() == true,
@@ -600,7 +601,8 @@ PS._CreateDiagnosticProbes = function(context)
                     plate = AuraProbe(targetData.unit, buffFilter) },
             }
             report.target.debuffs = {
-                enabled = PS.GetPartShownState("showDebuffs") ~= "none", source = db.debuffSource, own = targetData.own == true,
+                enabled = PS.GetPartShownState("showDebuffs") ~= "none", source = targetData.profile.debuffSource,
+                own = targetData.own == true,
                 layout = debuffPosition.visible ~= false,
                 position = { x = debuffPosition.x, y = debuffPosition.y, scale = debuffPosition.scale or 1 },
                 rowShown = targetData.debuffs:IsShown() == true,

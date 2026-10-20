@@ -72,8 +72,14 @@ function Rules.Resolve(list, read, forced)
 end
 
 -- A colour rule's r, g, b: its colour, or its blend at read's health %; nothing for a protected or missing %.
-function Rules.Colour(rule, read)
+-- A Class colour rule (colourSource "class") asks class(owner) for the unit's class colour: r, g, b and whether
+-- they were picked inside the client (folded: possibly protected, for a setter only); nothing without one.
+function Rules.Colour(rule, read, class, owner)
     if rule.set == "colour" then
+        if rule.colourSource == "class" then
+            if class then return class(owner) end
+            return nil
+        end
         local colour = rule.colour
         if type(colour) == "table" then return colour.r, colour.g, colour.b end
         return nil
@@ -132,6 +138,36 @@ local function LineHeight(text, box)
     local to = Measure(box, "GetEffectiveScale")
     if not (from and to) then return nil end
     return size * textScale * from / to
+end
+
+-- A boxed level keeps a two-digit width, so "9" sits in as wide a box as "60": text (the level's FontString) is
+-- given the width "00" takes in its own font, centred, while content (what was written to it) is readable and at
+-- most two characters; longer, protected or unknown content, or no box (boxed false), keeps its own width. The
+-- width is measured on a hidden ruler of our own text, never on the level's string.
+local ruler
+function StyleBox.MinWidth(text, content, boxed)
+    if not (text and text.SetWidth and text.GetFont) then return end
+    text.plateSmithMinContent = content
+    local width
+    if boxed and PS.Secret.IsReadable(content) and (type(content) == "string" or type(content) == "number") then
+        local plain = tostring(content):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+        if #plain <= 2 and not plain:find("|", 1, true) then
+            local ok, font, size, flags = pcall(text.GetFont, text)
+            if ok and PS.Secret.IsReadable(font) and PS.Secret.IsReadable(size) and font and type(size) == "number" then
+                ruler = ruler or (type(CreateFrame) == "function" and CreateFrame("Frame"):CreateFontString(nil, "OVERLAY"))
+                if ruler and pcall(ruler.SetFont, ruler, font, size, flags) then
+                    ruler:Hide()
+                    ruler:SetText("00")
+                    local measured = Measure(ruler, "GetStringWidth")
+                    width = measured and math.ceil(measured) or nil
+                end
+            end
+        end
+    end
+    if text.plateSmithMinWidth == width then return end
+    text.plateSmithMinWidth = width
+    text:SetWidth(width or 0)
+    if width and text.SetJustifyH then text:SetJustifyH("CENTER") end
 end
 
 -- Places a text's box (the plates' and Studio's preview): Padding round the text; with boxHeight "parent", as tall
@@ -319,6 +355,7 @@ PS._CreatePlateStyles = function(context)
         local box = data.styleBoxes[key]
         local previous = box and box.plateSmithText
         if not (style and style.box and region) then
+            if key == "level" and region then StyleBox.MinWidth(region, region.plateSmithMinContent, false) end
             if box then box:Hide() end
             if previous then previous.plateSmithBox, box.plateSmithText = nil, nil end
             return
@@ -343,6 +380,7 @@ PS._CreatePlateStyles = function(context)
             end
         end
         StyleBox.Place(box, region, style, type(parent) == "table" and parent or nil, parentBorder)
+        if key == "level" then StyleBox.MinWidth(region, region.plateSmithMinContent, true) end
         local rounded = StyleBox.Rounded(box, style.boxShape == "rounded")
         box.fill:SetShown(not rounded)
         for _, line in ipairs(box.edges) do line:SetShown(not rounded) end

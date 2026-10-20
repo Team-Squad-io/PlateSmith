@@ -465,6 +465,38 @@ local function RevealPartStyleRow(entry)
     Flash(frame)
 end
 
+-- A part's control (control(): the control, read once the part is selected and its rows built; Rules › Presets ›
+-- Built in): the part selected, the control's section unfolded, scrolled to its row and flashed.
+function Search.RevealPartControl(key, control)
+    RevealPart({ key = key })
+    local found = control()
+    local row = found and found:GetParent()
+    if not row then return false end
+    Unfold(Options.inspectorKit, row:GetParent())
+    Options:LayoutEditorInspector()
+    local offset = OffsetIn(row, Options.editorComponentContent)
+    local bar = Options.editorComponentScrollBar
+    if offset and bar and bar.ScrollToOffset then bar:ScrollToOffset(math.max(0, offset - REVEAL_MARGIN)) end
+    Flash(row)
+    return true
+end
+
+-- The selected part's rule index (Show rule, under a colour a rule covers): its Rules section unfolded, scrolled to the
+-- rule's card and flashed. False when the part has no such rule.
+function Search.RevealPartRule(position)
+    local section, cards = Options.editorRulesBlock, Options.editorRuleRows
+    if not section or type(position) ~= "number" then return false end
+    Unfold(Options.inspectorKit, section)
+    Options:LayoutEditorInspector()
+    local card = cards and cards[position]
+    local frame = card and card.active and card or section
+    local offset = OffsetIn(frame, Options.editorComponentContent)
+    local bar = Options.editorComponentScrollBar
+    if offset and bar and bar.ScrollToOffset then bar:ScrollToOffset(math.max(0, offset - REVEAL_MARGIN)) end
+    Flash(frame)
+    return frame == card
+end
+
 -- A row of Blizzard's name on Players › Dungeons & raids: Studio opens that design, then the row as a part's.
 local function RevealDungeonNameRow(entry)
     Options:OpenEditorDesign("friendlyPlayer", "dungeon")

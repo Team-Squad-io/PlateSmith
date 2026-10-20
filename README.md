@@ -7,6 +7,20 @@ every plate and lets you shape every part in
 of their own, colour plates by threat, and share your whole setup with one code or a chat link. It needs no
 other addon.
 
+## What's new in 1.3.2
+
+- **Class colours for players**: a Class colour box on the Health bar and Name for Players and Enemy players, and
+  your own class colours in Studio › Settings › **Player colours** (handy if two classes look alike to you)
+- **Choose where a PvP-flagged ally's colour goes**: the health bar, the name or both
+- **Threat colours, Grey when tagged and aura sources per plate type and design**: threat colours on mobs but not
+  enemy players, or everyone's debuffs on enemy players and only yours on mobs
+- **Update a profile to its look's latest version**: a short "what's new" note, then the import review to pick what
+  to take (Save keeps it, Revert undoes it)
+- **Object plates match each look's own plates**, with the Action icon just outside the box
+- **Clearer rule words** (`pvp.flagged = false`, `cast.active`, `unit.elite`...; the old ones still work), rules that
+  can set the class colour, a note when a rule overrides a colour, and a rule reference in Settings › Help
+- Fixes: cancelling Cultivation no longer marks the herb; a one-digit level's box is as wide as a two-digit one
+
 ## What's new in 1.3.0
 
 - **Objects**: herbs, ore, chests, books and quest objects get plates of their own, with the game's icon for what you

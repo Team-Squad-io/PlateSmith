@@ -6,9 +6,10 @@ local L = PS.L
 local WidgetName = model.WidgetName
 
 -- Studio's Threat colours controls (Nameplates/ThreatColours.lua). Settings › Modules › Threat (Settings/ThreatPage.lua)
--- holds them: Your role's fixed-role line and legend, then Threat colours' switch, the shared colours and Apply to,
--- where each part can have its own colours (their swatches show only while it does). The Health bar's and Name's
--- inspectors have the same Apply to box, so it is found from the part too.
+-- holds them: Your role's fixed-role line and legend, then Threat colours' switch (the one for every design), the
+-- shared colours and Apply to, where each part can have its own colours (their swatches show only while it does).
+-- Which parts take them is each design's own: the Health bar's (the bar and its edge) and Name's inspector boxes
+-- (ThreatColourPartCheck); Apply to says where each is on.
 local STATE_LABELS, STATE_HELP = ThreatColours.STATE_LABELS, ThreatColours.STATE_HELP
 local PART_LABELS = { health = L["Health bar"], name = L["Name text"], border = L["Health bar edge"] }
 -- The role a profile can fix (threatColourRole; "auto" follows This character tanks and is never named).
@@ -110,11 +111,19 @@ function Options.BuildThreatColourSettings(SK, section, Bind)
         end
     end
     SK.Add(section, SK.SubHeader(section, L["Apply to"]), On)
+    SK.Add(section, SK.ControlHelp(section, L["Each design picks its parts: Colour by threat on the Health bar (the bar and "
+        .. "its edge) and the Name, in Studio's inspector on the Enemies and Enemy players tabs."]), On)
     for _, part in ipairs(ThreatColours.PARTS) do
-        local key = ThreatColours.PART_SETTINGS[part]
-        local partGet, partSet = Options.BindSetting(key)
-        Check(SK, section, Bind, key, PART_LABELS[part], partGet, partSet, On)
-        local function Applied() return On() and Settings()[key] == true end
+        -- Where the part takes the colours: a line, not a second box (the designs' own is the one source).
+        local where = SK.Note(section, "")
+        SK.Add(section, where, function()
+            if not On() then return false end
+            where.text:SetText(string.format(L["%s: %s"], PART_LABELS[part], Options.ThreatPartWhere(part)))
+            return true
+        end)
+        Options.editorThreatApplied = Options.editorThreatApplied or {}
+        Options.editorThreatApplied[part] = where
+        local function Applied() return On() and Options.ThreatPartDesigns(part) > 0 end
         local function Own() return Applied() and Settings().threatPartColours[part] ~= nil end
         local row = Check(SK, section, Bind, "threatOwnColours_" .. part, L["Own colours"],
             function() return Settings().threatPartColours[part] ~= nil end,
@@ -129,11 +138,18 @@ function Options.BuildThreatColourSettings(SK, section, Bind)
         for _, state in ipairs(ThreatColours.STATES) do Swatch(SK, section, Bind, state, part, Own) end
     end
     -- The tank warning's red edge, the health bar edge's other writer (audit #5). Not a threat colour: it shows with
-    -- Colour by threat off too. While Apply to › Health bar edge is on, the edge takes the threat colours instead, so
-    -- the box is unavailable and a line says why.
+    -- Colour by threat off too. Where a design's edge takes the threat colours, they show there instead: in every
+    -- design, the box is unavailable and a line says why; in some, a line says so.
     local warnGet, warnSet = Options.BindSetting("tankWarning")
     local _, warn = Check(SK, section, Bind, "tankWarning", L["Warn when you lose a mob you tank"], warnGet, warnSet)
-    local function EdgeTakesThreat() return On() and Settings()[ThreatColours.PART_SETTINGS.border] == true end
+    local function EdgeTakesThreat()
+        local on, total = Options.ThreatPartDesigns("border")
+        return On() and total > 0 and on == total
+    end
+    local function EdgeSometimes()
+        local on, total = Options.ThreatPartDesigns("border")
+        return On() and on > 0 and on < total
+    end
     local refresh = warn.Refresh
     function warn:Refresh()
         refresh(self)
@@ -143,20 +159,58 @@ function Options.BuildThreatColourSettings(SK, section, Bind)
     end
     SK.Add(section, SK.ControlHelp(section, L["While you tank, an enemy's health bar edge turns red when you stop "
         .. "holding its threat."]))
-    SK.Add(section, SK.Note(section, L["The edge takes the threat colours (Apply to › Health bar edge)."]), EdgeTakesThreat)
+    SK.Add(section, SK.Note(section, L["The edge takes the threat colours in every design (the Health bar's Threat "
+        .. "edge)."]), EdgeTakesThreat)
+    SK.Add(section, SK.Note(section, L["Where a design's edge takes the threat colours (the Health bar's Threat edge), "
+        .. "they show there instead."]), EdgeSometimes)
     Options.editorTankWarning = warn
 end
 
--- A part's inspector box for its Apply to (the Health bar's and the Name's), on the enemy plate types
--- only: friendly units hold no threat on you. While Colour by threat is off the box reads unticked and
--- is unavailable (it would do nothing), and its tooltip says where to turn the colours on.
+-- The enemy designs (Designs.EachDesign: the Enemies' and, while it changes anything, the Enemy players layer over
+-- each) whose part takes the threat colours, and how many there are.
+local ENEMY_PLATES = { enemy = true, enemyPlayer = true }
+function Options.ThreatPartDesigns(part)
+    local key, on, total = ThreatColours.PART_SETTINGS[part], 0, 0
+    PS.Designs.EachDesign(Settings(), ENEMY_PLATES, function(profile)
+        total = total + 1
+        if profile[key] == true then on = on + 1 end
+    end)
+    return on, total
+end
+-- Apply to's line for part: every design, none, or how many.
+function Options.ThreatPartWhere(part)
+    local on, total = Options.ThreatPartDesigns(part)
+    if on == total then return L["every design"] end
+    if on == 0 then return L["no design"] end
+    return string.format(L["%d of %d designs"], on, total)
+end
+
+-- A part's inspector box for its design's Colour by threat (the Health bar's, its edge's and the Name's), on the
+-- enemy plate types only: friendly units hold no threat on you. A design option, so a design follows World (Enemy
+-- players: the Enemies) until it changes it, with the changed-here mark. While Colour by threat is off the box reads
+-- unticked and is unavailable (it would do nothing), and its tooltip says where to turn the colours on.
 local function EnemyPlate() return Options:IsEditorEnemy() end
 local OFF_TIP = L["Threat colours are off. Turn on Colour by threat in Settings › Modules › Threat › Threat colours."]
+local PART_ROWS = {
+    health = { L["Threat"], L["Colour by threat"], L["Takes the threat colours while Colour by threat is on (Settings "
+        .. "› Modules › Threat › Threat colours, with the role and colours). A colour rule on this part wins."] },
+    border = { L["Threat edge"], L["Colour edge by threat"], L["The health bar's edge takes the threat colours while "
+        .. "Colour by threat is on, in place of the tank warning's red and the target's gold."] },
+}
+PART_ROWS.name = PART_ROWS.health
 function Options.ThreatColourPartCheck(K, section, part)
-    local key = ThreatColours.PART_SETTINGS[part]
-    local get, set = Options.BindSetting(key)
-    local row, checkbox = K.CheckRow(section, L["Threat"], { text = L["Colour by threat"], set = set,
-        get = function() return On() and get() end, name = WidgetName("selected_" .. key, "Checkbox") })
+    local key, labels = ThreatColours.PART_SETTINGS[part], PART_ROWS[part]
+    local function Own()
+        local profile = Options:EditorProfileSettings()
+        return profile ~= nil and profile[key] == true
+    end
+    local row, checkbox = K.CheckRow(section, labels[1], { text = labels[2],
+        set = function(on)
+            local ok = PS.SetPlateProfileOption(Options:EditorTarget(), key, on == true)
+            Options:Refresh(true)
+            return ok
+        end,
+        get = function() return On() and Own() end, name = WidgetName("selected_" .. key, "Checkbox") })
     local refresh = checkbox.Refresh
     function checkbox:Refresh()
         refresh(self)
@@ -173,13 +227,10 @@ function Options.ThreatColourPartCheck(K, section, part)
     end)
     checkbox:HookScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
     Options.RegisterControl(checkbox)
+    K.ChangedMark(row, Options.editorMarkAreas.Option(key))
     K.Add(section, row, EnemyPlate)
     Options.editorThreatPartChecks = Options.editorThreatPartChecks or {}
     Options.editorThreatPartChecks[part] = checkbox
-    if K.AttachHelp then
-        K.AttachHelp(row, L["Takes the threat colours while Colour by threat is on (Settings › Modules › Threat › "
-            .. "Threat colours, with the role and colours). A colour rule on this part wins."])
-    end
-    checkbox.sharedNote = Options.SharedSettingNote(K, section, EnemyPlate)
+    if K.AttachHelp then K.AttachHelp(row, labels[3]) end
     return checkbox
 end

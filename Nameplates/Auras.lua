@@ -668,7 +668,7 @@ PS._CreatePlateAuras = function(context)
         local position = profile and profile.layout and profile.layout.debuffs
         local layout = profile and profile.auraLayouts and profile.auraLayouts.debuffs
         if not layout or not position or position.visible == false or position.removed then return nil end
-        return layout, FILTERS.debuffs[db.debuffSource == "mine" and "mine" or "all"]
+        return layout, FILTERS.debuffs[profile.debuffSource == "mine" and "mine" or "all"]
     end
     pool.InstanceShape = InstanceShape
 
@@ -874,7 +874,6 @@ PS._CreatePlateAuras = function(context)
     end
 
     local function UpdateAuraRow(data, kind, targeted)
-        local db = GetSettings()
         local row = data[kind]
         local icons = data[ICON_KEYS[kind]]
         local routeKey = ROUTE_KEYS[kind]
@@ -891,7 +890,8 @@ PS._CreatePlateAuras = function(context)
         end
         row.plateSmithActive = true
         local layout = data.profile and data.profile.auraLayouts and data.profile.auraLayouts[kind] or DEFAULT_LAYOUT
-        local source = kind == "buffs" and db.buffSource or db.debuffSource
+        -- Which auras: the design's Source (all, or only yours).
+        local source = data.profile and data.profile[kind == "buffs" and "buffSource" or "debuffSource"]
         local filter = FILTERS[kind][source == "mine" and "mine" or "all"]
         -- A confirmed target token can expose auras that the dungeon nameplate
         -- token does not. Never borrow it for an unconfirmed or changed target.
@@ -1024,8 +1024,7 @@ PS._CreatePlateAuras = function(context)
         local layout = data.profile and data.profile.auraLayouts and data.profile.auraLayouts[kind] or DEFAULT_LAYOUT
         local api = C_UnitAuras and C_UnitAuras.GetAuraDataByIndex
         if type(api) ~= "function" or data[INDEX_ERROR_KEYS[kind]] then return true end
-        local db = GetSettings()
-        local source = kind == "buffs" and db.buffSource or db.debuffSource
+        local source = data.profile and data.profile[kind == "buffs" and "buffSource" or "debuffSource"]
         local filter = FILTERS[kind][source == "mine" and "mine" or "all"]
         local timedOnly = layout.timedOnly == true
         local found, native = false, false

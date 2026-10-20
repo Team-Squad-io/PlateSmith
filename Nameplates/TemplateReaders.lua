@@ -10,7 +10,9 @@ PS._CreateTemplateReaders = function(context)
     local UnitDisplayNameValue = context.UnitDisplayNameValue
     local FriendlyRelationship = context.FriendlyRelationship
     local MARKS = PS.ClassificationMarks
+    local Resolve = PS.Template.Resolve
     local HOLD_WORDS = { TANK = L["TANK"], YOU = L["YOU"], LOOSE = L["LOOSE"] }
+    local FACTIONS = { Alliance = "alliance", Horde = "horde", Neutral = "neutral" }
     local Readers = {}
 
     local function Call(api, ...)
@@ -127,29 +129,27 @@ PS._CreateTemplateReaders = function(context)
             if not target or not Secret.UnitExists(target) then return nil end
             return UnitDisplayNameValue(target)
         end,
-        ["tagged"] = function(_, unit) return Call(UnitIsTapDenied, unit) end,
-        ["elite"] = function(_, unit)
+        ["unit.tagged"] = function(_, unit) return Call(UnitIsTapDenied, unit) end,
+        ["unit.elite"] = function(_, unit)
             local kind = ReadClassification(unit)
             if kind == nil then return nil end -- unreadable: unknown, not false
             return kind == "elite" or kind == "rareelite" or kind == "worldboss"
         end,
-        ["rare"] = function(_, unit)
+        ["unit.rare"] = function(_, unit)
             local kind = ReadClassification(unit)
             if kind == nil then return nil end
             return kind == "rare" or kind == "rareelite"
         end,
-        ["boss"] = function(_, unit)
+        ["unit.boss"] = function(_, unit)
             local kind = ReadClassification(unit)
             if kind == nil then return nil end
             return kind == "worldboss"
         end,
-        ["casting"] = function(data) return data.casting == true end,
-        ["combat"] = function() return Call(UnitAffectingCombat, "player") end,
-        -- False out of combat; unknown on an untracked mob or when the threat read is withheld.
-        ["tanking"] = ThreatFact("holding"),
-        ["targeted"] = function(_, unit) return Call(UnitIsUnit, unit, "target") end,
-        ["player"] = function(_, unit) return Call(UnitIsPlayer, unit) end,
-        ["focus"] = function(_, unit) return Call(UnitIsUnit, unit, "focus") end,
+        ["cast.active"] = function(data) return data.casting == true end,
+        ["you.combat"] = function() return Call(UnitAffectingCombat, "player") end,
+        ["unit.target"] = function(_, unit) return Call(UnitIsUnit, unit, "target") end,
+        ["unit.player"] = function(_, unit) return Call(UnitIsPlayer, unit) end,
+        ["unit.focus"] = function(_, unit) return Call(UnitIsUnit, unit, "focus") end,
         -- The mark's letters after the level (the Elite / rare mark's Level suffix draws the same letters).
         ["level.smart"] = function(_, unit, read)
             local level = read("level")
@@ -178,29 +178,35 @@ PS._CreateTemplateReaders = function(context)
             local hold = info and info.holdState
             if IsReadable(hold) and type(hold) == "string" then return HOLD_WORDS[hold] end
         end,
-        ["hostile"] = function(_, unit)
+        ["unit.hostile"] = function(_, unit)
             local reaction = ReadReaction(unit)
             if reaction == nil then return nil end
             return reaction <= 3
         end,
-        ["neutral"] = function(_, unit)
+        ["unit.neutral"] = function(_, unit)
             local reaction = ReadReaction(unit)
             if reaction == nil then return nil end
             return reaction == 4
         end,
-        ["interruptible"] = function(data) return data.casting == true and data.castInterruptible == true end,
+        ["cast.interruptible"] = function(data) return data.casting == true and data.castInterruptible == true end,
         -- Your interrupt is ready (false: on cooldown, or you have none); unknown while the client withholds it.
-        ["interruptReady"] = function()
+        ["cast.interruptready"] = function()
             local interrupt = PS.Interrupt
             if interrupt then return interrupt.Ready() end
         end,
-        ["questdrop"] = function(data) return data.questItemDrop == true end,
-        ["pvp"] = function(_, unit) return Call(UnitIsPVP, unit) end,
-        ["instance"] = function() return Call(IsInInstance) end,
-        ["ingroup"] = function(_, unit) return FriendlyRelationship(unit) == "group" end,
-        ["inguild"] = function(_, unit) return FriendlyRelationship(unit) == "guild" end,
-        ["quest"] = function(data) return data.questRelated == true end,
-        ["friendly"] = function(data) return data.friendly == true end,
+        ["quest.drop"] = function(data) return data.questItemDrop == true end,
+        ["pvp.flagged"] = function(_, unit) return Call(UnitIsPVP, unit) end,
+        -- Free-for-all PvP, and the unit's faction as a word (PvPMark's readers, which the PvP mark reads too).
+        ["pvp.ffa"] = function(_, unit) return PS.PvPMark.FreeForAll(unit) end,
+        ["pvp.faction"] = function(_, unit)
+            local faction = PS.PvPMark.Faction(unit)
+            return faction and FACTIONS[faction]
+        end,
+        ["you.instance"] = function() return Call(IsInInstance) end,
+        ["unit.ingroup"] = function(_, unit) return FriendlyRelationship(unit) == "group" end,
+        ["unit.inguild"] = function(_, unit) return FriendlyRelationship(unit) == "guild" end,
+        ["quest.needed"] = function(data) return data.questRelated == true end,
+        ["unit.friendly"] = function(data) return data.friendly == true end,
         -- The player's effective role (assigned, the Tank role choice, or adaptive tank evidence).
         ["role.tank"] = function()
             local service = PS.ThreatService
@@ -215,9 +221,9 @@ PS._CreateTemplateReaders = function(context)
         ["threat.offtank"] = ThreatFact("offtank"),
         ["threat.loose"] = ThreatFact("loose"),
         -- Whether you have a target at all; unknown while the client withholds it.
-        ["hastarget"] = function() return Secret.ReadBoolean(UnitExists, "target") end,
+        ["you.hastarget"] = function() return Secret.ReadBoolean(UnitExists, "target") end,
         -- The range service's answer (Nameplates/Range.lua): nil while unknown or not checked.
-        ["inrange"] = function(data) return data.inRange end,
+        ["unit.inrange"] = function(data) return data.inRange end,
         -- The quest objective's progress (Nameplates/QuestProgress.lua), from readable quest data only.
         ["quest.progress"] = function(data) return data.questProgressText end,
         ["quest.percent"] = function(data) return data.questProgressPercent end,
@@ -280,13 +286,13 @@ PS._CreateTemplateReaders = function(context)
         ["power"] = "power", ["power.max"] = "power", ["power.percent"] = "power",
         ["threat.percent"] = "threat", ["threat.lead"] = "threat", ["threat.raw"] = "threat", ["threat.hold"] = "threat",
         ["threat.leadpercent"] = "threat",
-        ["tanking"] = "threat", ["threat.holding"] = "threat", ["threat.losing"] = "threat",
+        ["threat.holding"] = "threat", ["threat.losing"] = "threat",
         ["threat.pulling"] = "threat", ["threat.other"] = "threat", ["threat.offtank"] = "threat",
         ["threat.loose"] = "threat",
-        ["casting"] = "cast", ["cast.name"] = "cast", ["interruptible"] = "cast", ["interruptReady"] = "interrupt",
-        ["target"] = "target", ["targeted"] = "targeted", ["friendly"] = false,
+        ["cast.active"] = "cast", ["cast.name"] = "cast", ["cast.interruptible"] = "cast", ["cast.interruptready"] = "interrupt",
+        ["target"] = "target", ["unit.target"] = "targeted", ["unit.friendly"] = false,
         -- Not in READ_KINDS: a volatile set does not start the range checks or follow quest progress.
-        ["hastarget"] = "targeted", ["inrange"] = "range", ["quest.progress"] = "quest", ["quest.percent"] = "quest",
+        ["you.hastarget"] = "targeted", ["unit.inrange"] = "range", ["quest.progress"] = "quest", ["quest.percent"] = "quest",
         ["combo"] = "combo",
         -- The Action icon pass marks "object" when what it read changes; IDs are fixed for the unit (a new unit is
         -- laid out again); quest marks follow the quest log ("quest", Lifecycle's UpdateQuest).
@@ -305,8 +311,8 @@ PS._CreateTemplateReaders = function(context)
     local function AddToken(set, token)
         local kind = TOKEN_KINDS[token]
         if kind == nil then set.volatile = true elseif kind then set[kind] = true end
-        -- Not a kind: marks that hastarget itself is read (reads.hasTarget).
-        if token == "hastarget" then set.hastarget = true end
+        -- Not a kind: marks that you.hastarget itself is read (reads.hasTarget).
+        if token == "you.hastarget" then set.hastarget = true end
     end
     local function AddCondition(set, node)
         if type(node) ~= "table" then return end
@@ -383,9 +389,9 @@ PS._CreateTemplateReaders = function(context)
         -- Whether "is there a target at all" can change what the plate shows; the targeted kind
         -- alone changes only on the old and the new target's plates (Lifecycle's RefreshTargetState).
         local values, rules = reads.values, reads.rules
-        -- Threat colours go on in the rules pass (Lifecycle's ApplyRules), so it follows threat.
+        -- Threat colours go on in the rules pass (Lifecycle's ApplyRules), so it follows threat (this design's parts).
         local threatColours = PS.ThreatColours
-        if threatColours and threatColours.Enabled(type(PS.GetSettings) == "function" and PS.GetSettings() or nil) then
+        if threatColours and threatColours.Enabled(type(PS.GetSettings) == "function" and PS.GetSettings() or nil, profile) then
             rules.threat = true
         end
         reads.hasTarget = (values.hastarget or rules.hastarget or values.volatile or rules.volatile) == true
@@ -426,6 +432,8 @@ PS._CreateTemplateReaders = function(context)
         if not reader then
             local known, values = {}, {}
             local function Read(token)
+                -- A module's reader may name a token by an alias or its former name (Template.Resolve).
+                token = Resolve(token)
                 if not known[token] then
                     known[token] = true
                     local read = TEMPLATE_READERS[token]

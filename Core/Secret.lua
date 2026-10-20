@@ -166,14 +166,22 @@ end
 -- default, or SetVertexColor for a texture). False when the client has no such sink, the colour is
 -- unavailable, or the call is refused.
 function Secret.SetClassColour(region, classFile, setter)
+    local set = region[setter or "SetTextColor"]
+    if type(set) ~= "function" then return false end
+    local ok, r, g, b = Secret.ClassColourChannels(classFile)
+    if not ok then return false end
+    return (pcall(set, region, r, g, b))
+end
+
+-- The client's own colour for a class file that may be protected (C_ClassColor.GetClassColor): true and its channels,
+-- possibly protected (for a colour setter only), or false when the client has no such sink or refuses.
+function Secret.ClassColourChannels(classFile)
     local classColour = rawget(_G, "C_ClassColor")
     local getColour = type(classColour) == "table" and classColour.GetClassColor
     if type(getColour) ~= "function" then return false end
-    local set = region[setter or "SetTextColor"]
-    if type(set) ~= "function" then return false end
     local ok, colour = pcall(getColour, classFile)
     if not ok or not IsReadable(colour) or type(colour) ~= "table" then return false end
-    return (pcall(set, region, colour.r, colour.g, colour.b))
+    return true, colour.r, colour.g, colour.b
 end
 
 function Secret.SetClassTextColour(region, classFile) return Secret.SetClassColour(region, classFile) end

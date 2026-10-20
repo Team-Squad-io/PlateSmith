@@ -806,13 +806,14 @@ local SETTINGS_CATEGORIES = {
     { key = "stacking", label = L["Stacking & distance"],
         summary = L["How Blizzard stacks, spaces, scales and fades plates, and which draws on top."] },
     { key = "auras", label = L["Aura defaults"], summary = L["Which buffs and debuffs the plates show."] },
-    { key = "relations", label = L["Relationships"], summary = L["How friendly players are marked outdoors."] },
+    { key = "relations", label = L["Player colours"],
+        summary = L["Colours for group, guild, friends, classes and PvP-flagged players."] },
     -- tooltip: the page header's "?" (Options.editorSettingsHelp).
     { key = "experimental", label = L["Experimental"], summary = L["Tests of what the game allows. Each is off by default."],
         tooltip = L["Each option here tests something the game may or may not allow on this client. They are off by "
             .. "default and cost nothing while off. Turn one on, play, then run /ps diagnose: its experimental section "
             .. "says whether each one worked."] },
-    { key = "studio", label = L["Studio"], summary = L["Studio's size and accessibility. Personal; never needs Save."] },
+    { key = "studio", label = L["Studio"], summary = L["Studio's size, accessibility and notices. Personal; never needs Save."] },
     { key = "help", label = L["Help"], summary = L["How Blueprint Studio works, and PlateSmith's commands."] },
 }
 
@@ -1506,3 +1507,17 @@ Options.studioChrome = {
     LABEL = LABEL,
     GOLD = GOLD,
 }
+
+-- A Studio checkbox with the kit's art and a light label (the preview's Snap, the What's new window's opt-out).
+function Options.studioChrome.KitCheckbox(parent, text, onClick)
+    local checkbox = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+    PS.UI.Controls.StyleCheckbox(checkbox, 18)
+    SkinCheckbox(checkbox)
+    local label = checkbox:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    label:SetFont(FONT, 15)
+    label:SetPoint("LEFT", checkbox, "RIGHT", 6, 0)
+    label:SetText(text)
+    checkbox.label = label
+    checkbox:SetScript("OnClick", onClick)
+    return checkbox
+end

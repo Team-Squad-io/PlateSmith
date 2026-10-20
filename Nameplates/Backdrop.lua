@@ -54,6 +54,13 @@ function Backdrop.Parts(style)
     return BACKDROP.Ticked(style and style.backdropParts)
 end
 
+-- Whether Fit to parts wraps key of layout (parts: Backdrop.Parts): ticked, and not pinned to the box itself (the Action
+-- icon beside it, new profiles' place: a box round what is pinned to it is a loop the client refuses).
+function Backdrop.Wraps(parts, layout, key)
+    local position = layout and layout[key]
+    return parts[key] == true and not (type(position) == "table" and position.parent == "backdrop")
+end
+
 function Backdrop.Padding(style)
     return style and style.padding or DEFAULTS.padding
 end
@@ -153,6 +160,11 @@ PS._CreatePlateBackdrop = function(context)
         box = Backdrop.Frame(data.overlay)
         data.backdrop = box
         Backdrop.Paint(box, Style(data))
+        -- A part pinned to the box (the Action icon) was placed before there was one: it meets the box now.
+        for key, position in pairs(data.layout) do
+            local region = type(position) == "table" and position.parent == "backdrop" and data[key]
+            if type(region) == "table" and region.SetPoint then AnchorPart(data, region, key) end
+        end
         return box
     end
 
@@ -179,7 +191,7 @@ PS._CreatePlateBackdrop = function(context)
         local parts, count = Backdrop.Parts(style), 0
         local transforms = Transforms(data.layout, data)
         for _, key in ipairs(BACKDROP.PARTS) do
-            local region = parts[key] and Drawn(data, key)
+            local region = Backdrop.Wraps(parts, data.layout, key) and Drawn(data, key)
             local at = region and transforms[key]
             if at then
                 count = count + 1

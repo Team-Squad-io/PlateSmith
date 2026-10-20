@@ -200,9 +200,10 @@ function Combo._Reset()
     for index in pairs(state.curves) do state.curves[index] = nil end
 end
 
--- Your class colour { r, g, b } (combo points are always yours), or nil while the class is unknown.
+-- Your class colour { r, g, b } (combo points are always yours; Player colours' own or Blizzard's, PlateColours.Class),
+-- or nil while the class is unknown.
 function Combo.ClassColour()
-    local r, g, b = Secret.ClassColour(PlayerClass())
+    local r, g, b = PS.PlateColours.Class(type(PS.GetSettings) == "function" and PS.GetSettings() or nil, PlayerClass())
     if not r then return nil end
     local colour = state.classColour or {}
     colour[1], colour[2], colour[3] = r, g, b

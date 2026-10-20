@@ -30,7 +30,8 @@ DESIGNS[#DESIGNS + 1] = { plateType = "enemyPlayer", context = "world" }
 local AREAS = {
     { label = L["Sizes"], fields = { "scale", "width", "healthHeight", "powerWidth", "powerHeight", "castWidth", "castHeight",
         "nameFontSize" } },
-    { label = L["Styles"], fields = { "styles", "healthTexture", "healthColourMode", "healthColour" } },
+    { label = L["Styles"], fields = { "styles", "healthTexture", "healthColourMode", "healthColour", "healthClassColour",
+        "nameClassColour", "nameColour" } },
     { label = L["Cast bar"], fields = { "castIcon", "castTime", "castName", "castInterruptColours", "castOnTop", "castColours" } },
     { label = L["Rules"], fields = { "rules" } },
     { label = L["Custom parts"], fields = { "valueSlots" } },
@@ -296,17 +297,37 @@ function ImportPreview.Select(window, index)
     return true
 end
 
+-- The tabs' labels at Studio's 14 pt, or one smaller size for all of them (down to TAB_MIN_FONT) while any is wider
+-- than its tab: five tabs share a narrower stage here than in Studio. Measures the labels, PlateSmith's own text.
+local TAB_FONT, TAB_MIN_FONT, TAB_PADDING = 14, 10, 12
+local function FitTabLabels(tabs, widths)
+    local font = Options.studioChrome.FONT
+    local size = TAB_FONT
+    while true do
+        local fits = true
+        for index, tab in ipairs(tabs) do
+            tab.label:SetFont(font, size)
+            if (tonumber(tab.label:GetStringWidth()) or 0) > widths[index] - TAB_PADDING then fits = false end
+        end
+        if fits or size <= TAB_MIN_FONT then return size end
+        size = size - 1
+    end
+end
+
 -- Places the tabs, the design row and the caption strip for the stage's size (Studio's own measures).
 local function LayoutStage(area)
     local layout, canvas = Options.editorPreviewLayout, area.canvas
     local width = canvas:GetWidth()
     local tabs = area.tabs
     local tabWidth = math.floor((width - 16 - 2 * (#tabs - 1)) / math.max(1, #tabs))
+    local widths = {}
     for index, tab in ipairs(tabs) do
         tab:ClearAllPoints()
         tab:SetPoint("TOPLEFT", canvas, "TOPLEFT", 8 + (index - 1) * (tabWidth + 2), -7)
-        tab:SetWidth(index == #tabs and (width - 16 - (index - 1) * (tabWidth + 2)) or tabWidth)
+        widths[index] = index == #tabs and (width - 16 - (index - 1) * (tabWidth + 2)) or tabWidth
+        tab:SetWidth(widths[index])
     end
+    FitTabLabels(tabs, widths)
     area.row:ClearAllPoints()
     area.row:SetPoint("TOPLEFT", canvas, "TOPLEFT", layout.side, -layout.rowTop)
     area.row:SetSize(math.max(1, width - 2 * layout.side), layout.rowHeight)
@@ -333,7 +354,7 @@ function ImportPreview.Attach(window, parent, x, top, width, height, noteAnchor,
     -- Studio's plate-type tabs; a type the import leaves alone is unavailable.
     for _, definition in ipairs(Options.studioModel.editorProfiles) do
         local tab = chrome.CreateStudioButton(canvas, definition.label, 100, 40, "tab")
-        tab.label:SetFont(chrome.FONT, 14)
+        tab.label:SetFont(chrome.FONT, TAB_FONT)
         tab:SetFrameLevel(canvas:GetFrameLevel() + 6)
         tab.plateType = definition.key
         tab:SetScript("OnClick", function(instance)
@@ -453,17 +474,37 @@ function ImportPreview.DesignItems(window)
     return items
 end
 
--- The View-style menu's items: the plates after the import, or yours now.
+-- The View-style menu's items: the plates after the import, or yours now; for a look's update (BlueprintWindow's
+-- ShowLookUpdate) with the profile's older version kept, also the look's own changes, drawn: the look now, or as it
+-- was at that version (its own designs, not the profile's). Its notes in words are the window's What's new?.
+local function ShowLabel(window)
+    local look = window.lookUpdate
+    if window.previewWhatsNew and look then
+        return window.previewShowsNow and string.format(L["The look at version %d"], look.from) or L["The look's own changes"]
+    end
+    if window.previewShowsNow then return L["Yours now"] end
+    return look and L["After update"] or L["After import"]
+end
 function ImportPreview.ShowItems(window)
-    local now = window.previewShowsNow == true
-    local function Show(on)
+    local now, whatsNew, look = window.previewShowsNow == true, window.previewWhatsNew == true, window.lookUpdate
+    local function Show(on, new)
         return function()
-            window.previewShowsNow = on
-            ImportPreview.Redraw(window)
+            local rebuild = (window.previewWhatsNew == true) ~= new
+            window.previewShowsNow, window.previewWhatsNew = on, new
+            if rebuild then ImportPreview.Build(window) else ImportPreview.Redraw(window) end
         end
     end
-    return { { text = L["After import"], checked = not now, func = Show(false) },
-        { text = L["Yours now"], checked = now, func = Show(true) } }
+    local items = { { text = look and L["After update"] or L["After import"], checked = not now and not whatsNew,
+        func = Show(false, false) }, { text = L["Yours now"], checked = now and not whatsNew, func = Show(true, false) } }
+    if look and look.older then
+        items[#items + 1] = { text = L["The look's own changes"], checked = whatsNew and not now, func = Show(false, true),
+            tooltip = { title = L["The look's own changes"], text = string.format(L["The designs the %s look changed since "
+                .. "version %d, the version this profile was made from, drawn: the look itself, not your profile. What's "
+                .. "new? says it in words."], look.name, look.from) } }
+        items[#items + 1] = { text = string.format(L["The look at version %d"], look.from), checked = whatsNew and now,
+            func = Show(true, true) }
+    end
+    return items
 end
 
 -- Draws area.changes' shown design, as imported or (the menu) as they are now, at the shared scale: its
@@ -484,7 +525,7 @@ function ImportPreview.Redraw(window)
         setState(tab, tab.plateType == change.plateType)
     end
     area.dropdown:SetText(Designs.LABELS[change.context] or L["World"])
-    area.show:SetText(showNow and L["Yours now"] or L["After import"])
+    area.show:SetText(ShowLabel(window))
     area.caption:SetText(ImportPreview.Caption(change))
     local view = area.view
     local ok, box = pcall(Draw, view, change, showNow)
@@ -540,11 +581,45 @@ local function SharedScale(area)
     return math.max(MIN_SCALE, math.min(MAX_SCALE, (width - 2 * MARGIN) / wide, (height - 2 * MARGIN) / tall))
 end
 
+-- changes on the stage, the design shown kept while it is still listed (else the nearest one); note under the
+-- section boxes. The window's Review tab counts the designs.
+local function ShowChanges(window, changes, note)
+    local area = window.preview
+    local key, page = area.pageKey, math.min(area.page or 1, #changes)
+    for index, change in ipairs(changes) do
+        if key and DesignKey(change) == key then page = index end
+    end
+    area.changes, area.page = changes, page
+    area.scale = SharedScale(area)
+    area.note:SetText(note)
+    ImportPreview.Redraw(window)
+    if Options.BlueprintPreviewBuilt then Options.BlueprintPreviewBuilt(window) end
+end
+
+-- What is new in a look itself (Show › The look's own changes): its designs at the profile's version (look.older,
+-- ProfilePresets.Snapshot) against its latest (look.text), each read by the import's own parse once, when first shown.
+function ImportPreview.BuildWhatsNew(window, look)
+    look.oldSettings = look.oldSettings or PS.BlueprintCandidate(look.older)
+    look.newSettings = look.newSettings or PS.BlueprintCandidate(look.text)
+    if not (look.oldSettings and look.newSettings) then
+        return ImportPreview.Clear(window, L["This look's older version cannot be read."])
+    end
+    local changes, general = ImportPreview.Changes(look.oldSettings, look.newSettings)
+    if #changes == 0 then
+        return ImportPreview.Clear(window, general and L["The look's designs are the same; only its general settings changed."]
+            or L["Nothing in the look's designs changed."])
+    end
+    ShowChanges(window, changes, string.format(L["What the %s look itself changed since version %d, not your profile."],
+        look.name, look.from))
+end
+
 -- The preview for the window's text and ticked sections (selection: BlueprintWindow's Selection). The design
 -- shown stays while it is still listed, else the nearest one.
 function ImportPreview.Build(window)
     local area = window.preview
     if not area then return end
+    local look = window.lookUpdate
+    if window.previewWhatsNew and look and look.older then return ImportPreview.BuildWhatsNew(window, look) end
     local result, reason = PS.BlueprintImportResult(window.editBox:GetText() or "", window.previewSelection(window))
     if not result then
         if reason == "select at least one section" then
@@ -558,16 +633,8 @@ function ImportPreview.Build(window)
             or L["Nothing on your plates would look different."])
         return
     end
-    local key, page = area.pageKey, math.min(area.page or 1, #changes)
-    for index, change in ipairs(changes) do
-        if key and DesignKey(change) == key then page = index end
-    end
-    area.changes, area.page = changes, page
-    area.scale = SharedScale(area)
-    area.note:SetText(general and L["General settings change too (fonts, colours and more); the preview shows yours."] or "")
-    ImportPreview.Redraw(window)
-    -- The window's Review tab counts the designs.
-    if Options.BlueprintPreviewBuilt then Options.BlueprintPreviewBuilt(window) end
+    ShowChanges(window, changes,
+        general and L["General settings change too (fonts, colours and more); the preview shows yours."] or "")
 end
 
 -- A paste or a ticked box: the preview follows a moment later, once (a burst of keystrokes builds it

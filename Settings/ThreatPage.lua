@@ -509,10 +509,10 @@ local function BuildSpotlight(kit)
         id = "threat.threatSpotlightDuration" })
 end
 
--- The threat settings in the profile (the Modules row's unsaved dot compares them with the saved profile).
+-- The threat settings in the profile (the Modules row's unsaved dot compares them with the saved profile). Which parts
+-- take the colours is each design's own (Studio's inspector), not here.
 local PROFILE_KEYS = { "colourByThreat", "threatColours", "threatPartColours", "threatColourRole", "threatColourSafeKeep",
     "tankWarning", "threatPalette", "threatSpotlightStyle", "threatSpotlightOthersAlpha", "threatSpotlightDuration" }
-for _, part in ipairs(ThreatColours.PARTS) do PROFILE_KEYS[#PROFILE_KEYS + 1] = ThreatColours.PART_SETTINGS[part] end
 
 -- The ids the page's controls kept from Behaviour & display ("plate.*"), so Options:OpenSettingsControl finds them here.
 do
@@ -523,7 +523,6 @@ do
         homes[id] = here
     end
     for _, part in ipairs(ThreatColours.PARTS) do
-        homes["plate." .. ThreatColours.PART_SETTINGS[part]] = here
         homes["plate.threatOwnColours_" .. part] = here
         for _, state in ipairs(ThreatColours.STATES) do homes["plate.threatColour_" .. part .. "_" .. state] = here end
     end

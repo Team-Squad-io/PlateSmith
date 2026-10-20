@@ -5,7 +5,7 @@ local Table = assert(PS.Table, "PlateSmith Table missing")
 local Media = assert(PS.Media, "PlateSmith Media missing")
 
 local defaults = {
-    schemaVersion = 35,
+    schemaVersion = 36,
     enabled = true,
     mode = "auto",       -- auto, own, overlay
     -- Extras on Blizzard's plates (Schema's EXTRAS, Nameplates/Extras.lua), drawn while mode is overlay: quest markers,
@@ -29,6 +29,9 @@ local defaults = {
     -- off, colour, icon, both. New profiles colour the name too (Blizzard's green, relationshipColours.pvp):
     -- the icon alone is hard to see. Saved profiles keep their own (1.1.x's default was icon).
     friendlyPvpStyle = "both",
+    -- Where a flagged ally's PvP colour goes (PvPMark.ColourOnBar): auto (the health bar, or the name where the bar has
+    -- a colour of its own), bar, name or both.
+    friendlyPvpColourOn = "auto",
     restrictedFriendlyNamesOnly = true,
     restrictedFriendlyClassColour = false,
     experimentalDungeonFriendlyText = false,
@@ -51,20 +54,14 @@ local defaults = {
     -- An enemy plate's health bar edge turns red while you tank and lose that mob.
     tankWarning = true,
     -- Threat colours (Nameplates/ThreatColours.lua): an enemy's parts in the colour for its threat
-    -- state while it is in combat with you or your group. Role auto follows role.tank; the parts
-    -- ticked here take the shared colours (threatColours) or their own (threatPartColours); Safe
-    -- keeps the part's own colour while threatColourSafeKeep is on. Saved profiles from before it
-    -- start with it off (migration 27).
+    -- state while it is in combat with you or your group. Role auto follows role.tank; the parts a
+    -- design ticks (its threatColourHealth, threatColourName, threatColourBorder: castOptions) take the
+    -- shared colours (threatColours) or their own (threatPartColours); Safe keeps the part's own colour
+    -- while threatColourSafeKeep is on. colourByThreat is the one switch for them all. Saved profiles from
+    -- before it start with it off (migration 27).
     colourByThreat = true, threatColourRole = "auto", threatColourSafeKeep = false,
-    threatColourHealth = true, threatColourName = true, threatColourBorder = false,
-    -- Grey when tagged by others (ThreatColours.GreyWhenTagged): an enemy's health bar turns grey while another
-    -- player or group has tagged the mob, as Blizzard's plates draw it. New profiles have it on, with the TAGGED
-    -- word off (defaultLayout); saved profiles keep their TAGGED word and colours (migration 30: off).
-    greyWhenTagged = true,
     -- The target-of-target name hides while that unit targets you (it would say your name).
     targetNameHideSelf = true,
-    buffSource = "all",       -- all, mine
-    debuffSource = "mine",   -- all, mine
     -- Blizzard's own plate names, drawn with its shared nameplate font objects (Nameplates/NativeFonts.lua):
     -- readable outdoors (nativeNameFont), and the opt-in chosen font where blizzardNameFontScope says.
     nativeNameFont = true,
@@ -210,7 +207,9 @@ end
 -- Rules: per part, an ordered list of { when = condition, set = what, colour | alpha | stops[, enabled] },
 -- read top to bottom: the last rule that holds sets each property (Core/Template.lua compiles
 -- the conditions). "blend" colours the part by health %, between its stops ({ at = 0-100,
--- colour }, 2-5 of them, sorted); an empty condition always holds.
+-- colour }, 2-5 of them, sorted); an empty condition always holds. A colour rule's colourSource "class" (1.3.2) sets
+-- the unit's class colour instead of its colour (kept, so the picked colour comes back with Set colour and an older
+-- reader of a Blueprint draws it); absent, the picked colour.
 local RULE_SETS = { colour = true, alpha = true, hide = true, blend = true }
 local MAX_RULES_PER_PART, MAX_RULES = 8, 64
 local MIN_BLEND_STOPS, MAX_BLEND_STOPS = 2, 5
@@ -259,6 +258,8 @@ local function NormalizeRules(rules, limit)
                 if rule.enabled == false then entry.enabled = false end
                 if rule.set == "colour" then
                     entry.colour = RuleColour(rule.colour)
+                    -- (RULE_COLOUR_SOURCES, exported below: Blueprint checks a document's against it.)
+                    if rule.colourSource == "class" then entry.colourSource = "class" end
                 elseif rule.set == "alpha" then
                     entry.alpha = Format.Unit(rule.alpha, 0.5)
                 elseif rule.set == "blend" then
@@ -462,16 +463,19 @@ local profileDefaults = {
         healthTexture = "blizzard", healthColourMode = "automatic",
         healthColour = { r = 1, g = 0.82, b = 0 },
         layout = NamesLayout({ name = true, quest = true }),
+        -- New profiles' box wraps the name and the Status text (1.3.2: the Action icon sits outside it). Its Parts are
+        -- stored, since nil is PartChoices.backdrop's DEFAULT, which saved profiles and Blueprints from before keep.
         styles = { backdrop = { boxColour = { r = 0.03, g = 0.03, b = 0.05, a = 0.85 },
-            boxBorder = { r = 0.6, g = 0.53, b = 0.36, a = 1 }, padding = 5 } },
+            boxBorder = { r = 0.6, g = 0.53, b = 0.36, a = 1 }, padding = 5, backdropParts = "name,statusText" } },
     },
 }
 -- The quest mark pinned to the name, clear of the Backdrop (Padding 5 and 2 px).
 profileDefaults.object.layout.quest.parent, profileDefaults.object.layout.quest.x = "name", -7
 -- The Action icon (Nameplates/ActionIcon.lua): the game's own cursor icon for what you can do with the unit. Objects
--- show it right of the name, inside the Backdrop; Friendly NPCs have it off, right of the name (of the raid mark on
--- names-only plates, taking its place while there is none). Other plate types have no entry.
-profileDefaults.object.layout.actionIcon = { x = 4, y = 0, visible = true, parent = "name", attach = "right" }
+-- show it just right of the Backdrop (pinned to it, as a level beside a plate; 1.3.2); Friendly NPCs have it off,
+-- right of the name (of the raid mark on names-only plates, taking its place while there is none). Other plate types
+-- have no entry. A saved profile keeps its own entry, and an older Blueprint 1.3.1's (Blueprint's OBJECT_ICON_131).
+profileDefaults.object.layout.actionIcon = { x = 3, y = 0, visible = true, parent = "backdrop", attach = "right" }
 -- The Status text (Nameplates/ObjectStatus.lua): what the object needs and your skill ("Mining 65" in its skill-up colour), centred
 -- under the name, inside the Backdrop. Off on All objects; an object type (Designs.TYPES) or a look may turn it on.
 profileDefaults.object.layout.statusText = { x = 0, y = -3, visible = false, parent = "name", attach = "bottom" }
@@ -488,11 +492,18 @@ profileDefaults.enemy.layout.looseMark = { x = 3, y = 0, visible = false, parent
 -- castInterruptColours colours the bar by your interrupt (castColours); castOnTop draws a casting
 -- plate over its neighbours (under the target and focus). The quest mark's progress text ("3/8" or
 -- "50%") rides here too: off, beside the mark, or in its place, as a count or a percentage.
+-- And the options that were the whole profile's until 1.3.2 (DESIGN.FROM_GENERAL, migration 35): the aura rows'
+-- Source (all, or only yours), each part's Colour by threat (under the general colourByThreat) and the health bar's
+-- Grey when tagged by others (ThreatColours.GreyWhenTagged: new profiles have it on, with the TAGGED word off;
+-- saved profiles keep their TAGGED word and colours, migration 30: off).
 local castOptions = { castIcon = { left = true, right = true, inside = true, off = true }, castTime = "boolean", castName = "boolean",
     castInterruptColours = "boolean", castOnTop = "boolean",
-    questProgress = { off = true, beside = true, instead = true }, questProgressFormat = { count = true, percent = true } }
+    questProgress = { off = true, beside = true, instead = true }, questProgressFormat = { count = true, percent = true },
+    buffSource = { all = true, mine = true }, debuffSource = { all = true, mine = true },
+    threatColourHealth = "boolean", threatColourName = "boolean", threatColourBorder = "boolean", greyWhenTagged = "boolean" }
 local castDefaults = { castIcon = "left", castTime = true, castName = true, castInterruptColours = false, castOnTop = false,
-    questProgress = "off", questProgressFormat = "count" }
+    questProgress = "off", questProgressFormat = "count", buffSource = "all", debuffSource = "mine",
+    threatColourHealth = true, threatColourName = true, threatColourBorder = false, greyWhenTagged = true }
 -- Colour by interrupt's colours: ready (it can be interrupted and your interrupt is ready), cooldown (it can, but yours
 -- is on cooldown or you have none), locked (it cannot). (The cast bar's own colour is the export's CAST_COLOUR.)
 local CAST_COLOUR_KEYS = { "ready", "cooldown", "locked" }
@@ -587,7 +598,6 @@ function FRIENDLY.Text(settings)
     return string.format("players %s, npcs %s", players, npcs)
 end
 local validFriendlyPvpStyles = { off = true, colour = true, icon = true, both = true }
-local validAuraSources = { all = true, mine = true }
 local validQuestIcons = { auto = true, platesmith = true, questie = true }
 local validThreatPalettes = { auto = true, standard = true, colourblind = true }
 local validThreatTextFormats = { gap = true, percent = true, detailed = true }
@@ -596,7 +606,6 @@ local validThreatKeptStyles = { dim = true, fade = true, grey = true }
 local validThreatSpotlightStyles = { glow = true, arrow = true, sides = true, box = true, both = true }
 local validTargetHighlightStyles = { off = true, border = true, halo = true, glow = true }
 local validTargetGlowColourModes = { class = true, reaction = true, custom = true, threat = true }
-local validBlizzardNameFontScopes = { instances = true, everywhere = true }
 THREAT_COLOURS.roles = { auto = true, tank = true, dps = true }
 
 -- Numeric bounds shared by normalization and Blueprint validation; true = whole number.
@@ -637,15 +646,15 @@ local booleanSettings = {
     "showGuildIcon", "nativeNameFont", "targetNameHideSelf", "tankWarning", "blizzardNameFont",
     "threatKeptAge", "experimentalSoftTargetThreat", "experimentalTargetOfTargetThreat", "experimentalSoloCurveGap",
     "experimentalOutsideHolderRow", "namesOnlyCastFriendly", "namesOnlyCastEnemy",
-    "colourByThreat", "threatColourSafeKeep", "threatColourHealth", "threatColourName", "threatColourBorder",
-    "targetGlowPulse", "targetOffKeepsEdge", "greyWhenTagged", "targetGlowEven", "objectFadeUnable",
+    "colourByThreat", "threatColourSafeKeep",
+    "targetGlowPulse", "targetOffKeepsEdge", "targetGlowEven", "objectFadeUnable",
     "objectHoverCursor", "objectHoverTooltip",
     "extrasQuest", "extrasTarget", "extrasLoose",
 }
 local enumSettings = {
     mode = validModes, friendly = FRIENDLY.MODES, friendlyPlayers = FRIENDLY.MODES, friendlyNPCs = FRIENDLY.MODES,
     friendlyPvpStyle = validFriendlyPvpStyles,
-    buffSource = validAuraSources, debuffSource = validAuraSources,
+    friendlyPvpColourOn = { auto = true, bar = true, name = true, both = true },
     classificationStyle = { icon = true, dragon = true, beforeName = true, suffix = true, frame = true, words = true,
         letters = true },
     classificationIconSize = { auto = true, standard = true, text = true },
@@ -653,7 +662,7 @@ local enumSettings = {
     namesOnlyCastText = { under = true, inside = true },
     threatSpotlightStyle = validThreatSpotlightStyles, threatPalette = validThreatPalettes,
     threatTextFormat = validThreatTextFormats, threatKeptHold = validThreatKeptHolds, threatKeptStyle = validThreatKeptStyles,
-    blizzardNameFontScope = validBlizzardNameFontScopes,
+    blizzardNameFontScope = { instances = true, everywhere = true },
     blizzardNameFontOutline = { none = true, outline = true, thick = true },
     threatColourRole = THREAT_COLOURS.roles, targetGlowColourMode = validTargetGlowColourModes,
     -- (targetGlowParts' values: HIGHLIGHT.GLOW_PARTS.)
@@ -1832,18 +1841,83 @@ function HIGHLIGHT.Has(profile)
     return false
 end
 
+-- Class colour on the Health bar and the Name (Studio's Players and Enemy players tabs): a design's own option,
+-- absent while the plate type's default applies. Players default on (friendly players were always class coloured),
+-- Enemy players off (they kept their reaction colour), so no saved profile or older Blueprint changes look and no
+-- migration is needed. Other plate types have no such option. On is the one reader (plates and Studio's preview).
+local CLASS_COLOUR = { KEYS = { "healthClassColour", "nameClassColour" }, PARTS = { health = "healthClassColour",
+    name = "nameClassColour" }, SET = {}, DEFAULTS = { friendlyPlayer = true, enemyPlayer = false } }
+for _, key in ipairs(CLASS_COLOUR.KEYS) do CLASS_COLOUR.SET[key] = true end
+function CLASS_COLOUR.Value(value)
+    if type(value) == "boolean" then return value end
+    return nil
+end
+-- Whether part ("health" or "name") of plateType's plates, drawn with profile, takes the class colour; nil for a plate
+-- type without the option (Friendly NPCs keep Blizzard's class colour where the game gives one, as always).
+function CLASS_COLOUR.On(profile, plateType, part)
+    local default = CLASS_COLOUR.DEFAULTS[plateType]
+    if default == nil then return nil end
+    -- (Not and/or: an own false must survive.)
+    local own
+    if type(profile) == "table" then own = profile[CLASS_COLOUR.PARTS[part]] end
+    if type(own) == "boolean" then return own end
+    return default
+end
+function CLASS_COLOUR.Has(profile)
+    if type(profile) ~= "table" then return false end
+    for _, key in ipairs(CLASS_COLOUR.KEYS) do
+        if profile[key] ~= nil then return true end
+    end
+    return false
+end
+
+-- The Name's own colour (Studio's Name › Colour, Custom): a design's own option, absent while the name takes its
+-- automatic colour (an object's gold, a social, class or reaction colour), so no saved profile or older Blueprint changes
+-- look. The Name's Class colour, where ticked, wins over it, and a PvP-flagged ally's PvP colour, threat colours and
+-- colour rules win over both (PlateColours.OwnName: one answer for the plates and Studio's preview).
+local NAME_COLOUR = { KEY = "nameColour", SET = { nameColour = true } }
+function NAME_COLOUR.Value(value)
+    if type(value) ~= "table" then return nil end
+    return { r = Format.Unit(value.r, 1), g = Format.Unit(value.g, 1), b = Format.Unit(value.b, 1) }
+end
+function NAME_COLOUR.Has(profile) return type(profile) == "table" and profile.nameColour ~= nil end
+
+-- A player's own class colours (Settings › Player colours › Class colours): class file ("WARRIOR") -> { r, g, b },
+-- only the classes the player changed (the rest are Blizzard's, read from the client), or nil while none is.
+CLASS_COLOUR.MAX_CLASSES = 32
+function CLASS_COLOUR.FileKey(key)
+    return type(key) == "string" and #key <= 24 and key:match("^%u+$") ~= nil
+end
+function CLASS_COLOUR.Normalize(colours)
+    if type(colours) ~= "table" then return nil end
+    -- Sorted, so the bound keeps the same classes every time.
+    local keys = {}
+    for key, colour in pairs(colours) do
+        if CLASS_COLOUR.FileKey(key) and type(colour) == "table" then keys[#keys + 1] = key end
+    end
+    table.sort(keys)
+    local result = {}
+    for index = 1, math.min(#keys, CLASS_COLOUR.MAX_CLASSES) do
+        local key = keys[index]
+        result[key] = NormalizeColour(colours[key], { r = 1, g = 1, b = 1 })
+    end
+    return next(result) ~= nil and result or nil
+end
+
 -- plateHidden: an object type's own (Designs.TYPES; Settings refuses it elsewhere): true draws none of those plates,
 -- absent draws them.
 local function IsProfileOption(key)
     return profileRanges[key] ~= nil or optionalProfileRanges[key] ~= nil or key == "healthTexture"
         or key == "healthColourMode" or key == "castColours" or castOptions[key] ~= nil or HIGHLIGHT.SET[key] == true
-        or key == "plateHidden"
+        or key == "plateHidden" or CLASS_COLOUR.SET[key] == true or NAME_COLOUR.SET[key] == true
 end
 
 -- One profile option made valid for profile (fallback: its defaults). NormalizeProfile checks
 -- every option this way; Settings writes a single one.
 local function ProfileOptionValue(profile, key, value, fallback)
     if HIGHLIGHT.SET[key] then return HIGHLIGHT.Value(key, value) end
+    if CLASS_COLOUR.SET[key] then return CLASS_COLOUR.Value(value) end
+    if NAME_COLOUR.SET[key] then return NAME_COLOUR.Value(value) end
     if key == "plateHidden" then return value == true or nil end
     local range = profileRanges[key]
     if range then return Bounded(range, value, fallback[key]) end
@@ -1932,6 +2006,8 @@ local function NormalizeProfile(profile, fallback, legacy, fresh, claimed)
     profile.healthColourMode = ProfileOptionValue(profile, "healthColourMode", profile.healthColourMode, fallback)
     for key in pairs(castOptions) do profile[key] = ProfileOptionValue(profile, key, profile[key], fallback) end
     for _, key in ipairs(HIGHLIGHT.KEYS) do profile[key] = HIGHLIGHT.Value(key, profile[key]) end
+    for _, key in ipairs(CLASS_COLOUR.KEYS) do profile[key] = CLASS_COLOUR.Value(profile[key]) end
+    profile.nameColour = NAME_COLOUR.Value(profile.nameColour)
     profile.plateHidden = profile.plateHidden == true or nil
     profile.healthColour = NormalizeColour(profile.healthColour, fallback.healthColour)
     profile.castColours = NormalizeCastColours(profile.castColours, fallback.castColours)
@@ -1975,6 +2051,9 @@ local function CopyEnemyProfile(source)
         castInterruptColours = source.castInterruptColours, castOnTop = source.castOnTop,
         castColours = NormalizeCastColours(source.castColours),
         questProgress = source.questProgress, questProgressFormat = source.questProgressFormat,
+        buffSource = source.buffSource, debuffSource = source.debuffSource, threatColourHealth = source.threatColourHealth,
+        threatColourName = source.threatColourName, threatColourBorder = source.threatColourBorder,
+        greyWhenTagged = source.greyWhenTagged,
         healthColour = NormalizeColour(source.healthColour, profileDefaults.enemy.healthColour),
         layout = NormalizeLayout(source.layout, profileDefaults.enemy.layout),
         auraLayouts = NormalizeAuraLayouts(source.auraLayouts),
@@ -1983,6 +2062,8 @@ local function CopyEnemyProfile(source)
         valueSlots = Table.DeepCopy(source.valueSlots),
     }
     for _, key in ipairs(HIGHLIGHT.KEYS) do copy[key] = Table.DeepCopy(source[key]) end
+    for _, key in ipairs(CLASS_COLOUR.KEYS) do copy[key] = source[key] end
+    copy.nameColour = Table.DeepCopy(source.nameColour)
     return NormalizeProfile(copy, profileDefaults.enemy)
 end
 
@@ -2014,7 +2095,18 @@ local DESIGN = {
     -- Object types (plateProfiles.object.types.<type>, Core/Designs.lua): a sparse layer each over whichever design
     -- objects draw with, picked per plate from the game's cursor icon (ActionIcon.TYPE_OF). In Studio's Type order.
     TYPES = { "herb", "ore", "loot", "quest", "book", "service", "other" },
+    -- Profile options that were general settings until 1.3.2 (castOptions): migration 35 gave each plate type's World
+    -- (and each full design) the profile's value. A Blueprint carries the Enemies' World value as settings.<key>
+    -- (what an older one says for every design), and a World or full design's own only where it differs.
+    FROM_GENERAL = { "buffSource", "debuffSource", "threatColourHealth", "threatColourName", "threatColourBorder",
+        "greyWhenTagged" },
 }
+-- The plate types that draw each: threat colours and the tagged grey only the Enemies (Enemy players are their layer),
+-- aura rows every type but Objects. Migration 35 and Blueprints give a value only there; another's stays its default.
+DESIGN.DRAWN_ON = {}
+for _, key in ipairs(DESIGN.FROM_GENERAL) do
+    DESIGN.DRAWN_ON[key] = key:find("Source$") and { enemy = true, friendlyPlayer = true, friendlyNPC = true } or { enemy = true }
+end
 DESIGN.TYPE_SET = {}
 for _, key in ipairs(DESIGN.TYPES) do DESIGN.TYPE_SET[key] = true end
 
@@ -2033,6 +2125,8 @@ end
 -- A design's own value for a profile option, made valid; nil drops it (World's then applies).
 function DESIGN.OptionValue(key, value, fallback)
     if HIGHLIGHT.SET[key] then return HIGHLIGHT.Value(key, value) end
+    if CLASS_COLOUR.SET[key] then return CLASS_COLOUR.Value(value) end
+    if NAME_COLOUR.SET[key] then return NAME_COLOUR.Value(value) end
     if key == "plateHidden" then return value == true or nil end
     local range = profileRanges[key] or optionalProfileRanges[key]
     if range then
@@ -2122,7 +2216,8 @@ local function NormalizeDesign(design, plateType)
     end
     for key, flag in pairs(type(saved[CLEAR]) == "table" and saved[CLEAR] or {}) do
         -- Only an option that may be absent (a bar width that follows the health bar's) clears.
-        if flag == true and (optionalProfileRanges[key] or HIGHLIGHT.SET[key]) and options[key] == nil
+        if flag == true and (optionalProfileRanges[key] or HIGHLIGHT.SET[key] or CLASS_COLOUR.SET[key]
+            or NAME_COLOUR.SET[key]) and options[key] == nil
             and ProfileOptionValue({}, key, nil, fallback) == nil then
             cleared[key] = true
         end
@@ -2355,12 +2450,12 @@ local function PartShownState(settings, key)
 end
 
 -- Whether a rule reads threat: its condition names a token of TemplateReaders' threat kind
--- (threat.* and tanking). role.tank alone does not; it reads the player's role, not the threat
--- service. A condition that does not compile is read as text.
+-- (threat.*; tanking, its former name, compiles to threat.holding). role.tank alone does not; it reads the player's
+-- role, not the threat service. A condition that does not compile is read as text.
 local function ConditionReadsThreat(node, depth)
     if type(node) ~= "table" or depth > 64 then return false end
     local token = node.token
-    if type(token) == "string" and (token == "tanking" or token:sub(1, 7) == "threat.") then return true end
+    if type(token) == "string" and token:sub(1, 7) == "threat." then return true end
     local pair = node.both or node.either
     if type(pair) == "table" and (ConditionReadsThreat(pair[1], depth + 1) or ConditionReadsThreat(pair[2], depth + 1)) then
         return true
@@ -2497,9 +2592,13 @@ local HEALTH_BAR = { plates = ENEMY_PLATES }
 local function ThreatNeeded(settings)
     local state = PartShownState(settings, "threat")
     if state == "all" or state == "some" then return true end
-    if type(settings) == "table" and settings.colourByThreat == true and (settings.threatColourHealth == true
-        or settings.threatColourName == true or settings.threatColourBorder == true) then
-        return true
+    if type(settings) == "table" and settings.colourByThreat == true then
+        local parts = false
+        PS.Designs.EachDesign(settings, ENEMY_PLATES, function(profile)
+            parts = parts or profile.threatColourHealth == true or profile.threatColourName == true
+                or profile.threatColourBorder == true
+        end)
+        if parts then return true end
     end
     if type(settings) == "table" and settings.tankWarning ~= false then
         local bar = false
@@ -2824,6 +2923,32 @@ local settingsMigrations = {
         end
         settings.schemaVersion = 35
     end,
+    [35] = function(settings)
+        -- The aura rows' Source, each part's Colour by threat and Grey when tagged by others became design options
+        -- (1.3.2): each plate type's World that draws it (DESIGN.DRAWN_ON) and each full design takes the profile's
+        -- value; every sparse design and the Enemy players layer follow their World, so every plate draws as before.
+        -- (Absent: the default, as then.) The others keep the default, never drawn, so Objects keep their look.
+        local values = {}
+        for _, key in ipairs(DESIGN.FROM_GENERAL) do values[key], settings[key] = settings[key], nil end
+        local profiles = type(settings.plateProfiles) == "table" and settings.plateProfiles or {}
+        for _, plateType in ipairs(profileOrder) do
+            local world = profiles[plateType]
+            if type(world) == "table" then
+                local designs = { world }
+                for _, record in pairs(type(world.contexts) == "table" and world.contexts or {}) do
+                    if type(record) == "table" and record.full == true and type(record.design) == "table" then
+                        designs[#designs + 1] = record.design
+                    end
+                end
+                for _, design in ipairs(designs) do
+                    for key, value in pairs(values) do
+                        if DESIGN.DRAWN_ON[key][plateType] then design[key] = value end
+                    end
+                end
+            end
+        end
+        settings.schemaVersion = 36
+    end,
 }
 
 local function MigrateSettings(settings)
@@ -2951,6 +3076,8 @@ local function NormalizeSettings(settings)
     if fresh then settings.schemaVersion = defaults.schemaVersion end
     local schemaVersion = MigrateSettings(settings)
     if schemaVersion >= 29 then MoveDungeonOverride(settings) end
+    -- Design options now (migration 35); a copy left at the top (a table stamped by another build) is never read.
+    for _, key in ipairs(DESIGN.FROM_GENERAL) do settings[key] = nil end
     -- The old switches are never read; one left over (a table stamped by another build) goes.
     for _, switch in ipairs(PART_SWITCHES) do settings[switch.key] = nil end
     -- Clicking's first test builds had one friendly row (clickFriendly, the client's whole Friendly category): its
@@ -2974,10 +3101,16 @@ local function NormalizeSettings(settings)
         or lookVersion ~= math.floor(lookVersion) then
         settings.lookVersion = nil
     end
+    -- The look version Studio's What's new window last showed for this profile (Profiles.NoteLookNotice), or none.
+    local noticed = settings.lookNoticed
+    if type(noticed) ~= "number" or noticed < 1 or noticed > 9999 or noticed ~= math.floor(noticed) then
+        settings.lookNoticed = nil
+    end
     settings.relationshipColours = type(settings.relationshipColours) == "table" and settings.relationshipColours or {}
     for key, fallback in pairs(defaultRelationshipColours) do
         settings.relationshipColours[key] = NormalizeColour(settings.relationshipColours[key], fallback)
     end
+    settings.classColours = CLASS_COLOUR.Normalize(settings.classColours)
     settings.threatColours = THREAT_COLOURS.Normalize(settings.threatColours)
     settings.threatPartColours = THREAT_COLOURS.NormalizeParts(settings.threatPartColours, settings.threatColours)
     -- Each layout entry and custom part of the profiles that is already valid is kept, once (see
@@ -3040,6 +3173,8 @@ local function NormalizeState(state)
     if state.threatMovedSaid ~= true then state.threatMovedSaid = nil end
     -- Skin Blizzard's damage meter (Threat/MeterSkin.lua): true or nothing, off by default.
     if state.meterSkin ~= true then state.meterSkin = nil end
+    -- Studio's What's new window for a look's new version (Studio/LookUpdate.lua) turned off: true or nothing (it shows).
+    if state.lookNewsOff ~= true then state.lookNewsOff = nil end
     -- CVars whose original was lost (NamePolicy): restore key -> { CVar name -> true }.
     local lost, lostCount = {}, 0
     for key, names in pairs(type(state.cvarOriginalsMissing) == "table" and state.cvarOriginalsMissing or {}) do
@@ -3312,6 +3447,9 @@ PS.ProfileSchema = {
     NormalizeProfile = NormalizeProfile,
     IsProfileOption = IsProfileOption,
     HIGHLIGHT = HIGHLIGHT,
+    CLASS_COLOUR = CLASS_COLOUR,
+    NAME_COLOUR = NAME_COLOUR,
+    RULE_COLOUR_SOURCES = { class = true },
     ProfileOptionValue = ProfileOptionValue,
     CopyEnemyProfile = CopyEnemyProfile,
     NormalizeLayoutEntry = NormalizeLayoutEntry,

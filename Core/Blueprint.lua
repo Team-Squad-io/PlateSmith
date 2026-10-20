@@ -76,6 +76,23 @@ local styleFields = { "scale", "width", "healthHeight", "nameFontSize", "healthT
 -- 1.1.1, so a document with any is version 4; absent, the design follows the general settings.
 local HIGHLIGHT = S.HIGHLIGHT
 for _, key in ipairs(HIGHLIGHT.KEYS) do styleFields[#styleFields + 1] = key end
+-- A design's Class colour on the Health bar and the Name (Schema's CLASS_COLOUR): likewise new since 1.1.1, so a
+-- document with one is version 4; absent, the plate type's default applies.
+local CLASS_COLOUR = S.CLASS_COLOUR
+for _, key in ipairs(CLASS_COLOUR.KEYS) do styleFields[#styleFields + 1] = key end
+-- A design's own Name colour (Schema's NAME_COLOUR, 1.3.2), likewise: version 4 while any design has one.
+local NAME_COLOUR = S.NAME_COLOUR
+styleFields[#styleFields + 1] = NAME_COLOUR.KEY
+-- The options that were general settings until 1.3.2 (Schema's DESIGN.FROM_GENERAL: the aura rows' Source, each
+-- part's Colour by threat, Grey when tagged by others): a design's own now, imported with Styles. The document's
+-- settings.<key> is the Enemies' World value, which every World (and the full dungeon design) without its own takes,
+-- as an older Blueprint's applied to every design; FROM_GENERAL_ABSENT is what a document without it means.
+local FROM_GENERAL = DESIGN.FROM_GENERAL
+for _, key in ipairs(FROM_GENERAL) do styleFields[#styleFields + 1] = key end
+local FROM_GENERAL_ABSENT = { buffSource = "all", debuffSource = "mine", threatColourHealth = true, threatColourName = true,
+    threatColourBorder = false, greyWhenTagged = false }
+-- The plate types that draw each (DESIGN.DRAWN_ON): another's own is never exported, and an import leaves its default.
+local DRAWN_ON = DESIGN.DRAWN_ON
 -- contexts: the context designs the Blueprint carries (CarriedDesigns), each replacing yours for
 -- that plate type and context; your others stay. enemyPlayers: the Enemy players layer, replaced
 -- whole. The old keys dungeon (the Enemies' Dungeons & raids design) and dungeonFriendly (the friendly
@@ -90,15 +107,18 @@ local LEGACY_SECTIONS = { dungeon = "contexts", dungeonFriendly = "contexts" }
 -- (threatColours) likewise, and parts' own threat colours (threatPartColours) whenever there are any.
 local NEW_SETTINGS = {}
 for _, key in ipairs({ "namesOnlyCastText", "colourByThreat", "threatColourRole", "threatColourSafeKeep",
-    "threatColourHealth", "threatColourName", "threatColourBorder", "targetGlowColourMode", "targetGlowColour",
+    "targetGlowColourMode", "targetGlowColour",
     "targetGlowSpread", "targetGlowOpacity", "targetGlowPulse", "targetGlowOffsetX", "targetGlowOffsetY",
     "targetGlowWrap", "targetGlowParts", "targetGlowEven", "targetGlowSpreadY", "targetGlowWidth", "targetGlowHeight",
-    "classificationIconSize", "objectPlates", "objectFadeUnable" }) do
+    "classificationIconSize", "objectPlates", "objectFadeUnable", "friendlyPvpColourOn" }) do
     NEW_SETTINGS[key] = S.defaults[key]
 end
 NEW_SETTINGS.colourByThreat = false
 NEW_SETTINGS.targetOffKeepsEdge = true
-NEW_SETTINGS.greyWhenTagged = false
+-- (The parts' Colour by threat and Grey when tagged: the Enemies' World value, written as settings.<key>.)
+for _, key in ipairs({ "threatColourHealth", "threatColourName", "threatColourBorder", "greyWhenTagged" }) do
+    NEW_SETTINGS[key] = FROM_GENERAL_ABSENT[key]
+end
 -- Extras on Blizzard's plates (1.3.0): a code from before them brings what Blizzard, with PlateSmith extras drew then,
 -- quest markers and threat text (Schema's migration 33).
 NEW_SETTINGS.extrasQuest, NEW_SETTINGS.extrasThreat, NEW_SETTINGS.extrasTarget, NEW_SETTINGS.extrasLoose = true, "text", false,
@@ -128,6 +148,11 @@ local NEW_PLATE_TYPES = Set("object")
 -- each type's exported defaults.
 local NEW_LAYOUT_ENTRIES, NEW_LAYOUT_DEFAULTS = { "actionIcon", "looseMark", "backdrop" }, {}
 local NEW_LAYOUT_PLATES = { actionIcon = S.ACTION_PLATES, looseMark = { enemy = true }, backdrop = { object = true } }
+-- The Objects' Action icon as 1.3.1's defaults placed it (beside the name, inside the box), for its older Blueprints.
+local OBJECT_ICON_131 = { x = 4, y = 0, visible = true, scale = 1, parent = "name", attach = "right" }
+-- The general settings that are part of a plate type's look, imported with an import limited to it (selection.plates:
+-- Objects › Copy style from a look).
+local PLATE_LOOK_SETTINGS = { object = { "objectFadeUnable" } }
 
 local moduleFields = {}
 
@@ -339,6 +364,9 @@ local profileFields = Set("scale", "width", "healthHeight", "powerHeight", "powe
     "healthColourMode", "healthColour", "layout", "namesLayout", "dungeonNamesLayout", "valueSlots", "auraLayouts",
     "rules", "styles")
 for _, key in ipairs(HIGHLIGHT.KEYS) do profileFields[key] = true end
+for _, key in ipairs(CLASS_COLOUR.KEYS) do profileFields[key] = true end
+profileFields[NAME_COLOUR.KEY] = true
+for _, key in ipairs(FROM_GENERAL) do profileFields[key] = true end
 local castColourFields = Set("ready", "cooldown", "locked")
 
 -- One target highlight value of a design (a profile or a sparse design's options), checked as the
@@ -404,7 +432,7 @@ local function CheckAuraLayouts(value, path, target, sparse)
     end
 end
 
-local ruleFields, stopFields = Set("when", "set", "colour", "alpha", "stops", "enabled"), Set("at", "colour")
+local ruleFields, stopFields = Set("when", "set", "colour", "alpha", "stops", "enabled", "colourSource"), Set("at", "colour")
 
 -- Rules: part -> ordered list of { when, set, colour (hex) | alpha | stops[, enabled] }. A blend's
 -- condition may be empty (always); its stops are { at (0-100), colour (hex) }. Returns them checked
@@ -430,6 +458,10 @@ local function CheckRules(value, path)
             end
             if entry.set == "colour" and rule.colour == nil then Reject(rulePath .. ".colour", "is needed to set colour") end
             if rule.colour ~= nil then entry.colour = CheckColour(rule.colour, rulePath .. ".colour") end
+            -- Class colour (1.3.2): the unit's class colour; the colour stays the one an older reader draws.
+            if rule.colourSource ~= nil then
+                entry.colourSource = CheckEnum(rule.colourSource, rulePath .. ".colourSource", S.RULE_COLOUR_SOURCES)
+            end
             if rule.alpha ~= nil then entry.alpha = CheckRange(rule.alpha, rulePath .. ".alpha", { 0, 1 }) end
             if entry.set == "blend" or rule.stops ~= nil then
                 local stops = rule.stops
@@ -543,6 +575,8 @@ for key in pairs(S.castOptions) do optionFields[key] = true end
 local clearableOptions = {}
 for key in pairs(S.optionalProfileRanges) do clearableOptions[key] = true end
 for _, key in ipairs(HIGHLIGHT.KEYS) do optionFields[key], clearableOptions[key] = true, true end
+for _, key in ipairs(CLASS_COLOUR.KEYS) do optionFields[key], clearableOptions[key] = true, true end
+optionFields[NAME_COLOUR.KEY], clearableOptions[NAME_COLOUR.KEY] = true, true
 
 local function CheckOptions(value, path)
     CheckObject(value, path, optionFields)
@@ -576,6 +610,10 @@ local function CheckOptions(value, path)
             options[key] = CheckBoolean(raw, keyPath) or nil
         elseif HIGHLIGHT.SET[key] then
             options[key] = CheckHighlight(key, raw, keyPath)
+        elseif CLASS_COLOUR.SET[key] then
+            options[key] = CheckBoolean(raw, keyPath)
+        elseif NAME_COLOUR.SET[key] then
+            options[key] = CheckColour(raw, keyPath)
         end
     end
     return options
@@ -687,6 +725,13 @@ local function ApplyProfile(target, value, path, allowNames)
     for _, key in ipairs(HIGHLIGHT.KEYS) do
         if value[key] ~= nil then target[key] = CheckHighlight(key, value[key], path .. "." .. key) else target[key] = nil end
     end
+    -- Its own Class colour on the Health bar and the Name; absent follows the plate type's default.
+    for _, key in ipairs(CLASS_COLOUR.KEYS) do
+        if value[key] ~= nil then target[key] = CheckBoolean(value[key], path .. "." .. key) else target[key] = nil end
+    end
+    -- Its own Name colour; absent, the automatic colour.
+    if value.nameColour ~= nil then target.nameColour = CheckColour(value.nameColour, path .. ".nameColour")
+    else target.nameColour = nil end
     -- Colour by interrupt's colours: any of ready, cooldown and locked; absent keeps the default.
     if value.castColours ~= nil then
         CheckObject(value.castColours, path .. ".castColours", castColourFields)
@@ -734,7 +779,7 @@ local documentFields = Set("format", "version", "readableFrom", "addon", "client
     "dungeonEnemy", "contexts", "enemyPlayers", "objectTypes", "modules")
 -- Font choices: a built-in key or an "lsm:" reference (PS.Media.IsFont).
 local fontSettings = { "font", "blizzardNameFontFace" }
-local settingFields = Set("relationshipColours", "stylePresets", "threatColours", "threatPartColours")
+local settingFields = Set("relationshipColours", "classColours", "stylePresets", "threatColours", "threatPartColours")
 local THREAT_COLOURS = S.THREAT_COLOURS
 local threatStates, threatParts = SetOf(THREAT_COLOURS.STATES), SetOf(THREAT_COLOURS.PARTS)
 for _, key in ipairs(fontSettings) do settingFields[key] = true end
@@ -746,6 +791,7 @@ for key in pairs(S.colourSettings) do settingFields[key] = true end
 -- Codes from before Show on plates followed the eyes carry its switches; one that is off turns
 -- its parts' eyes off in the code's layouts (Schema's ApplyLegacySwitches).
 for _, switch in ipairs(S.PART_SWITCHES) do settingFields[switch.key] = true end
+for _, key in ipairs(FROM_GENERAL) do settingFields[key] = true end
 
 -- Whether a Blueprint was exported before addon version major.minor.patch (its addon field); one
 -- that does not say is taken as older.
@@ -818,6 +864,19 @@ local function BuildCandidate(document)
             candidate.relationshipColours[key] = CheckColour(value, "settings.relationshipColours." .. key)
         end
     end
+    if settings.classColours ~= nil then
+        -- Only the classes the player changed: class file -> hex. A class this client lacks is kept, unused.
+        CheckObject(settings.classColours, "settings.classColours")
+        local colours, count = {}, 0
+        for key, value in pairs(settings.classColours) do
+            local keyPath = "settings.classColours." .. tostring(key)
+            if not CLASS_COLOUR.FileKey(key) then Reject(keyPath, "is not a class") end
+            count = count + 1
+            if count > CLASS_COLOUR.MAX_CLASSES then Reject("settings.classColours", "has too many classes") end
+            colours[key] = CheckColour(value, keyPath)
+        end
+        candidate.classColours = S.CLASS_COLOUR.Normalize(colours)
+    end
     if settings.threatColours ~= nil then
         CheckObject(settings.threatColours, "settings.threatColours", threatStates)
         for key, value in pairs(settings.threatColours) do
@@ -841,7 +900,21 @@ local function BuildCandidate(document)
     -- Likewise, a code from before 1.2.1 keeps the gold target edge with Highlight Off, and its health bar's
     -- colours on a mob someone else tagged (its layouts carry its own TAGGED word).
     if settings.targetOffKeepsEdge == nil then candidate.targetOffKeepsEdge = true end
-    if settings.greyWhenTagged == nil then candidate.greyWhenTagged = false end
+    -- The options that were general settings (FROM_GENERAL): the document's value, else what its absence means (a code
+    -- from before Grey when tagged keeps its bar's colours), on every World that draws it; a profile's own, below, wins.
+    for _, key in ipairs(FROM_GENERAL) do
+        local value, choices = settings[key], S.castOptions[key]
+        if value == nil then
+            value = FROM_GENERAL_ABSENT[key]
+        elseif choices == "boolean" then
+            value = CheckBoolean(value, "settings." .. key)
+        else
+            value = CheckEnum(value, "settings." .. key, choices)
+        end
+        for _, plateType in ipairs(profileOrder) do
+            if DRAWN_ON[key][plateType] then candidate.plateProfiles[plateType][key] = value end
+        end
+    end
     -- And a code from before 1.3.0 brings the extras on Blizzard's plates that it drew then (NEW_SETTINGS).
     for _, key in ipairs({ "extrasThreat", "extrasTarget", "extrasLoose" }) do
         if settings[key] == nil then candidate[key] = NEW_SETTINGS[key] end
@@ -861,6 +934,16 @@ local function BuildCandidate(document)
     -- its body from dungeonEnemy, a sparse one ignores it. Without it, dungeonEnemy (versions 2 and 3,
     -- or a version 4 read for its fallback) is the Enemies' full Dungeons & raids design, as the
     -- migration makes the old override.
+    -- An Objects World from before 1.3.2 whose box wraps the Action icon (its Parts at their nil default) and whose icon
+    -- was at 1.3.1's default place (so left out: NEW_LAYOUT_ENTRIES) keeps it there, inside the box, as it was drawn.
+    local object = type(profiles.object) == "table" and profiles.object or nil
+    if object then
+        local objectStyles = type(object.styles) == "table" and object.styles or {}
+        local box = type(objectStyles.backdrop) == "table" and objectStyles.backdrop or {}
+        if not (type(object.layout) == "table" and object.layout.actionIcon ~= nil) and box.backdropParts == nil then
+            candidate.plateProfiles.object.layout.actionIcon = Table.DeepCopy(OBJECT_ICON_131)
+        end
+    end
     local contexts = document.contexts ~= nil and CheckObject(document.contexts, "contexts", SetOf(profileOrder)) or {}
     local dungeonRecord
     for _, plateType in ipairs(profileOrder) do
@@ -967,7 +1050,7 @@ local function ExportRuleList(list)
                 stops[stopIndex] = { at = stop.at, colour = ColourToHex(stop.colour) }
             end
             local shared = { when = rule.when, set = rule.set, alpha = rule.alpha,
-                colour = rule.colour and ColourToHex(rule.colour) or nil, stops = stops }
+                colour = rule.colour and ColourToHex(rule.colour) or nil, stops = stops, colourSource = rule.colourSource }
             -- Only a rule turned off says so (false must survive, so not an and/or).
             if rule.enabled == false then shared.enabled = false end
             result[#result + 1] = shared
@@ -1011,6 +1094,8 @@ local function ExportProfile(profile, includeNames)
         if own ~= nil and S.colourSettings[key] then own = ColourToHex(own) end
         result[key] = own
     end
+    for _, key in ipairs(CLASS_COLOUR.KEYS) do result[key] = profile[key] end
+    result.nameColour = profile.nameColour and ColourToHex(profile.nameColour) or nil
     result.rules = {}
     for key, list in pairs(profile.rules or {}) do
         local shared = ExportRuleList(list)
@@ -1051,6 +1136,23 @@ end
 -- Whether an exported profile's texture, choices (NEW_PROFILE_VALUES) or styles, or saved styles (presets), use one.
 -- (A saved Backdrop preset, kind backdrop, is new since 1.1.1 too: NEW_PRESET_KINDS.)
 local NEW_PRESET_KINDS = Set("backdrop")
+-- Whether a rule's condition (when) or a custom part's text (template) anywhere in value uses a word older readers
+-- do not know (Template.UsesNewWords: 1.3.2's names, pvp.ffa, pvp.faction, = true): they would refuse the document,
+-- so it is version 4; likewise a rule's Class colour (colourSource, 1.3.2). Text written with the former names keeps a
+-- document as it was.
+local function UsesNewWords(value, depth)
+    if type(value) ~= "table" or depth > 16 then return false end
+    for key, field in pairs(value) do
+        if type(field) == "table" then
+            if UsesNewWords(field, depth + 1) then return true end
+        elseif key == "colourSource" or ((key == "when" or key == "template")
+            and PS.Template.UsesNewWords(field, key == "when")) then
+            return true
+        end
+    end
+    return false
+end
+
 local function UsesNewStyleFields(profile, presets)
     if profile and NEW_TEXTURES[profile.healthTexture] then return true end
     for key, values in pairs(NEW_PROFILE_VALUES) do
@@ -1063,6 +1165,18 @@ local function UsesNewStyleFields(profile, presets)
         if type(preset) == "table" and (UsesNewStyleField(preset.style) or NEW_PRESET_KINDS[preset.kind]) then return true end
     end
     return false
+end
+
+-- Writes into an exported World or full design of plateType the options it holds apart from the Enemies' World
+-- (FROM_GENERAL, whose values the document's settings carry); true when there is one.
+local function ExportOwnOptions(exported, profile, base, plateType)
+    local own = false
+    for _, key in ipairs(FROM_GENERAL) do
+        if profile[key] ~= base[key] and DRAWN_ON[key][plateType] then
+            exported[key], own = profile[key], true
+        end
+    end
+    return own
 end
 
 -- Leaves out of an exported World design the NEW_LAYOUT_ENTRIES still at their default; true when one is kept.
@@ -1101,6 +1215,7 @@ local function ExportDesign(record)
         local options = Table.DeepCopy(record.options)
         if options.healthColour then options.healthColour = ColourToHex(options.healthColour) end
         if options.targetGlowColour then options.targetGlowColour = ColourToHex(options.targetGlowColour) end
+        if options.nameColour then options.nameColour = ColourToHex(options.nameColour) end
         if options.castColours then
             for key, colour in pairs(options.castColours) do options.castColours[key] = ColourToHex(colour) end
         end
@@ -1203,7 +1318,15 @@ local function BuildDocument(db, live, withoutBody)
     for key in pairs(defaultRelationshipColours) do
         settings.relationshipColours[key] = ColourToHex(db.relationshipColours[key])
     end
+    local base = db.plateProfiles.enemy
+    for _, key in ipairs(FROM_GENERAL) do settings[key] = base[key] end
     local contexts, newer = ExportContexts(db, withoutBody)
+    -- The player's own class colours, only those changed and none at all while none is (version 4 only).
+    for key, colour in pairs(type(db.classColours) == "table" and db.classColours or {}) do
+        settings.classColours = settings.classColours or {}
+        settings.classColours[key] = ColourToHex(colour)
+        newer = true
+    end
     -- The shared threat colours, unless every one is its default (as hex: what an import keeps).
     local threatColours, ownThreatColours = {}, false
     for _, state in ipairs(THREAT_COLOURS.STATES) do
@@ -1250,6 +1373,7 @@ local function BuildDocument(db, live, withoutBody)
     local profiles = {}
     for _, key in ipairs(profileOrder) do
         local exported = ExportProfile(db.plateProfiles[key], profileDefaults[key].namesLayout ~= nil)
+        if ExportOwnOptions(exported, db.plateProfiles[key], base, key) then newer = true end
         if NEW_PLATE_TYPES[key] then
             local default = NEW_PLATE_TYPES[key]
             if default == true then
@@ -1261,14 +1385,21 @@ local function BuildDocument(db, live, withoutBody)
             newer = true
         end
         profiles[key] = exported
-        newer = newer or UsesNewStyleFields(exported) or HIGHLIGHT.Has(exported)
+        newer = newer or UsesNewStyleFields(exported) or HIGHLIGHT.Has(exported) or CLASS_COLOUR.Has(exported)
+            or NAME_COLOUR.Has(exported)
     end
     -- The Enemies' Dungeons & raids design resolved whole, whatever its kind: version 3's place for
     -- it, and in version 4 the body of a full one (contexts.enemy.dungeon = { full = true }).
     local dungeonEnemy = not withoutBody and PS.Designs.HasDesign(db, "enemy", "dungeon")
         and ExportProfile(PS.Designs.For(db, "enemy", "dungeon"), false) or nil
     if dungeonEnemy and TrimNewEntries(dungeonEnemy, "enemy") then newer = true end
-    newer = newer or UsesNewStyleFields(dungeonEnemy) or HIGHLIGHT.Has(dungeonEnemy)
+    if dungeonEnemy and ExportOwnOptions(dungeonEnemy, PS.Designs.For(db, "enemy", "dungeon"), base, "enemy") then
+        newer = true
+    end
+    newer = newer or UsesNewStyleFields(dungeonEnemy) or HIGHLIGHT.Has(dungeonEnemy) or CLASS_COLOUR.Has(dungeonEnemy)
+        or NAME_COLOUR.Has(dungeonEnemy)
+    newer = newer or UsesNewWords(profiles, 0) or UsesNewWords(dungeonEnemy, 0) or UsesNewWords(contexts, 0)
+        or UsesNewWords(enemyPlayers, 0) or UsesNewWords(objectTypes, 0) or UsesNewWords(settings.stylePresets, 0)
     local build = type(GetBuildInfo) == "function" and select(4, GetBuildInfo()) or nil
     local document = {
         format = FORMAT, version = newer and VERSION or LEGACY_VERSION, readableFrom = newer and LEGACY_VERSION or nil,
@@ -1492,8 +1623,12 @@ local function ApplySections(db, parsed, selection, Selected, live)
     -- Which carried designs replace yours: every one with contexts (or no selection), the Enemies'
     -- Dungeons & raids design with the old dungeon key, the friendly ones' with dungeonFriendly.
     local carried = CarriedDesigns(document)
+    -- selection.plates (a set of plate types; nil: every one) limits the import to those plate types' designs, and the
+    -- settings section to their look's general settings (PLATE_LOOK_SETTINGS).
+    local plates = type(selection) == "table" and type(selection.plates) == "table" and selection.plates or nil
+    local function Plate(plateType) return plates == nil or plates[plateType] == true end
     local function ContextSelected(plateType, context)
-        if not carried[plateType][context] then return false end
+        if not carried[plateType][context] or not Plate(plateType) then return false end
         if not selection or selection.contexts == true then return true end
         if PS.Designs.IsBlizzard(plateType, context) then return selection.dungeonFriendly == true end
         return selection.dungeon == true and plateType == "enemy" and context == "dungeon"
@@ -1507,7 +1642,11 @@ local function ApplySections(db, parsed, selection, Selected, live)
             local world = profiles[key]
             before[key] = { layout = world.layout, namesLayout = world.namesLayout, valueSlots = world.valueSlots }
         end
-        if Selected("settings") then
+        if Selected("settings") and plates then
+            for plateType in pairs(plates) do
+                for _, key in ipairs(PLATE_LOOK_SETTINGS[plateType] or {}) do db[key] = candidate[key] end
+            end
+        elseif Selected("settings") then
             for _, key in ipairs(booleanSettings) do db[key] = candidate[key] end
             for key in pairs(enumSettings) do
                 if not KEPT_ON_IMPORT[key] then db[key] = candidate[key] end
@@ -1515,21 +1654,22 @@ local function ApplySections(db, parsed, selection, Selected, live)
             for key in pairs(settingRanges) do db[key] = candidate[key] end
             for _, key in ipairs(fontSettings) do db[key] = candidate[key] end
             for key in pairs(S.colourSettings) do db[key] = candidate[key] end
-            db.relationshipColours = candidate.relationshipColours
+            db.relationshipColours, db.classColours = candidate.relationshipColours, candidate.classColours
             db.threatColours, db.threatPartColours = candidate.threatColours, candidate.threatPartColours
             PS.ModuleSettings.Apply(db, parsed.moduleSettings)
         end
         for _, key in ipairs(profileOrder) do
             local source, target = candidate.plateProfiles[key], profiles[key]
-            if Selected("styles") then
+            local chosen = Plate(key)
+            if chosen and Selected("styles") then
                 for _, field in ipairs(styleFields) do target[field] = source[field] end
             end
-            if Selected("layouts") then
+            if chosen and Selected("layouts") then
                 target.layout = source.layout
                 target.namesLayout = source.namesLayout
                 target.auraLayouts = source.auraLayouts
             end
-            if Selected("values") then
+            if chosen and Selected("values") then
                 target.valueSlots = source.valueSlots
                 target.powerHeight = source.powerHeight
             end
@@ -1564,9 +1704,12 @@ local function ApplySections(db, parsed, selection, Selected, live)
         -- each then drops what no longer means the same over the Objects' World (Rebase, as above).
         local object, carriedTypes = profiles.object, type(document.objectTypes) == "table" and document.objectTypes or {}
         local types, source = {}, candidate.plateProfiles.object
-        for key, record in pairs(type(object.types) == "table" and object.types or {}) do types[key] = record end
+        -- selection.wholeTypes (a look: ProfilePresets.Import): its types replace yours whole, a type it leaves as All
+        -- objects included.
+        local whole = type(selection) == "table" and selection.wholeTypes == true and Selected("contexts") and Plate("object")
+        for key, record in pairs(not whole and type(object.types) == "table" and object.types or {}) do types[key] = record end
         for _, objectType in ipairs(DESIGN.TYPES) do
-            local theirs = carriedTypes[objectType] ~= nil and Selected("contexts")
+            local theirs = carriedTypes[objectType] ~= nil and Selected("contexts") and Plate("object")
             if theirs then types[objectType] = type(source.types) == "table" and source.types[objectType] or nil end
             if type(types[objectType]) == "table" then
                 types[objectType] = Rebase(types[objectType], theirs and source or before.object, object)
@@ -1575,13 +1718,13 @@ local function ApplySections(db, parsed, selection, Selected, live)
         object.types = next(types) ~= nil and types or nil
         -- The Enemy players layer is replaced whole: a Blueprint without one removes yours.
         local enemy = profiles.enemy
-        if Selected("enemyPlayers") then
+        if Selected("enemyPlayers") and Plate("enemy") then
             enemy.players = candidate.plateProfiles.enemy.players
             if enemy.players then enemy.players = Rebase(enemy.players, candidate.plateProfiles.enemy, enemy) end
         elseif enemy.players then
             enemy.players = Rebase(enemy.players, before.enemy, enemy)
         end
-        if live and Selected("other") then
+        if live and Selected("other") and not plates then
             for _, key in ipairs(SortedModuleKeys()) do
                 if modules[key] ~= nil then
                     local ok, applied = pcall(moduleFields[key].apply, modules[key])
@@ -1621,7 +1764,8 @@ local function ImportBlueprint(text, selection, restored)
     end
     -- Presets are account state (saved at once, outside the snapshot), so they join only after
     -- everything else applied. Same names are replaced, up to the limit: yours are never pushed out.
-    local state = Selected("settings") and PS.GetState and PS.GetState()
+    local state = Selected("settings") and not (type(selection) == "table" and selection.plates) and PS.GetState
+        and PS.GetState()
     if state then
         state.stylePresets = state.stylePresets or {}
         local count = 0
@@ -1743,5 +1887,11 @@ PS.ExportBlueprint = ExportBlueprint
 PS.BlueprintDocument = function(settings) return BuildDocument(settings, false) end
 PS.ImportBlueprint = ImportBlueprint
 PS.BlueprintImportResult = ImportResult
+-- The settings a Blueprint's JSON describes on its own (built from the defaults, checked as an import is), nothing
+-- applied: a look's versions compared (Studio's Show › The look's own changes). nil when it cannot be imported.
+PS.BlueprintCandidate = function(text)
+    local parsed = type(text) == "string" and Parse(text)
+    return parsed and parsed.candidate or nil
+end
 PS.BlueprintSkippedMessage = SkippedMessage
 PS.BlueprintFailureMessage = FailureMessage

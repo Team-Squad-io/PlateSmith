@@ -833,12 +833,12 @@ local function UpdateQuest(data)
     return nowShown ~= wasShown
 end
 
--- Whether an enemy plate reads its tapped state: for TAGGED (the part on), and for the health bar's grey (Grey
--- when tagged by others on, the bar on). Two answers, text and grey.
+-- Whether an enemy plate reads its tapped state: for TAGGED (the part on), and for the health bar's grey (its
+-- design's Grey when tagged by others on, the bar on). Two answers, text and grey.
 local function TaggedWanted(data)
     if not (data.own and data.friendly == false and not data.namesOnly) then return false, false end
     local layout = data.layout
-    return layout.tagged.visible ~= false, db.greyWhenTagged == true and layout.health.visible ~= false
+    return layout.tagged.visible ~= false, data.profile.greyWhenTagged == true and layout.health.visible ~= false
 end
 
 -- One read of the tapped state (fail closed: protected or unknown is not tapped) for both. data.taggedGrey:
@@ -847,7 +847,7 @@ local function UpdateTaggedState(data)
     local text, grey = TaggedWanted(data)
     local tapped = (text or grey) and Secret.ReadBoolean(UnitIsTapDenied, data.unit) == true
     local shown = text and tapped or false
-    local greyed = PS.ThreatColours.GreyWhenTagged(db, grey, tapped) ~= nil
+    local greyed = PS.ThreatColours.GreyWhenTagged(data.profile, grey, tapped) ~= nil
     local changed, greyChanged = data.taggedShown ~= shown, data.taggedGrey ~= greyed
     if changed then data.tagged:SetShown(shown) end
     data.taggedShown, data.taggedGrey = shown, greyed
@@ -922,7 +922,8 @@ end
 -- Target of target: the name of whoever this unit targets, coloured by class. In dungeons the
 -- client protects whether the target exists and who it is, but still hands its name and class to
 -- the text and colour sinks: then the name (possibly protected) goes straight to SetText and the
--- class through C_ClassColor (Secret.SetClassTextColour). Hidden when there is known to be no
+-- class through C_ClassColor (PlateColours.PaintClass: a readable class in Player colours' class
+-- colour, a protected one through the client's sink). Hidden when there is known to be no
 -- target or no name, and (by default) while the target is known to be you.
 local TARGET_NAME_COLOUR = { 0.85, 0.85, 0.95 }
 local function UpdateTargetName(data)
@@ -942,7 +943,7 @@ local function UpdateTargetName(data)
         -- A rule's colour holds over the class colour (Styles.RuleColour).
         if not region.plateSmithRuleColour then
             local classFile, hasClass = Secret.ClassFile(target)
-            if not (hasClass and Secret.SetClassTextColour(region, classFile)) then
+            if not PS.PlateColours.PaintClass(db, region, classFile, hasClass) then
                 region:SetTextColor(TARGET_NAME_COLOUR[1], TARGET_NAME_COLOUR[2], TARGET_NAME_COLOUR[3])
             end
         end
@@ -959,15 +960,20 @@ end
 local function ApplyLevelText(data, kind, style)
     local region, Mark = data.level, PS.ClassificationMark
     local SetPlateText = PlateIdentity.SetPlateText
+    local boxed = region and region.plateSmithBox ~= nil and region.plateSmithBox.plateSmithStyled == true
     if Mark.SkullForLevel(kind, style) then
         SetPlateText(region, Mark.LevelText(-1, kind, style, data.markSkull))
+        PS.StyleBox.MinWidth(region, nil, boxed)
         return
     end
     local ok, level = pcall(UnitLevel, data.unit)
     if ok and IsReadable(level) and type(level) == "number" then
-        SetPlateText(region, Mark.LevelText(level, kind, style))
+        local text = Mark.LevelText(level, kind, style)
+        SetPlateText(region, text)
+        PS.StyleBox.MinWidth(region, text, boxed)
         return
     end
+    PS.StyleBox.MinWidth(region, nil, boxed)
     local format = ok and HasValue(level) and Mark.ProtectedLevelFormat(kind, style)
     if format then
         region.plateSmithText = nil
@@ -1016,23 +1022,39 @@ local function UpdateIdentity(data)
         guild.plateSmithGuild = guildName
     end
     guild:SetShown(guildName ~= nil)
-    local r, g, b = SafeColourForUnit(unit, data.friendly, data.relationship, data.profileKey == "friendlyPlayer",
-        data.object)
+    -- The name's and the bar's own colours, each by its Class colour (Players, Enemy players); a protected class goes
+    -- through the client's colour sink (classFile only ever passed to it).
+    local known, CLASS = data.profileKey == "friendlyPlayer", S.CLASS_COLOUR
+    local nameClass = CLASS.On(data.profile, data.profileKey, "name")
+    local barClass = CLASS.On(data.profile, data.profileKey, "health")
+    local r, g, b, sink, classFile = SafeColourForUnit(unit, data.friendly, data.relationship, known, data.object, nameClass)
+    local barR, barG, barB, barSink, barClassFile = r, g, b, sink, classFile
+    if barClass ~= nameClass then
+        barR, barG, barB, barSink, barClassFile = SafeColourForUnit(unit, data.friendly, data.relationship, known,
+            data.object, barClass)
+    end
     -- A PvP-flagged ally's colour: on the bar where it shows one in the automatic colour, else on the name.
     local pvp = data.friendly and not data.object and PlateIdentity.FriendlyPvPColour(unit) or nil
-    local pvpOnBar = pvp ~= nil and PvPMark.ColourOnBar(db, data.profile, not data.namesOnly and not S.TurnedOff(data.layout.health))
-    if pvp and not pvpOnBar then
-        data.name:SetTextColor(pvp.r, pvp.g, pvp.b)
-    else
-        data.name:SetTextColor(r, g, b)
+    local pvpOnBar, pvpOnName = false, false
+    if pvp then
+        pvpOnBar, pvpOnName = PvPMark.ColourOnBar(db, data.profile, not data.namesOnly and not S.TurnedOff(data.layout.health))
     end
-    if data.profile.healthColourMode == "custom" then
+    -- The Name's own colour (Custom) while its Class colour is unticked, under a flagged ally's PvP colour.
+    local ownName = PS.PlateColours.OwnName(data.profile, nameClass)
+    if pvpOnName then
+        data.name:SetTextColor(pvp.r, pvp.g, pvp.b)
+    elseif ownName then
+        data.name:SetTextColor(ownName.r, ownName.g, ownName.b)
+    else
+        PS.PlateColours.Paint(data.name, "SetTextColor", r, g, b, sink, classFile)
+    end
+    if pvpOnBar then
+        data.health:SetStatusBarColor(pvp.r, pvp.g, pvp.b)
+    elseif data.profile.healthColourMode == "custom" then
         local colour = data.profile.healthColour
         data.health:SetStatusBarColor(colour.r, colour.g, colour.b)
-    elseif pvpOnBar then
-        data.health:SetStatusBarColor(pvp.r, pvp.g, pvp.b)
     else
-        data.health:SetStatusBarColor(r, g, b)
+        PS.PlateColours.Paint(data.health, "SetStatusBarColor", barR, barG, barB, barSink, barClassFile)
     end
     local questStarted, questNested = addPhases.Start()
     UpdateQuest(data)
@@ -1590,7 +1612,9 @@ local function ApplyPartRules(data, key, list, now)
     local ThreatColours = PS.ThreatColours
     local folded, r, g, b = false
     if colourRule then
-        r, g, b = StyleRules.Colour(colourRule, Readers.Get(data))
+        -- A Class colour rule: the unit's class colour, or the client's own while the class is protected (folded).
+        r, g, b, folded = StyleRules.Colour(colourRule, Readers.Get(data), PS.PlateColours.UnitClassChannels, data.unit)
+        folded = folded == true
     elseif key == "health" and data.taggedGrey then
         local grey = ThreatColours.TAGGED_GREY
         r, g, b = grey.r, grey.g, grey.b
@@ -3784,7 +3808,8 @@ for _, name in ipairs({ "CreateComponentGroup", "RenameComponentGroup", "SetComp
     "SetPlateProfileOption", "CopyTargetHighlight", "SetPlateValueSlot", "SetPlateValueSlotFields", "SetPlateAuraLayout", "SetPartRules",
     "GetFadeState", "SetFadeEverywhere", "SetFadeAlpha",
     "SetPartStyle", "ResetValueSlot", "SaveStylePreset", "DeleteStylePreset", "ApplyStylePreset", "SetPlateProfileHealthColour",
-    "SetRelationshipColour", "SetThreatColour", "SetThreatPartOwnColours", "GetCharacterSettings", "SetCharacterOption",
+    "SetRelationshipColour", "SetClassColour", "ResetClassColours", "SetThreatColour", "SetThreatPartOwnColours",
+    "GetCharacterSettings", "SetCharacterOption",
     "ResetSettings", "AddDesign", "RemoveDesign", "ResetDesign", "ResetDesignArea", "SlimDesign", "CopyDesign",
     "FreeValueSlot", "CopyObjectLook", "ObjectLookChanged" }) do
     PS[name] = PlateSettings[name]

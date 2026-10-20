@@ -175,6 +175,7 @@ function Options:ApplyEditorPreviewStyles(profile)
                 parent, parentStyle = holder.previewBar or holder.previewText or holder, holder.previewBar and styles[parentKey]
             end
             PS.StyleBox.Place(box, text, style, parent, parentStyle and parentStyle.border)
+            if key == "level" then PS.StyleBox.MinWidth(text, text.plateSmithMinContent, true) end
             -- Rounded: Blizzard's level box art, as on the plates (the square box where the client lacks it).
             if PS.StyleBox.Rounded(box, style.boxShape == "rounded") then
                 box:SetBackdrop(nil)
@@ -188,6 +189,7 @@ function Options:ApplyEditorPreviewStyles(profile)
             box:Show()
         elseif box then
             box:Hide()
+            if key == "level" and text then PS.StyleBox.MinWidth(text, text.plateSmithMinContent, false) end
         end
         -- Bars.
         if bar then
@@ -251,18 +253,18 @@ function Options:ApplyEditorPreviewRules(profile)
     end
 end
 
--- Threat colours in the preview, from the test values (ThreatColours.ForSample): the health bar and
--- the name where no rule colours them (ruled[key]), and the health bar's edge. Over them, as on the plates
--- (Lifecycle's ApplyPartRules), the health bar's grey while Tagged is on (ThreatColours.GreyForSample).
+-- Threat colours in the preview, from the test values (ThreatColours.ForSample) and the open design's parts: the
+-- health bar and the name where no rule colours them (ruled[key]), and the health bar's edge. Over them, as on the
+-- plates (Lifecycle's ApplyPartRules), the health bar's grey while Tagged is on (ThreatColours.GreyForSample).
 function Options:ApplyEditorPreviewThreat(ruled)
     local Threat, settings = PS.ThreatColours, PS.GetSettings and PS.GetSettings()
     if not Threat or not settings then return end
     local components, samples = self.editorComponents or {}, self.templateSamples or {}
-    local enemy = self:IsEditorEnemy()
+    local enemy, profile = self:IsEditorEnemy(), self:EditorProfileSettings()
     for _, key in ipairs(Threat.RULE_PARTS) do
         local component = components[key]
-        local colour = not ruled[key] and (key == "health" and Threat.GreyForSample(settings, samples, enemy)
-            or Threat.ForSample(settings, key, samples))
+        local colour = not ruled[key] and (key == "health" and Threat.GreyForSample(profile, samples, enemy)
+            or Threat.ForSample(settings, key, samples, profile))
         if colour and component and component:IsShown() and not component.previewNative then
             if component.previewBar then
                 component.previewBar:SetStatusBarColor(colour.r, colour.g, colour.b)
@@ -273,7 +275,7 @@ function Options:ApplyEditorPreviewThreat(ruled)
     end
     local health = components.health
     if not health then return end
-    local colour = health:IsShown() and Threat.ForSample(settings, "border", samples)
+    local colour = health:IsShown() and Threat.ForSample(settings, "border", samples, profile)
     local edge = health.previewThreatEdge
     if colour and not edge then
         edge = CreateFrame("Frame", nil, health, "BackdropTemplate")
@@ -315,6 +317,11 @@ function Options:ApplyEditorPreviewPartRules(profile)
     end
     local samples, forced = self.templateSamples or {}, self.editorRulesPreviewTrue
     local function read(token) return samples[token] end
+    -- A Class colour rule: the sample's class colour, as the plates take it (PlateColours.ClassChannels).
+    local function class()
+        local classFile, has = Options.SampleClassFile(samples)
+        return PS.PlateColours.ClassChannels(PS.GetSettings and PS.GetSettings(), classFile, has)
+    end
     for key, list in pairs(rules) do
         local component = self.editorComponents and self.editorComponents[key]
         if component and component:IsShown() and not component.previewNative then
@@ -322,7 +329,10 @@ function Options:ApplyEditorPreviewPartRules(profile)
             -- turned off still never applies).
             local colourRule, alpha, hide = PS.StyleRules.Resolve(list, read, forced)
             local r, g, b
-            if colourRule then r, g, b = PS.StyleRules.Colour(colourRule, read) end
+            local folded
+            if colourRule then r, g, b, folded = PS.StyleRules.Colour(colourRule, read, class) end
+            -- A folded colour (a class the client keeps private) is not drawn here: the preview fails closed.
+            if folded then r, g, b = nil, nil, nil end
             if r then
                 ruled[key] = true
                 if component.previewBar then component.previewBar:SetStatusBarColor(r, g, b)
@@ -380,8 +390,8 @@ end
 local function SoftGlowColour(options, highlight)
     local samples, reactions = options.templateSamples or {}, PS.TargetGlow.REACTION
     local classFile -- never truth-tested: it may be protected (Glow.Colour reads it through Secret)
-    if samples.player then classFile = PS.Secret.ClassFile("player") end
-    local reaction = samples.hostile and reactions.hostile or samples.friendly and reactions.friendly or reactions.neutral
+    if samples["unit.player"] then classFile = PS.Secret.ClassFile("player") end
+    local reaction = samples["unit.hostile"] and reactions.hostile or samples["unit.friendly"] and reactions.friendly or reactions.neutral
     local threat = highlight.targetGlowColourMode == "threat" and PS.ThreatColours
         and PS.ThreatColours.ForSample(PS.GetSettings(), PS.ThreatColours.GLOW, samples) or nil
     return PS.TargetGlow.Colour(highlight, classFile, reaction, threat)
@@ -465,22 +475,27 @@ function Options:RefreshTargetHighlightPreview(settings)
     -- Test values: only a targeted sample shows the glow, except while the Plate row (its Target
     -- highlight) is selected: then it always shows, and Test values stay as they are.
     local targeted = self.editorInspectingPlate == true and not self.selectedComponent
-        or not (self.templateSamples and self.templateSamples.targeted == false)
+        or not (self.templateSamples and self.templateSamples["unit.target"] == false)
     SetTargetPreviewStrength(self, targeted and (style == "border" and 0.7 or style == "halo" and 0.55) or nil)
     self:RefreshSoftGlowPreview(highlight, targeted and style == "glow" and not self:IsEditorBlizzardNames(settings))
 end
 
 -- Test values' reaction flags colour the sample as the plates colour a unit (SampleBaseColour). Each plate type starts
 -- from its own; the Enemies' Battlegrounds & arenas design from an enemy player. The friendly player sample is you, in
--- your group and PvP-flagged (the preview draws its PvP mark), so rules on pvp and ingroup hold for it too.
+-- your group and PvP-flagged (the preview draws its PvP mark), so rules on pvp.flagged and unit.ingroup hold for it too.
+local function Reaction(hostile, friendly, player, pvp, ingroup)
+    return { ["unit.hostile"] = hostile, ["unit.friendly"] = friendly, ["unit.player"] = player, ["pvp.flagged"] = pvp,
+        ["unit.ingroup"] = ingroup }
+end
 local SAMPLE_REACTIONS = {
-    enemy = { hostile = true, friendly = false, player = false, pvp = false, ingroup = false },
-    enemyPlayer = { hostile = true, friendly = false, player = true, pvp = false, ingroup = false },
-    friendlyPlayer = { hostile = false, friendly = true, player = true, pvp = true, ingroup = true },
-    friendlyNPC = { hostile = false, friendly = true, player = false, pvp = false, ingroup = false },
+    enemy = Reaction(true, false, false, false, false),
+    enemyPlayer = Reaction(true, false, true, false, false),
+    friendlyPlayer = Reaction(false, true, true, true, true),
+    friendlyNPC = Reaction(false, true, false, false, false),
     -- An object has no reaction; it starts as a quest object (Shipment of Iron, its quest mark lit).
-    object = { hostile = false, friendly = false, neutral = false, player = false, quest = true, pvp = false, ingroup = false },
+    object = Reaction(false, false, false, false, false),
 }
+SAMPLE_REACTIONS.object["unit.neutral"], SAMPLE_REACTIONS.object["quest.needed"] = false, true
 local function SampleKind(plateType, design)
     if plateType == "enemy" and design == "pvp" then return "enemyPlayer" end
     return plateType
@@ -516,33 +531,43 @@ function Options:ResetEditorSamples(defaults)
     end
 end
 
+-- The sample's class file and whether it has one: a player sample's is yours (the friendly player sample is you).
+function Options.SampleClassFile(samples)
+    if samples["unit.player"] == true then return PS.Secret.ClassFile("player") end
+    return nil, false
+end
+
 -- Test values as the facts of the plates' base colour (PS.PlateColours.Base, which also colours every plate): the
 -- sample table stands for the unit. A player sample's class is yours (the friendly player sample is you); group and
 -- guild come from ingroup and inguild; neutral from its flag, or a sample neither hostile nor friendly.
 local SAMPLE_FACTS = {
-    IsPlayer = function(samples) return samples.player == true end,
-    PvP = function(samples) return samples.pvp == true end,
+    IsPlayer = function(samples) return samples["unit.player"] == true end,
+    PvP = function(samples) return samples["pvp.flagged"] == true end,
     Relationship = function(samples)
-        if samples.ingroup == true then return "group" end
-        if samples.inguild == true then return "guild" end
+        if samples["unit.ingroup"] == true then return "group" end
+        if samples["unit.inguild"] == true then return "guild" end
         return nil
     end,
-    ClassFile = function(samples) if samples.player == true then return PS.Secret.ClassFile("player") end end,
-    Neutral = function(samples) return samples.neutral == true or (samples.hostile ~= true and samples.friendly ~= true) end,
+    ClassFile = function(samples) return Options.SampleClassFile(samples) end,
+    Neutral = function(samples)
+        return samples["unit.neutral"] == true or (samples["unit.hostile"] ~= true and samples["unit.friendly"] ~= true)
+    end,
 }
 
 -- The sample's own colour, without PvP: its name's, and its health bar's unless the design or the PvP colour sets the
--- bar's (PlateColours.Base, as a plate of plateType with these facts). settings: the general settings.
-function Options.SampleBaseColour(settings, samples, plateType)
+-- bar's (PlateColours.Base, as a plate of plateType with these facts, part, "name" or "health", by its Class colour in
+-- profile, the design's). settings: the general settings. Returns as Base does (for PlateColours.Paint).
+function Options.SampleBaseColour(settings, samples, plateType, profile, part)
     samples = samples or Options.templateSamples
-    return PS.PlateColours.Base(settings, SAMPLE_FACTS, samples, samples.friendly == true, plateType == "object")
+    return PS.PlateColours.Base(settings, SAMPLE_FACTS, samples, samples["unit.friendly"] == true, plateType == "object", nil, nil,
+        PS.ProfileSchema.CLASS_COLOUR.On(profile, plateType, part or "name"))
 end
 
 -- The sample's PvP colour (PlateColours.PvP from Test values; the friendly player sample is a flagged ally) and whether
--- it goes on the health bar (PvPMark.ColourOnBar, as the plates decide; else on the name). nil when it has none.
+-- it goes on the health bar and on the name (PvPMark.ColourOnBar, as the plates decide). nil when it has none.
 function Options:EditorPvPColour(settings, profile)
     local samples = self.templateSamples or Options.templateSamples
-    if samples.friendly ~= true or self.editorProfile == "object" then return nil end
+    if samples["unit.friendly"] ~= true or self.editorProfile == "object" then return nil end
     local colour = PS.PlateColours.PvP(settings, SAMPLE_FACTS, samples)
     if type(colour) ~= "table" then return nil end
     local health = self.editorLayout and self.editorLayout.health
@@ -691,7 +716,7 @@ function Options:RefreshEditorAppearance(settings, light)
         local text = SampleKind(self.editorProfile, self.editorDesign) == "enemyPlayer" and ENEMY_PLAYER_SAMPLE
             or sample.sampleName
         -- An object: a quest object while Test values' Quest unit is ticked, else the book.
-        if sample.questSampleName and (self.templateSamples or {}).quest ~= false then text = sample.questSampleName end
+        if sample.questSampleName and (self.templateSamples or {})["quest.needed"] ~= false then text = sample.questSampleName end
         -- A Type open: an object of that type.
         local objectType = self.EditorObjectType and self:EditorObjectType()
         if objectType and sample.typeSampleNames and sample.typeSampleNames[objectType] then
@@ -705,11 +730,15 @@ function Options:RefreshEditorAppearance(settings, light)
         name.previewText:SetText(self:EditorSampleScript().name or text)
         -- As the plates colour it: a flagged ally's PvP colour where the bar does not take it (EditorPvPColour), else
         -- its own (PlateColours.Base: an object's gold, a social or class colour, a reaction).
-        local colour, onBar = self:EditorPvPColour(settings, profile)
-        if colour and not onBar then
+        local colour, _, onName = self:EditorPvPColour(settings, profile)
+        local own = PS.PlateColours.OwnName(profile, PS.ProfileSchema.CLASS_COLOUR.On(profile, self.editorProfile, "name"))
+        if colour and onName then
             name.previewText:SetTextColor(colour.r, colour.g, colour.b)
+        elseif own then
+            name.previewText:SetTextColor(own.r, own.g, own.b)
         else
-            name.previewText:SetTextColor(Options.SampleBaseColour(settings, self.templateSamples or {}, self.editorProfile))
+            PS.PlateColours.Paint(name.previewText, "SetTextColor", Options.SampleBaseColour(settings,
+                self.templateSamples or {}, self.editorProfile, profile, "name"))
         end
     end
     -- The sample's level ({level}: 14; -1 draws "??"); an Enemies plate's in its Elite / rare mark style, as the
@@ -722,10 +751,13 @@ function Options:RefreshEditorAppearance(settings, light)
             local height = Schema.ScaledFontSize(Schema.StyledFontSize(Schema.PartTextSize("level", profile.nameFontSize),
                 styles and styles.level), settings.textScale)
             local samples = self.templateSamples or {}
-            level.previewText:SetText(tostring(PS.ClassificationMark.LevelText(math.floor(tonumber(samples.level) or 14),
-                self.SampleClassification(samples), style, height * PS.ClassificationMark.DRAGON.SKULL)))
+            local text = tostring(PS.ClassificationMark.LevelText(math.floor(tonumber(samples.level) or 14),
+                self.SampleClassification(samples), style, height * PS.ClassificationMark.DRAGON.SKULL))
+            level.previewText:SetText(text)
+            PS.StyleBox.MinWidth(level.previewText, text, level.styleBox ~= nil and level.styleBox:IsShown())
         else
             level.previewText:SetText("15")
+            PS.StyleBox.MinWidth(level.previewText, "15", level.styleBox ~= nil and level.styleBox:IsShown())
         end
     end
     local guild = self.editorComponents.guild

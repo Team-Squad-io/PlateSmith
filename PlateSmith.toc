@@ -2,7 +2,7 @@
 ## Title: PlateSmith Nameplates
 ## Notes: Design your own nameplates in a live editor, with threat on every plate, cast bars, auras, quest markers and threat windows.
 ## Author: TeamSquadIO
-## Version: 1.3.1
+## Version: 1.3.2
 ## Category: Unit Frames
 ## SavedVariables: PlateSmithDB, PlateSmithDiagnosticsDB
 ## SavedVariablesPerCharacter: PlateSmithCharacterDB
@@ -21,6 +21,7 @@ Core\Format.lua
 Core\Template.lua
 Core\Table.lua
 Core\Locale.lua
+Core\RuleWords.lua
 Core\Json.lua
 Core\Base64.lua
 Core\Ticker.lua
@@ -83,6 +84,7 @@ Core\Blueprint.lua
 Core\ShareCode.lua
 Core\BlueprintLink.lua
 Core\ProfilePresets.lua
+Data\LookSnapshots.lua
 Studio\Components.lua
 Studio\Layout.lua
 Studio\Editor.lua
@@ -109,6 +111,7 @@ Studio\QuickLayout.lua
 Studio\DesignRow.lua
 Studio\Frame.lua
 Studio\FirstRun.lua
+Studio\LookUpdate.lua
 Threat\Kit.lua
 Threat\KitAtlas.lua
 Threat\Geometry.lua

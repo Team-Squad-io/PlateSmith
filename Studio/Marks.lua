@@ -74,19 +74,20 @@ function Options:EditorMarkField()
     return self:CurrentEditorVariant() == "names" and "namesLayout" or "layout"
 end
 
--- A setting the whole profile shares (Inspector's SettingControl rows, the threat part boxes) has no
--- changed-here mark. While a design other than World is open (or Enemy players), a note under its row
--- (rows: under a block of them) says it changes every design. shown: the row's own visibility.
+-- A setting the whole profile shares (Inspector's SettingControl rows) has no changed-here mark. While a
+-- design other than World is open (or Enemy players), a note under its row (rows: under a block of them)
+-- says it changes every plate type and design. shown: the row's own visibility.
 function Options:EditorSharedNoteShown()
     return self.editorProfile == "enemyPlayer" or (self.editorDesign or "world") ~= "world" or self:EditorObjectType() ~= nil
 end
 
 function Options.SharedSettingNote(K, section, shown, rows)
-    local text = rows and L["The rows above are shared by all designs"] or L["Shared by all designs"]
+    local text = rows and L["The rows above are shared by every plate type and design"]
+        or L["Shared by every plate type and design"]
     local note = K.Note(section, text)
     note:EnableMouse(true)
-    PS.UI.Controls.AttachTooltip(note, text, { L["A setting of the whole profile: changing it here changes World and "
-        .. "every other design and plate type too."] })
+    PS.UI.Controls.AttachTooltip(note, text, { L["A setting of the whole profile: changing it here changes it on every "
+        .. "plate type, in World and every other design."] })
     K.Add(section, note, function() return Options:EditorSharedNoteShown() and (not shown or shown()) end)
     return note
 end

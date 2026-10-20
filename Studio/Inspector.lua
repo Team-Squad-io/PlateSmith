@@ -781,6 +781,148 @@ end
 -- Every built context's Display text rows, by context (tests check them against the labels above).
 function Options:EditorBuiltDisplayRows() return displayRows end
 
+-- Class colour on the Health bar and the Name (Schema's CLASS_COLOUR, a design's own option): on Players and Enemy
+-- players only (NPCs have no class), not on Blizzard's dungeon names. Unset, it shows the plate type's default.
+local CLASS_COLOUR_HELP = {
+    health = L["The bar takes the player's class colour (each class's is in Studio › Settings › Player colours). "
+        .. "On Players, group, guild and friends colours take precedence while that page's Group, guild & friends "
+        .. "come before class colours is on. A PvP-flagged ally's PvP colour, Custom colour, threat colours and "
+        .. "colour rules still win. Unticked: Players take their group, guild or friend colour, else blue; enemy "
+        .. "players red or yellow by reaction. Where the game keeps the class private, the game's own class colour "
+        .. "shows."],
+    name = L["The name takes the player's class colour (each class's is in Studio › Settings › Player colours). "
+        .. "On Players, group, guild and friends colours take precedence while that page's Group, guild & friends "
+        .. "come before class colours is on. A PvP-flagged ally's PvP colour, threat colours and colour rules still "
+        .. "win. Unticked: Players take their group, guild or friend colour, else blue; enemy players red or yellow "
+        .. "by reaction. Where the game keeps the class private, the game's own class colour shows."],
+}
+-- Settings › Player colours › Class colours: a colour row per class this client has (PlateColours.Classes), each
+-- Blizzard's until changed (PS.SetClassColour keeps only changed ones), and Reset to Blizzard's.
+function Options.BuildClassColourSettings(SK, section, Bind)
+    local classes = PS.PlateColours.Classes()
+    for _, class in ipairs(classes) do
+        local file = class.file
+        local row = SK.Row(section, class.name)
+        local swatch = Controls.ColourSwatch(row, { size = SK.SWATCH, name = WidgetName("editor_class_" .. file, "Colour"),
+            get = function()
+                local own = PS.GetSettings().classColours
+                if type(own) == "table" and own[file] then return own[file] end
+                local r, g, b = PS.Secret.ClassColour(file)
+                return { r = r or 1, g = g or 1, b = b or 1 }
+            end,
+            set = function(r, g, b)
+                PS.SetClassColour(file, r, g, b)
+                Options:Refresh()
+            end,
+        })
+        swatch:ClearAllPoints()
+        swatch:SetPoint("LEFT", row, "LEFT", SK.CONTROL_X, 0)
+        SK.Add(section, row)
+        Bind("relations.class." .. file, swatch)
+    end
+    if #classes == 0 then
+        SK.Add(section, SK.Help(section, L["This game client gives no list of classes, so there is nothing to set here."]))
+        return
+    end
+    local resetRow, reset = SK.ButtonRow(section, L["Reset to Blizzard's"], 200)
+    reset:SetScript("OnClick", function()
+        PS.ResetClassColours()
+        Options:Refresh()
+    end)
+    Controls.AttachTooltip(reset, L["Reset to Blizzard's"], { L["Puts every class back to Blizzard's own colour."] })
+    -- Unavailable while every class is Blizzard's.
+    function reset:Refresh(settings)
+        SetAvailable(self, type(settings.classColours) == "table" and next(settings.classColours) ~= nil)
+    end
+    Bind("relations.classColoursReset", reset)
+    SK.Add(section, resetRow)
+    SK.Add(section, SK.ControlHelp(section, L["Each class's colour wherever PlateSmith draws one: the Health bar and "
+        .. "Name where Class colour is ticked, the soft target glow's Class, Targeted by badges, the target's name and "
+        .. "combo points. Change any you find hard to tell apart (colour blindness, a dark texture); only those you "
+        .. "change are kept, the rest stay Blizzard's. Where the game keeps a class private, the game's own colour shows."]))
+end
+
+-- Where a colour rule overrides a part's own colour, the row says so (STANDARDS 2a.2): the first enabled colour or blend
+-- rule on part that always holds (the worst: the own colour never shows), else the first with a condition. Its index,
+-- whether it always holds, and its condition; nil without one. Read from the stored rules when the inspector lays out.
+function Options.EditorRuleCover(part)
+    local profile = Profile()
+    local list = profile and profile.rules and profile.rules[part]
+    local first
+    for index, rule in ipairs(type(list) == "table" and list or {}) do
+        if rule.enabled ~= false and (rule.set == "colour" or rule.set == "blend") then
+            local when = type(rule.when) == "string" and rule.when or ""
+            if not when:find("%S") then return index, true, "" end
+            first = first or index
+        end
+    end
+    if first then return first, false, list[first].when end
+    return nil
+end
+local COVER_PARTS = { name = L["Name"], health = L["Health bar"] }
+local COVER_TEXT = {
+    class = { always = L["A rule always sets this %s's colour, so its class colour never shows."],
+        when = L["A rule sets this %s's colour (while %s), so its class colour shows only where that rule doesn't apply."] },
+    custom = { always = L["A rule always sets this %s's colour, so its custom colour never shows."],
+        when = L["A rule sets this %s's colour (while %s), so its custom colour shows only where that rule doesn't "
+            .. "apply."] },
+}
+-- The line for a covered own colour (which: "class" or "custom") of part, or nil while no rule covers it.
+function Options.EditorRuleCoverText(part, which)
+    local index, always, when = Options.EditorRuleCover(part)
+    if not index then return nil end
+    local texts = COVER_TEXT[which]
+    if always then return string.format(texts.always, COVER_PARTS[part]), index end
+    return string.format(texts.when, COVER_PARTS[part], when), index
+end
+-- Under the row of part's own colour: the line while a rule covers it (inUse: whether that colour is the part's now),
+-- and Show rule, which opens the part's Rules at that rule (Search.RevealPartRule).
+local function RuleCoverNote(section, part, which, inUse)
+    local note = K.Note(section, "")
+    local function Shown()
+        return Options.selectedComponent == part and inUse() and Options.EditorRuleCoverText(part, which) ~= nil
+    end
+    K.Add(section, note, function()
+        if not Shown() then return false end
+        note.text:SetText((Options.EditorRuleCoverText(part, which)))
+        return true
+    end)
+    local linkRow, link = K.ButtonRow(section, L["Show rule"], 100, nil, K.CONTROL_X)
+    link:SetScript("OnClick", function()
+        local _, index = Options.EditorRuleCoverText(part, which)
+        if index and Options.settingsSearch then Options.settingsSearch.RevealPartRule(index) end
+    end)
+    Controls.AttachTooltip(link, L["Show rule"], { L["Opens this part's Rules at the rule that sets its colour."] })
+    K.Add(section, linkRow, Shown)
+    Options.editorRuleCoverNotes = Options.editorRuleCoverNotes or {}
+    Options.editorRuleCoverNotes[part .. "." .. which] = { note = note, link = link, row = linkRow }
+end
+
+local function ClassColourCheck(section, part)
+    local CLASS = Schema.CLASS_COLOUR
+    local key = CLASS.PARTS[part]
+    local function Players()
+        local plate = Options.editorProfile
+        return (plate == "friendlyPlayer" or plate == "enemyPlayer") and not PS.Designs.IsBlizzard(plate, Options.editorDesign)
+    end
+    local row, checkbox = K.CheckRow(section, L["Class"], { text = L["Class colour"],
+        name = WidgetName("selected_" .. key, "Checkbox"),
+        get = function() return CLASS.On(Profile(), Options.editorProfile, part) == true end,
+        set = SetProfileValue(key) })
+    Register(checkbox)
+    Mark(row, Area.Option(key))
+    K.Add(section, row, Players)
+    if not K.AttachHelp(row, CLASS_COLOUR_HELP[part]) then K.Add(section, K.Help(section, CLASS_COLOUR_HELP[part]), Players) end
+    -- Where the social switch applies (friendly players), it comes first.
+    K.Add(section, K.Note(section, L["Group, guild & friends first"]), function()
+        return Players() and Options.editorProfile == "friendlyPlayer" and PS.GetSettings().friendlyRelationshipColours ~= false
+    end)
+    RuleCoverNote(section, part, "class", function() return Players() and CLASS.On(Profile(), Options.editorProfile, part) == true end)
+    Options.editorClassColourChecks = Options.editorClassColourChecks or {}
+    Options.editorClassColourChecks[part] = checkbox
+    return checkbox
+end
+
 -- Text parts: the name, target's name and the relationship marks. Each part that draws text has a
 -- Display section: what it shows, then the same text rows (TextRows).
 local function BuildTextContexts(page)
@@ -795,6 +937,54 @@ local function BuildTextContexts(page)
         K.Add(nameSection, surnameRow, FriendlyPlayers)
         Options.SharedSettingNote(K, nameSection, FriendlyPlayers)
         Options.editorSurnameControl = surnames
+        -- The name's own colour (Schema's NAME_COLOUR): Custom, the colour picked; unticked, its automatic colour.
+        -- Picking a colour or ticking Custom unticks Class colour (which wins while ticked); Cancel restores both.
+        local namePicked
+        local function NameClassOn()
+            return Schema.CLASS_COLOUR.On(Profile(), Options.editorProfile, "name") == true
+        end
+        local function NameCustom() return ProfileValue("nameColour")() ~= nil and not NameClassOn() end
+        local function SetNameColour(colour)
+            if colour and Schema.CLASS_COLOUR.On(Profile(), Options.editorProfile, "name") ~= nil then
+                PS.SetPlateProfileOption(Options:EditorTarget(), { nameColour = colour, nameClassColour = false })
+            else
+                PS.SetPlateProfileOption(Options:EditorTarget(), "nameColour", colour)
+            end
+            Options:Refresh(true)
+        end
+        local nameColourRow, nameSwatch = K.SwatchRow(nameSection, L["Colour"], {
+            name = WidgetName("selected_nameColour", "Colour"),
+            beforeOpen = function()
+                namePicked = { colour = PS.Table.DeepCopy(ProfileValue("nameColour")()), class = Profile().nameClassColour }
+            end,
+            get = function() return ProfileValue("nameColour")() or { r = 1, g = 1, b = 1 } end,
+            set = function(r, g, b) SetNameColour({ r = r, g = g, b = b }) end,
+            cancel = function()
+                local before = namePicked or {}
+                PS.SetPlateProfileOption(Options:EditorTarget(), "nameColour", before.colour)
+                if Schema.CLASS_COLOUR.On(Profile(), Options.editorProfile, "name") ~= nil then
+                    PS.SetPlateProfileOption(Options:EditorTarget(), "nameClassColour", before.class)
+                end
+                Options:Refresh(true)
+            end,
+        })
+        Register(nameSwatch)
+        local nameCustom = Register(K.RowCheck(nameColourRow, {
+            text = L["Custom"],
+            get = NameCustom,
+            set = function(custom)
+                SetNameColour(custom and PS.Table.DeepCopy(ProfileValue("nameColour")() or { r = 1, g = 1, b = 1 }) or nil)
+            end,
+        }))
+        Mark(nameColourRow, Area.Option({ "nameColour" }))
+        K.Add(nameSection, nameColourRow)
+        K.AttachHelp(nameColourRow, L["Custom: the name takes the colour picked here instead of its own (an object's "
+            .. "gold, a group, guild, class or reaction colour). Picking a colour turns it on and Class colour off; Class "
+            .. "colour, while ticked, wins over it. A PvP-flagged ally's PvP colour, threat colours and colour rules still "
+            .. "win."])
+        RuleCoverNote(nameSection, "name", "custom", NameCustom)
+        Options.editorNameColour, Options.editorNameCustom = nameSwatch, nameCustom
+        ClassColourCheck(nameSection, "name")
         Options.ThreatColourPartCheck(K, nameSection, "name")
         -- The name's Font size is this plate type's name size in points, which the other texts follow.
         TextRows(nameSection, { context = "name", size = function(section)
@@ -905,9 +1095,14 @@ local function BuildTextContexts(page)
             PS.SetRelationshipColour("pvp", r, g, b)
             Options:Refresh(true)
         end
-        K.Add(pvpSection, K.Help(pvpSection, L["On a full plate the health bar takes the colour and the name keeps its "
-            .. "own. The name takes it on names-only plates and where the bar has a colour of its own: Custom colour, a "
-            .. "colour rule that always applies, or class colours (Colour social relationships off)."]), NameColoured)
+        K.Add(pvpSection, K.Help(pvpSection, L["Goes on picks where the colour shows: the health bar, the name or both. "
+            .. "Automatic: the health bar on a full plate, and the name on names-only plates or where the bar has a "
+            .. "colour of its own (Custom colour, a colour rule that always applies, or its class colour)."]), NameColoured)
+        local getPlace, setPlace = SettingControl("friendlyPvpColourOn")
+        local placeRow, place = K.DropdownRow(pvpSection, L["Goes on"], { choices = model.friendlyPvpPlaceChoices,
+            name = WidgetName("selected_friendlyPvpColourOn", "Dropdown"), get = getPlace, set = setPlace })
+        Register(place)
+        K.Add(pvpSection, placeRow, NameColoured)
         local colourRow, colour = K.SwatchRow(pvpSection, L["PvP colour"], {
             name = WidgetName("selected_pvpColour", "Colour"),
             get = function() return PS.GetSettings().relationshipColours.pvp end,
@@ -1168,34 +1363,38 @@ local function BuildBarContexts(page)
         }))
         Mark(colourRow, Area.Option({ "healthColour", "healthColourMode" }))
         K.Add(health, colourRow)
+        RuleCoverNote(health, "health", "custom", function() return ProfileValue("healthColourMode")() == "custom" end)
+        ClassColourCheck(health, "health")
         Options.ThreatColourPartCheck(K, health, "health")
-        -- Grey when tagged by others (greyWhenTagged, the whole profile's; ThreatColours.GreyWhenTagged): enemy
-        -- plates only. A profile saved before 1.2.1 has it off and keeps its TAGGED word; a line offers the
-        -- switch, which turns TAGGED off too (Settings › Show on plates' box, every design).
+        Options.ThreatColourPartCheck(K, health, "border")
+        -- Grey when tagged by others (the design's greyWhenTagged; ThreatColours.GreyWhenTagged): enemy plates only. A
+        -- profile saved before 1.2.1 has it off and keeps its TAGGED word; a line offers the switch, which turns TAGGED
+        -- off too (Settings › Show on plates' box, every design).
         local function EnemyPlate() return Options:IsEditorEnemy() end
-        local greyGet, greySet = Options.BindSetting("greyWhenTagged")
         local greyRow, grey = K.CheckRow(health, L["Tagged"], { text = L["Grey when tagged by others"],
-            get = greyGet, set = greySet, name = WidgetName("selected_greyWhenTagged", "Checkbox") })
+            get = function() return ProfileValue("greyWhenTagged")() == true end,
+            set = function(on) SetProfileValue("greyWhenTagged")(on == true) end,
+            name = WidgetName("selected_greyWhenTagged", "Checkbox") })
         Register(grey)
+        Mark(greyRow, Area.Option("greyWhenTagged"))
         K.Add(health, greyRow, EnemyPlate)
         local greyHelp = L["While another player or group has tagged the mob (you get no credit for it), its health bar "
             .. "is grey, as Blizzard's plates draw it. It wins over threat colours; a colour rule on the health bar wins "
             .. "over it."]
         if not K.AttachHelp(greyRow, greyHelp) then K.Add(health, K.Help(health, greyHelp), EnemyPlate) end
-        Options.SharedSettingNote(K, health, EnemyPlate)
         local function OfferGrey()
-            return EnemyPlate() and PS.GetSettings().greyWhenTagged ~= true and PS.GetPartShownState("showTagged") ~= "none"
+            return EnemyPlate() and ProfileValue("greyWhenTagged")() ~= true and PS.GetPartShownState("showTagged") ~= "none"
         end
         K.Add(health, K.Help(health, L["This profile shows the TAGGED word. Blizzard's plates grey the bar instead."]),
             OfferGrey)
         local insteadRow, instead = K.ButtonRow(health, L["Grey bar instead"], 150)
         instead:SetScript("OnClick", function()
-            PS.SetOption("greyWhenTagged", true)
+            PS.SetPlateProfileOption(Options:EditorTarget(), "greyWhenTagged", true)
             PS.SetPartShownEverywhere("showTagged", false)
             Options:Refresh(true)
         end)
-        PS.UI.Controls.AttachTooltip(instead, L["Grey bar instead"], { L["Turns on Grey when tagged by others and turns "
-            .. "the TAGGED word off in every design. Its eye in the parts tree brings it back."] })
+        PS.UI.Controls.AttachTooltip(instead, L["Grey bar instead"], { L["Turns on Grey when tagged by others in this "
+            .. "design and turns the TAGGED word off in every design. Its eye in the parts tree brings it back."] })
         K.Add(health, insteadRow, OfferGrey)
         Options.editorGreyWhenTagged, Options.editorGreyInstead = grey, instead
     end)
@@ -1240,8 +1439,9 @@ local function BuildBarContexts(page)
             Register(checkbox)
             Mark(row, Area.Option(key))
             K.Add(cast, row)
+            return checkbox
         end
-        CastCheck("castInterruptColours", L["Colour"], L["Colour by interrupt"])
+        Options.editorCastInterruptCheck = CastCheck("castInterruptColours", L["Colour"], L["Colour by interrupt"])
         local function ByInterrupt() return ProfileValue("castInterruptColours")() == true end
         for _, swatch in ipairs({ { "ready", L["Ready"] }, { "cooldown", L["On cooldown"] }, { "locked", L["Can't interrupt"] } }) do
             local which = swatch[1]
@@ -1419,12 +1619,11 @@ local function BuildValueContext(page)
                 .. "hpp pp ppp tp."],
             L["Modifiers: {health:short} 1.2k, {health.percent:1} one decimal, {name:upper} {name:lower}, "
                 .. "{name:max:10}, {target:else:none} when missing."],
-            L["Conditions: [if health.percent < 35]LOW[elseif elite]ELITE[else]{health}[end]. Use and, or, not, "
-                .. "brackets and < <= > >= = !=."],
-            L["Flags for conditions: tagged elite rare boss casting interruptible interruptReady combat tanking targeted focus quest "
-                .. "questdrop friendly hostile neutral player pvp instance ingroup inguild role.tank threat.holding "
-                .. "threat.losing threat.pulling threat.other threat.offtank threat.loose hastarget inrange; level.diff is a "
-                .. "number."],
+            L["Conditions: [if health.percent < 35]LOW[elseif unit.elite]ELITE[else]{health}[end]. Use and, or, not, "
+                .. "brackets and < <= > >= = !=; a flag = true or = false."],
+            -- (The flags and words with values from the rule reference, Core/RuleWords.lua: one list.)
+            string.format(L["Flags for conditions: %s. Words with values (= or !=): %s. Every word: Rules › What can I "
+                .. "use?"], PS.RuleWords.FlagNames()),
             L["Objects and NPCs you can interact with: {object.kind} (herb, ore, skin, loot, quest, inspect, interact, "
                 .. "talk, trainer, vendor, flight, repair, mail or other, from the game's own icon), [if object.kind = herb], "
                 .. "object.unable (the icon says you can't yet), interact.inrange, object.quest (a quest database lists it). "
@@ -1489,6 +1688,21 @@ local function BuildValueContext(page)
     end)
 end
 
+-- What the designs that draw aura rows use as key's Source (Settings › Auras' line): the one choice's name, or
+-- differs by design.
+function Options.AuraSourceSummary(key)
+    local value, mixed, seen = nil, false, false
+    PS.Designs.EachDesign(PS.GetSettings(), { enemy = true, enemyPlayer = true, friendlyPlayer = true, friendlyNPC = true },
+        function(profile)
+            if not seen then value, seen = profile[key], true elseif profile[key] ~= value then mixed = true end
+        end)
+    if mixed then return L["differs by design"] end
+    for _, choice in ipairs(model.auraSourceChoices) do
+        if choice.value == value then return choice.label end
+    end
+    return ""
+end
+
 -- Aura rows: which auras show, and their grid.
 local function BuildAuraContexts(page)
     local ranges = Schema.auraLayoutRanges
@@ -1508,12 +1722,14 @@ local function BuildAuraContexts(page)
             -- Which auras show and how their countdown text looks.
             local which = K.Section(context, L["DISPLAY"])
             K.Add(context, which)
-            local getSource, setSource = SettingControl(definition.source)
+            -- Whose auras: the design's own (Enemy players' layer included), so mobs can show only yours and enemy
+            -- players everyone's.
             local sourceRow, source = K.DropdownRow(which, L["Source"], { choices = model.auraSourceChoices,
-                name = WidgetName("selected_" .. definition.source, "Dropdown"), get = getSource, set = setSource })
+                name = WidgetName("selected_" .. definition.source, "Dropdown"), get = ProfileValue(definition.source),
+                set = SetProfileValue(definition.source) })
             Register(source)
+            Mark(sourceRow, Area.Option(definition.source))
             K.Add(which, sourceRow)
-            Options.SharedSettingNote(K, which)
             -- Timed only (the row's timedOnly; off is stored as absent). The game's own aura container,
             -- used where it keeps aura times private, cannot be filtered, so there every aura shows.
             local timedRow, timed = K.CheckRow(which, L["Permanent"], { text = L["Hide permanent auras"],
@@ -1735,7 +1951,8 @@ local function BuildStyle(page)
     Keep(partsControl)
     Mark(partsRow, Area.Style("backdropParts"))
     K.AttachHelp(partsRow, L["The parts the box wraps while they show. A hidden part (its eye off, nothing to show, "
-        .. "or hidden by a rule) is left out; with none showing the box hides."])
+        .. "or hidden by a rule) is left out; with none showing the box hides. A part pinned to the box itself (the "
+        .. "Action icon beside it) is never wrapped: pin it to the name to put it inside."])
     K.Add(section, partsRow, Fitted)
     local paddingRow, padding = K.SliderRow(section, L["Padding"], {
         min = Schema.STYLE_PADDING[1], max = Schema.STYLE_PADDING[2], step = 1,
@@ -2030,12 +2247,18 @@ local function RuleCard(parent, index)
     end)
     statusRow:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
 
-    -- Then: what it sets; a colour's swatch at the card's right.
+    -- Then: what it sets; a colour's swatch at the card's right. Set class colour is a colour rule whose colour is the
+    -- unit's class colour (colourSource "class"; its picked colour is kept for Set colour).
     local thenRow = K.Add(card, K.Row(card, L["Then"], pad))
+    local CLASS_CHOICE = "classColour"
     local function SetChoices()
         local choices = {}
         if Colourable(Options.selectedComponent) then
             choices[#choices + 1] = { value = "colour", label = L["Set colour"] }
+            choices[#choices + 1] = { value = CLASS_CHOICE, label = L["Set class colour"],
+                help = L["The unit's class colour: yours from Settings › Player colours › Class colours, else Blizzard's. "
+                    .. "Where the game keeps the class private, the game's own class colour; a unit with no class keeps "
+                    .. "the part's own colour."] }
             choices[#choices + 1] = { value = "blend", label = L["Blend by health"] }
         end
         choices[#choices + 1] = { value = "alpha", label = L["Set opacity"] }
@@ -2046,11 +2269,14 @@ local function RuleCard(parent, index)
         choices = SetChoices, name = WidgetName("selected_rule_set_" .. index, "Dropdown"),
         get = function()
             local rule = Shown()
+            if rule and rule.set == "colour" and rule.colourSource == "class" then return CLASS_CHOICE end
             return rule and rule.set
         end,
         set = function(value)
             local rule, list = Rule()
             if not rule then return end
+            rule.colourSource = nil
+            if value == CLASS_CHOICE then value, rule.colourSource = "colour", "class" end
             rule.set = value
             if value == "colour" and not rule.colour then rule.colour = { r = 0.5, g = 0.5, b = 0.5 } end
             if value == "alpha" and not rule.alpha then rule.alpha = 0.5 end
@@ -2221,8 +2447,9 @@ local function RuleCard(parent, index)
         ShowStatus(rule)
         enabled:Refresh()
         setDropdown:Refresh()
-        swatch:SetShown(rule.set == "colour")
-        if rule.set == "colour" then swatch:Refresh() end
+        local picked = rule.set == "colour" and rule.colourSource == nil
+        swatch:SetShown(picked)
+        if picked then swatch:Refresh() end
         alpha:SetShown(rule.set == "alpha")
         if rule.set == "alpha" then alpha:Refresh() end
         local stops = rule.set == "blend" and rule.stops or {}
@@ -2254,16 +2481,9 @@ local function BuildRules(page)
             .. "hides it. An empty condition always holds."],
         L["Rules are read top to bottom: the last colour or opacity rule that holds wins, and any hide rule "
             .. "hides. With none, the part keeps its own style. Presets add ready-made sets."],
-        L["Conditions are the same as in Custom text: tagged, elite, casting, health.percent < 35, and, or, not. "
-            .. "Role and threat: role.tank, threat.holding, threat.losing, threat.pulling, threat.other, "
-            .. "threat.offtank, threat.loose (held by someone who is not a tank, as the Tank window's LOOSE). Fades: "
-            .. "hastarget (you have a target), inrange (within your spells' reach)."],
-        L["Objects and NPCs: object.kind = herb (or ore, skin, loot, quest, inspect, interact, talk, trainer, vendor, "
-            .. "flight, repair, mail, other: the game's own icon says), object.unable (it says you can't yet), "
-            .. "interact.inrange (within reach), object.quest (a quest database lists it), object.id = 175734 (the "
-            .. "object's ID from the game), unit.id (an NPC's), object.skill > 100 (the skill it needs), object.cangather "
-            .. "(your skill reaches it; both known for herbs and ore, and once you have hovered one like it), "
-            .. "object.cancultivate (Cultivation is ready for this herb)."],
+        L["Conditions are the same as in Custom text: health.percent < 35, unit.elite and unit.tagged = false, "
+            .. "pvp.flagged = false, role.tank and threat.losing. What can I use? (under the rules) lists every word "
+            .. "by topic, with its old name, what it means and an example."],
         { L["A condition on a protected or missing value is unknown and counts as not true, even after not."],
             0.86, 0.86, 0.86 },
     }, false)
@@ -2283,6 +2503,14 @@ local function BuildRules(page)
     })
     K.Add(section, previewRow)
     Options.editorRulesPreviewCheckbox = Register(previewTrue)
+    -- What can I use?: the rule reference (Settings › Help's Rule words, Core/RuleWords.lua).
+    local wordsRow, words = K.ButtonRow(section, L["What can I use?"], 140)
+    words:SetScript("OnClick", function() Options:OpenRuleReference() end)
+    Controls.AttachTooltip(words, L["What can I use?"], { L["Opens Studio › Settings › Help at the rule words: every "
+        .. "word rules and custom text can use, by topic, with its old name, what it means, an example and the plates "
+        .. "that have it, and how and, or, not and unknown values work."] })
+    K.Add(section, wordsRow)
+    Options.editorRuleWordsLink = words
     -- The cards, one per rule, in order (each CARD_GAP below the one before).
     local list = K.Group(section)
     local cards = {}
@@ -2322,6 +2550,18 @@ local function BuildRules(page)
                 end }
             end
         end
+        -- Built in: the options that do the retired presets' jobs (ProfilePresets.BUILT_IN), after the presets of a part
+        -- that has some. Each opens its setting and adds no rule, so there is still one route per job.
+        if #entries == 0 then return entries end
+        local builtIn = {}
+        for _, option in ipairs(Presets.BUILT_IN) do
+            local open = Options.OpenBuiltInOption
+            builtIn[#builtIn + 1] = { text = option.name, func = function() open(option.id) end,
+                tooltip = { title = option.name, text = string.format(L["Opens it in %s. It adds no rule; your rules still "
+                    .. "win over it."], option.home) } }
+        end
+        entries[#entries + 1] = { text = L["Built in"], children = builtIn,
+            tooltip = { title = L["Built in"], text = L["Jobs PlateSmith does without rules: each opens its setting."] } }
         return entries
     end
     local presets = CreateStudioButton(section.band, L["Presets"], 86, K.BUTTON_H)
@@ -4065,7 +4305,6 @@ local function BuildSettingsPages(settingsContent)
         -- Its home (the game's own name settings); Players › Plate settings › Friendly plates reads it and links here.
         Check(names, "plate.hideUnstyledFriendlyNames", "hideUnstyledFriendlyNames", L["Hide unstyled names"])
         SK.Add(names, SK.ControlHelp(names, HIDE_UNSTYLED_HELP))
-        Check(names, "plate.friendlyRelationshipColours", "friendlyRelationshipColours", L["Colour social relationships"])
         Check(names, "plate.nativeNameFont", "nativeNameFont", L["Readable Blizzard names outdoors"])
         SK.Add(names, SK.ControlHelp(names, L["Outside dungeons and raids, Blizzard's names are drawn at least 13 pt with "
             .. "an outline. Where Blizzard name size applies, it is used instead."]))
@@ -4263,23 +4502,45 @@ local function BuildSettingsPages(settingsContent)
     Define("auras", function()
         local auras = Page("auras",
             L["Select Buffs or Debuffs in the Studio tree to set how many icons show, their size and which way they grow."])
+        -- Whose auras show is each design's own (the Buffs' and Debuffs' Source in the inspector): a line says what the
+        -- designs use, not a second control.
+        local function SourceLine(section, key, label)
+            local row = SK.Row(section, label)
+            row.value = SK.Text(row, "", "label")
+            row.value:SetPoint("LEFT", row, "LEFT", SK.CONTROL_X, 0)
+            SK.Add(section, row, function()
+                row.value:SetText(Options.AuraSourceSummary(key))
+                return true
+            end)
+            SK.AttachHelp(row, L["Each design picks its own: select Buffs or Debuffs in the Studio tree (Display › Source)."])
+            Options.editorAuraSourceLines = Options.editorAuraSourceLines or {}
+            Options.editorAuraSourceLines[key] = row
+        end
         local buffs = Section(auras, "buffs", L["Buffs"])
         PartCheck(buffs, "auras.showBuffs", "showBuffs", L["Show buffs"])
-        Choice(buffs, "auras.buffSource", "buffSource", L["Buff source"], model.auraSourceChoices)
+        SourceLine(buffs, "buffSource", L["Buff source"])
         local debuffs = Section(auras, "debuffs", L["Debuffs"])
         PartCheck(debuffs, "auras.showDebuffs", "showDebuffs", L["Show debuffs"])
-        Choice(debuffs, "auras.debuffSource", "debuffSource", L["Debuff source"], model.auraSourceChoices)
+        SourceLine(debuffs, "debuffSource", L["Debuff source"])
     end)
 
-    -- Relationships.
+    -- Player colours (key "relations").
     Define("relations", function()
         local relations = Page("relations", L["A PvP-flagged ally's colour goes on a full plate's health bar, or on "
             .. "the name of a names-only plate in place of its social colour. Icons use Blizzard's faction art. These "
-            .. "apply outdoors; Blizzard protects friendly plates in dungeons and raids."])
+            .. "apply outdoors; Blizzard protects friendly plates in dungeons and raids. Class colours show where "
+            .. "Studio's Health bar or Name has Class colour ticked (Players and Enemy players)."])
         local icons = Section(relations, "relationIcons", L["Icons"])
         Check(icons, "relations.showGroupIcon", "showGroupIcon", L["Show icon above group members"])
         Check(icons, "relations.showGuildIcon", "showGuildIcon", L["Show icon above guild members"])
         local colours = Section(relations, "relationColours", L["Social colours"])
+        -- The social switch's one home.
+        Check(colours, "relations.friendlyRelationshipColours", "friendlyRelationshipColours",
+            L["Group, guild & friends come before class colours"])
+        SK.Add(colours, SK.ControlHelp(colours, L["On: a friendly player in your group or guild, a friend or a recent "
+            .. "ally takes its colour below on its name and health bar, over its class colour. Off: friendly players "
+            .. "take their class colour where Studio's Players › Health bar or Name has Class colour ticked (as "
+            .. "Blizzard's plates draw them), else blue."]))
         Colour(colours, "relations.group", "group", L["Group members"])
         Colour(colours, "relations.guild", "guild", L["Guild members"])
         Colour(colours, "relations.friend", "friend", L["Friends"])
@@ -4288,7 +4549,16 @@ local function BuildSettingsPages(settingsContent)
             return LabelOf(model.friendlyPvpChoices, PS.GetSettings().friendlyPvpStyle)
         end)
         Choice(pvp, "relations.friendlyPvpStyle", "friendlyPvpStyle", L["PvP-flagged players"], model.friendlyPvpChoices)
+        Choice(pvp, "relations.friendlyPvpColourOn", "friendlyPvpColourOn", L["PvP colour goes on"],
+            model.friendlyPvpPlaceChoices)
         Colour(pvp, "relations.pvp", "pvp", L["PvP colour"])
+        Options.BuildClassColourSettings(SK, Section(relations, "classColours", L["Class colours"], function()
+            local own = PS.GetSettings().classColours
+            local changed = 0
+            for _ in pairs(type(own) == "table" and own or {}) do changed = changed + 1 end
+            if changed == 0 then return L["Blizzard's"] end
+            return string.format(L["%d changed"], changed)
+        end), Bind)
     end)
 
     -- Experimental: tests of what the game allows, each off by default (the page header's "?" says so,
@@ -4366,6 +4636,16 @@ local function BuildSettingsPages(settingsContent)
             SK.Add(access, SK.ControlHelp(access, spec[3]))
             Options.editorAccessCheckboxes[spec[1]] = Register(box)
         end
+        -- The What's new window's opt-out (Studio/LookUpdate.lua): the same setting as the window's own box.
+        local news = Section(studio, "lookNews", L["Notices"])
+        local newsRow, newsBox = SK.CheckRow(news, nil, { text = L["Tell me when a look has a new version"],
+            name = WidgetName("studio_lookNews", "Checkbox"), get = function() return Options.LookUpdate.Enabled() end,
+            set = function(enabled) Options.LookUpdate.SetEnabled(enabled) end })
+        SK.Add(news, newsRow)
+        SK.Add(news, SK.ControlHelp(news, L["When you open Studio and your profile's look has a new version, a window says "
+            .. "what's new, once per profile and version. Off, it never shows; Profile › Update to the latest look still "
+            .. "offers the update."]))
+        Options.editorLookNewsCheckbox = Register(newsBox)
         Options:RefreshStudioScaleControls()
     end)
 
@@ -4399,7 +4679,7 @@ local function BuildSettingsPages(settingsContent)
                 .. "right) switches, creates and renames profiles."] },
             { "helpCustom", L["Custom text, Style and Rules"], L["+ Add > Custom part > Custom text writes your own text, such as "
                 .. "{health} / {health.max} ({health.percent}%). Style sets fonts, boxes and bar borders. Rules change a part "
-                .. "while a condition holds, such as \"when tagged, set colour grey\". Test values try them in the preview."] },
+                .. "while a condition holds, such as \"when unit.elite, set colour gold\". Test values try them in the preview."] },
             { "helpSharing", L["Sharing"], L["Export gives a share code (or readable JSON) for the current profile. Import "
                 .. "takes one and lets you choose which sections to replace; press Save to keep them."] },
             { "helpCommands", L["Commands"], L["/ps opens Studio. /ps console shows or hides the threat windows. "
@@ -4415,6 +4695,7 @@ local function BuildSettingsPages(settingsContent)
             SK.Ink(body.text, "label")
             if body.text.SetSpacing then body.text:SetSpacing(3) end
         end
+        Options.BuildRuleReference(help, Section, SK)
     end)
 
     -- A value change can change a folded section's summary.
@@ -4423,6 +4704,82 @@ local function BuildSettingsPages(settingsContent)
             Options:LayoutEditorSettingsPanels()
         end
     end })
+end
+
+-- The rule reference (Rules › What can I use?): on Settings › Help, a section per topic of Core/RuleWords.lua (each
+-- word in gold with its kind and old name, what it means, an example and the plates that have it), then the operators
+-- and unknown values, then the presets that are built-in options now. Made from RuleWords only, so it cannot drift.
+local WORD_COLOUR = "|cffffd100%s|r"
+local function WordLines(entry)
+    local head = string.format(WORD_COLOUR, entry.word) .. "   " .. entry.kind
+    if #entry.former > 0 then head = string.format(L["%s · was %s"], head, table.concat(entry.former, ", ")) end
+    if #entry.aliases > 0 then head = string.format(L["%s · also %s"], head, table.concat(entry.aliases, ", ")) end
+    return string.format("%s\n%s\n%s", head, entry.text, string.format(L["Example: %s · Plates: %s"], entry.example,
+        entry.plates))
+end
+function Options.BuildRuleReference(page, Section, SK)
+    local Words, sections = PS.RuleWords, {}
+    local function Body(section, text)
+        local body = SK.Add(section, SK.Help(section, text))
+        SK.Ink(body.text, "label")
+        if body.text.SetSpacing then body.text:SetSpacing(3) end
+        return body
+    end
+    local byTopic = {}
+    for _, entry in ipairs(Words.Entries()) do
+        byTopic[entry.topic] = byTopic[entry.topic] or {}
+        table.insert(byTopic[entry.topic], entry)
+    end
+    for _, topic in ipairs(Words.TOPICS) do
+        local section = Section(page, "helpRules_" .. topic.id, string.format(L["Rule words: %s"], topic.label))
+        for _, entry in ipairs(byTopic[topic.id] or {}) do Body(section, WordLines(entry)).ruleWord = entry.word end
+        sections[#sections + 1] = section
+    end
+    local operators = Section(page, "helpRules_operators", L["Rule words: and, or, not and unknown values"])
+    for _, operator in ipairs(Words.OPERATORS) do
+        Body(operators, string.format("%s\n%s\n%s", string.format(WORD_COLOUR, operator[1]), operator[2],
+            string.format(L["Example: %s"], operator[3])))
+    end
+    Body(operators, Words.UNKNOWN)
+    sections[#sections + 1] = operators
+    local presets = Section(page, "helpRules_builtIn", L["Presets that are built-in options now"])
+    for _, option in ipairs(Presets.BUILT_IN) do
+        local names = {}
+        for _, preset in ipairs(RULE_PRESETS) do
+            if preset.builtIn == option.id then names[#names + 1] = preset.name end
+        end
+        Body(presets, string.format(L["%s: %s (%s)."], table.concat(names, ", "), option.name, option.home))
+    end
+    Body(presets, L["Rules made from them stay ordinary rules. Rules › Presets › Built in opens each."])
+    sections[#sections + 1] = presets
+    Options.editorRuleReferenceSections = sections
+end
+
+-- Rules › What can I use?: Settings › Help opened at the rule words (its first section unfolded, scrolled to and
+-- flashed, as a search result opens).
+function Options:OpenRuleReference()
+    if not self:OpenSettingsCategory("help") then return false end
+    local first = self.editorRuleReferenceSections and self.editorRuleReferenceSections[1]
+    if not (first and self.settingsSearch) then return false end
+    return self.settingsSearch.Pick({ place = "studio", category = "help", frame = first, section = first })
+end
+
+-- Rules › Presets › Built in (ProfilePresets.BUILT_IN): opens the option that does a retired preset's job. Colour by
+-- threat and Fading are Settings rows; Colour by interrupt the Cast bar's row; Grey when tagged the Health bar's (an
+-- enemy plate's: another plate type opens the Enemies).
+function Options.OpenBuiltInOption(id)
+    local Search = Options.settingsSearch
+    if id == "threat" then return Options:OpenSettingsControl("plate.colourByThreat") end
+    if id == "fading" then return Options:OpenSettingsControl("plate.fadeNonTarget") end
+    if not Search then return false end
+    if id == "tagged" then
+        if not Options:IsEditorEnemy() then Options:OpenEditorDesign("enemy", "world") end
+        return Search.RevealPartControl("health", function() return Options.editorGreyWhenTagged end)
+    end
+    if id == "interrupt" then
+        return Search.RevealPartControl("cast", function() return Options.editorCastInterruptCheck end)
+    end
+    return false
 end
 
 -- A Settings page by key, built the first time it is wanted (shown, or indexed by Settings

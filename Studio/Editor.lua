@@ -189,6 +189,15 @@ local classificationIconSizeChoices = {
     { value = "standard", label = L["18 px"], help = L["Blizzard's own size, at the plate's scale."] },
     { value = "text", label = L["Text height"], help = L["As tall as the name's text."] },
 }
+-- Where a flagged ally's PvP colour goes (friendlyPvpColourOn; PvPMark.ColourOnBar).
+local friendlyPvpPlaceChoices = {
+    { value = "auto", label = L["Automatic"], help = L["The health bar; the name instead where the bar has a colour of "
+        .. "its own (Custom, its class colour or a colour rule that always applies) or the plate shows no bar."] },
+    { value = "bar", label = L["Health bar"], help = L["Always the health bar, over its class or Custom colour; the name "
+        .. "on names-only plates."] },
+    { value = "name", label = L["Name"], help = L["Always the name; the bar keeps its own colour."] },
+    { value = "both", label = L["Both"], help = L["The health bar and the name."] },
+}
 local friendlyPvpChoices = {
     { value = "off", label = L["Off"] },
     { value = "colour", label = L["Colour"] },
@@ -2182,9 +2191,10 @@ function Options:PlaceEditorBackdrop()
     local style = self:EditorBackdropStyle()
     local scale = (self:EditorProfileSettings() or {}).scale or 1
     local parts, transforms, count = Backdrop.Parts(style), self:EditorTransforms(), 0
+    local layout = self:EditorDrawnLayout()
     for _, key in ipairs(Schema.BACKDROP.PARTS) do
         local part = components[key]
-        local at = parts[key] and part and transforms[key]
+        local at = Backdrop.Wraps(parts, layout, key) and part and transforms[key]
         if at and self:IsEditorComponentRelevant(key) and self:IsEditorPartDrawn(key) then
             count = count + 1
             local entry = backdropEntries[count] or {}
@@ -3153,7 +3163,7 @@ Options.studioModel = {
     editorProfiles = editorProfiles,
     modeChoices = modeChoices,
     friendlyChoices = friendlyChoices,
-    friendlyPvpChoices = friendlyPvpChoices,
+    friendlyPvpChoices = friendlyPvpChoices, friendlyPvpPlaceChoices = friendlyPvpPlaceChoices,
     classificationStyleChoices = classificationStyleChoices,
     classificationIconSizeChoices = classificationIconSizeChoices,
     targetHighlightChoices = targetHighlightChoices,

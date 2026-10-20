@@ -14,8 +14,8 @@ PS.ProfilePresets = ProfilePresets
 -- last one that holds wins, so the more specific rules come later. kind "colour" offers a preset
 -- only on parts rules can colour (bars and text). Fact names and colours are set here and nowhere else.
 -- retired: no longer offered in Rules › Presets, because a built-in option does the job (STANDARDS 2a:
--- one route per job, rules on top). Kept by id: rules made from them are ordinary saved rules and keep
--- working, and Settings › Fading writes the fades through them.
+-- one route per job, rules on top); builtIn names it (BUILT_IN, below). Kept by id: rules made from them are
+-- ordinary saved rules and keep working, and Settings › Fading writes the fades through them.
 ProfilePresets.RULES = {
     { id = "healthBlend", name = L["Health colours (blend)"], kind = "colour", rules = {
         { when = "", set = "blend", stops = { { at = 0, colour = { r = 0.9, g = 0.15, b = 0.1 } },
@@ -28,35 +28,48 @@ ProfilePresets.RULES = {
         { when = "health.percent < 20", set = "colour", colour = { r = 1, g = 0.4, b = 0 } },
     } },
     -- Retired for the health bar's Grey when tagged by others (greyWhenTagged), on for new profiles.
-    { id = "tagged", name = L["Grey when tagged"], kind = "colour", retired = true, rules = {
-        { when = "tagged", set = "colour", colour = { r = 0.5, g = 0.5, b = 0.5 } },
+    { id = "tagged", name = L["Grey when tagged"], kind = "colour", retired = true, builtIn = "tagged", rules = {
+        { when = "unit.tagged", set = "colour", colour = { r = 0.5, g = 0.5, b = 0.5 } },
     } },
     -- Retired for Settings › Modules › Threat › Threat colours (Colour by threat).
-    { id = "threatTank", name = L["Threat colours (tank)"], kind = "colour", retired = true, rules = {
+    { id = "threatTank", name = L["Threat colours (tank)"], kind = "colour", retired = true, builtIn = "threat", rules = {
         { when = "role.tank and threat.holding", set = "colour", colour = { r = 0.5, g = 0.5, b = 1 } },
         { when = "role.tank and threat.losing", set = "colour", colour = { r = 1, g = 1, b = 0 } },
         { when = "role.tank and threat.offtank", set = "colour", colour = { r = 0.73, g = 0.92, b = 1 } },
-        { when = "role.tank and threat.other and not threat.offtank", set = "colour", colour = { r = 1, g = 0, b = 0 } },
+        { when = "role.tank and threat.other and threat.offtank = false", set = "colour", colour = { r = 1, g = 0, b = 0 } },
     } },
-    { id = "threatDps", name = L["Threat colours (DPS/healer)"], kind = "colour", retired = true, rules = {
-        { when = "not role.tank and threat.pulling", set = "colour", colour = { r = 1, g = 0.8, b = 0 } },
-        { when = "not role.tank and threat.holding", set = "colour", colour = { r = 1, g = 0.11, b = 0 } },
+    { id = "threatDps", name = L["Threat colours (DPS/healer)"], kind = "colour", retired = true, builtIn = "threat",
+        rules = {
+        { when = "role.tank = false and threat.pulling", set = "colour", colour = { r = 1, g = 0.8, b = 0 } },
+        { when = "role.tank = false and threat.holding", set = "colour", colour = { r = 1, g = 0.11, b = 0 } },
     } },
     -- Retired for the cast bar's Colour by interrupt, which also shows it through the client's colour
     -- sink where the game withholds the interrupt's readiness (then neither of the first two rules holds).
-    { id = "castInterrupt", name = L["Cast colours by interrupt"], kind = "colour", retired = true, rules = {
-        { when = "casting and interruptible and interruptReady", set = "colour", colour = { r = 0.25, g = 0.85, b = 0.35 } },
-        { when = "casting and interruptible and not interruptReady", set = "colour", colour = { r = 0.9, g = 0.3, b = 0.2 } },
-        { when = "casting and not interruptible", set = "colour", colour = { r = 0.55, g = 0.55, b = 0.55 } },
+    { id = "castInterrupt", name = L["Cast colours by interrupt"], kind = "colour", retired = true, builtIn = "interrupt",
+        rules = {
+        { when = "cast.active and cast.interruptible and cast.interruptready", set = "colour",
+            colour = { r = 0.25, g = 0.85, b = 0.35 } },
+        { when = "cast.active and cast.interruptible and cast.interruptready = false", set = "colour",
+            colour = { r = 0.9, g = 0.3, b = 0.2 } },
+        { when = "cast.active and cast.interruptible = false", set = "colour", colour = { r = 0.55, g = 0.55, b = 0.55 } },
     } },
     -- Fades, retired for Settings › Behaviour & display › Fading, which adds these to every shown part of
     -- the enemy plates (Settings' SetFadeEverywhere finds them by their condition).
-    { id = "fadeNonTarget", name = L["Fade non-targets"], kind = "alpha", retired = true, rules = {
-        { when = "hastarget and not targeted", set = "alpha", alpha = 0.5 },
+    { id = "fadeNonTarget", name = L["Fade non-targets"], kind = "alpha", retired = true, builtIn = "fading", rules = {
+        { when = "you.hastarget and unit.target = false", set = "alpha", alpha = 0.5 },
     } },
-    { id = "fadeOutOfRange", name = L["Fade out of range"], kind = "alpha", retired = true, rules = {
-        { when = "not inrange", set = "alpha", alpha = 0.5 },
+    { id = "fadeOutOfRange", name = L["Fade out of range"], kind = "alpha", retired = true, builtIn = "fading", rules = {
+        { when = "unit.inrange = false", set = "alpha", alpha = 0.5 },
     } },
+}
+
+-- The built-in options that do the retired presets' jobs, in Studio's order: Rules › Presets › Built in opens each
+-- (Studio/Inspector.lua; it adds no rules), and the rule reference and README list them (Core/RuleWords.lua).
+ProfilePresets.BUILT_IN = {
+    { id = "threat", name = L["Colour by threat"], home = L["Settings › Modules › Threat"] },
+    { id = "interrupt", name = L["Colour by interrupt"], home = L["Studio › Cast bar"] },
+    { id = "tagged", name = L["Grey when tagged by others"], home = L["Studio › Health bar › Tagged"] },
+    { id = "fading", name = L["Fading"], home = L["Settings › Behaviour & display"] },
 }
 
 function ProfilePresets.Rule(id)
@@ -79,8 +92,8 @@ ProfilePresets.STYLES = {
 local BLACK, DARK = { r = 0, g = 0, b = 0, a = 1 }, { r = 0.06, g = 0.06, b = 0.07, a = 0.92 }
 local WHITE = { r = 1, g = 1, b = 1 }
 -- The looks' Enemies plates (1.3.0): each is its first-run card's sketch (Studio/FirstRun.lua), made real
--- (docs/reviews/LOOKS_V2.md). The name in a warm white and the level in gold, each as a rule set first (a
--- player's later rules still win); the bars' background where a look has none of its own.
+-- (docs/reviews/LOOKS_V2.md). The name in a warm white (the Name's own Colour: WarmName) and the level in gold (a rule
+-- set first: a player's later rules still win); the bars' background where a look has none of its own.
 local NAME_COLOUR, LEVEL_COLOUR = { r = 1, g = 0.92, b = 0.88 }, { r = 1, g = 0.82, b = 0 }
 local BAR_BACKGROUND = { r = 0.05, g = 0.05, b = 0.05, a = 0.75 }
 -- Each look's combo points (the Enemies' combo style, replacing the default's gold coins). A row
@@ -110,8 +123,8 @@ ProfilePresets.COMBO = COMBO
 
 -- Compact's cast bar: the cast colour while it can be interrupted, grey while it cannot.
 local CAST_RULES = {
-    { when = "casting and interruptible", set = "colour", colour = S.CAST_COLOUR },
-    { when = "casting and not interruptible", set = "colour", colour = { r = 0.55, g = 0.55, b = 0.55 } },
+    { when = "cast.active and cast.interruptible", set = "colour", colour = S.CAST_COLOUR },
+    { when = "cast.active and cast.interruptible = false", set = "colour", colour = { r = 0.55, g = 0.55, b = 0.55 } },
 }
 
 -- Appends the named rule presets to profile.rules[part], in order.
@@ -285,6 +298,21 @@ local function GoldLevel(profile, size)
     ColourFirst(profile, "level", LEVEL_COLOUR)
 end
 
+-- The Enemies' name in the warm white as the Name's own Colour (Custom; LOOK_VERSION 2, a rule set first before), with
+-- no unconditional colour rule on it, so the Enemy players layer, which inherits it, can take its Name › Class colour
+-- (ticked, it wins over the Colour: PlateColours.OwnName). A part's own colour is under threat colours, where the
+-- rule was over them: the Name's Colour by threat is off, so an NPC's name stays warm white in a fight, as before.
+local function WarmName(enemy)
+    enemy.nameColour, enemy.threatColourName = Table.DeepCopy(NAME_COLOUR), false
+    local rules = enemy.rules
+    if not (rules and rules.name) then return end
+    local list = {}
+    for _, rule in ipairs(rules.name) do
+        if not (rule.when == "" and rule.set == "colour") then list[#list + 1] = rule end
+    end
+    rules.name = list[1] and list or nil
+end
+
 -- The Enemies' resting plate as its first-run card draws it: the name at nameSize pt in the warm white
 -- (under the name's 9 pt floor, its style's Font size takes it), in its own face and outline; the level
 -- (levelSize, nil while the look shows none) in gold Friz Quadrata in the name's outline; the bars on the
@@ -295,7 +323,7 @@ end
 local function Sketch(enemy, nameSize, levelSize, gap)
     enemy.nameFontSize = math.max(9, nameSize)
     if nameSize < 9 then Style(enemy, "name", { fontSize = nameSize }) end
-    ColourFirst(enemy, "name", NAME_COLOUR)
+    WarmName(enemy)
     local styles = enemy.styles
     if levelSize then GoldLevel(enemy, levelSize) end
     local background = styles.health and styles.health.background or BAR_BACKGROUND
@@ -583,8 +611,8 @@ function BUILDERS.healer(settings)
     FlatBar(enemy, "health", 0)
     FlatBar(enemy, "cast", 0)
     -- Drawn in full with no target (the plate as its card draws it); dimmed beside your target.
-    AddOwnRules(enemy, "name", { { when = "hastarget and not targeted", set = "alpha", alpha = 0.5 } })
-    AddOwnRules(enemy, "health", { { when = "hastarget and not targeted", set = "alpha", alpha = 0.5 } })
+    AddOwnRules(enemy, "name", { { when = "you.hastarget and unit.target = false", set = "alpha", alpha = 0.5 } })
+    AddOwnRules(enemy, "health", { { when = "you.hastarget and unit.target = false", set = "alpha", alpha = 0.5 } })
     -- 5 px under the slim bar: the marks beside it (taller than it) clear combo points of any size.
     Sketch(enemy, 10, nil, 5)
     Quiet(enemy, 16, 12)
@@ -714,18 +742,22 @@ function BUILDERS.blizzard(settings)
             Style(profile, bar, { texture = "modern", border = 1, borderColour = { r = 0, g = 0, b = 0, a = 0.85 },
                 background = { r = 0.04, g = 0.04, b = 0.05, a = 0.85 } })
         end
-        AddOwnRules(profile, "name", { { when = "", set = "colour", colour = WHITE } })
+        -- (The Enemies' name is the warm white of every look: Sketch.)
+        if profileKey == "friendlyNPC" then AddOwnRules(profile, "name", { { when = "", set = "colour", colour = WHITE } }) end
         AddOwnRules(profile, "level", { { when = "", set = "colour", colour = B.levelColour } })
-        AddOwnRules(profile, "cast", { { when = "casting and not interruptible", set = "colour", colour = B.uninterruptible } })
+        AddOwnRules(profile, "cast", { { when = "cast.active and cast.interruptible = false", set = "colour",
+            colour = B.uninterruptible } })
     end)
     -- Friendly players' bars in their class colour, as Blizzard's (the automatic colour without the social colours,
-    -- which Blizzard's plates do not draw); their names white (the rule above), but a PvP-flagged ally's in Blizzard's
-    -- green beside the faction icon, the selection colour Blizzard's plates give it where they colour names
-    -- (CompactUnitFrame_UpdateName's UnitSelectionColor; on Forever its Legacy style, as Modern's names are white).
-    -- The green is Display's Colour and icon: with social colours off the class-coloured bar keeps its colour and the
-    -- name takes it (PvPMark.ColourOnBar), so the white rule steps aside for a flagged ally (not pvp).
+    -- which Blizzard's plates do not draw); their names white, but a PvP-flagged ally's in Blizzard's green beside the
+    -- faction icon, the selection colour Blizzard's plates give it where they colour names (CompactUnitFrame_UpdateName's
+    -- UnitSelectionColor; on Forever its Legacy style, as Modern's names are white). The white is the Name's own colour
+    -- (Custom, Class colour unticked; LOOK_VERSION 2, which had a rule "not pvp" before), so ticking the Name's Class
+    -- colour simply works. The green is Display's Colour and icon: with social colours off the class-coloured bar keeps
+    -- its colour and the name takes it (PvPMark.ColourOnBar), over the Name's own colour.
     settings.friendlyRelationshipColours, settings.friendlyPvpStyle = false, "both"
-    Profiles(settings).friendlyPlayer.rules.name[1].when = "not pvp"
+    local players = Profiles(settings).friendlyPlayer
+    players.nameColour, players.nameClassColour = Table.DeepCopy(WHITE), false
     local npcs = Profiles(settings).friendlyNPC
     npcs.healthColourMode, npcs.healthColour = "custom", Table.DeepCopy(B.friendlyGreen)
     -- The Enemies: a 10 pt name 3 px inside the bar, the level box 6 px after the bar, 2 px each side of its digits,
@@ -739,33 +771,55 @@ function BUILDERS.blizzard(settings)
     PruneAll(settings, { "buffs" })
 end
 
--- Each look's Objects plate (1.3.0): the object's gold name in the look's own font in a box (the Backdrop part, its
--- OBJECT_BOX_FIELDS; the rest of style is the name's), round the Status text and the Action icon too; size: the name's
--- points. The quest mark stays just outside the box.
-local OBJECT_BOX_FIELDS = { boxColour = true, boxBorder = true, padding = true, boxShape = true }
+-- Each look's Objects plate (LOOK_VERSION 2): made from its own Enemies plate (ObjectPlate, below), so a chest's box
+-- belongs with the look's mobs. The name in the Enemies name's face, size, outline and shadow (the object's own gold
+-- stays); the Status text in the look's smaller text (its level's face, else the name's); the box (the Backdrop part,
+-- round the name and the Status text) in the health bar's background and frame: its border colour and size, no edge
+-- where the bar has none. The Action icon sits just right of the box, as the level or quest mark beside a plate, the
+-- quest mark just left of it. Per look: padding, a shape (Blizzard's rounded level box) or an edge of its own
+-- (PlateSmith's gold, its target edge's and level's; its bars have no frame).
 local OBJECTS = {
-    platesmith = { size = 13, style = { box = true, boxColour = { r = 0.03, g = 0.03, b = 0.05, a = 0.85 },
-        boxBorder = { r = 0.6, g = 0.53, b = 0.36, a = 1 }, padding = 5 } },
-    classic = { size = 14, style = { font = "friz", outline = "none", shadow = true, box = true,
-        boxColour = { r = 0, g = 0, b = 0, a = 0.75 }, boxBorder = { r = 0.3, g = 0.3, b = 0.3, a = 1 }, padding = 4 } },
-    sleek = { size = 11, style = { font = "arialn", outline = "none", shadow = true, box = true, boxColour = DARK,
-        boxBorder = BLACK, padding = 4 } },
-    bold = { size = 14, style = { font = "morpheus", outline = "thick", box = true,
-        boxColour = { r = 0, g = 0, b = 0, a = 0.75 }, boxBorder = { r = 0.9, g = 0.7, b = 0.2, a = 1 }, padding = 4 } },
-    tank = { size = 13, style = { font = "friz", outline = "outline", box = true,
-        boxColour = { r = 0.04, g = 0.03, b = 0.03, a = 0.85 }, boxBorder = { r = 0.35, g = 0.1, b = 0.1, a = 1 }, padding = 4 } },
-    healer = { size = 12, style = { font = "friz", outline = "outline", box = true,
-        boxColour = { r = 0.03, g = 0.05, b = 0.04, a = 0.8 }, boxBorder = { r = 0.35, g = 0.55, b = 0.35, a = 1 }, padding = 4 } },
-    -- Subtle: a faint fill without an edge.
-    minimal = { size = 12, style = { font = "arialn", outline = "none", shadow = true, box = true,
-        boxColour = { r = 0, g = 0, b = 0, a = 0.45 }, boxBorder = { r = 0, g = 0, b = 0, a = 0 }, padding = 3 } },
-    dungeon = { size = 11, style = { font = "arialn", outline = "outline", shadow = false, box = true,
-        boxColour = { r = 0.05, g = 0.05, b = 0.05, a = 0.9 }, boxBorder = BLACK, padding = 3 } },
-    -- Blizzard's tooltip: its dark blue-black fill and light grey edge, the plates' own font unoutlined.
-    blizzard = { size = 12, style = { outline = "none", shadow = true, box = true,
-        boxColour = { r = 0.09, g = 0.09, b = 0.19, a = 0.9 }, boxBorder = { r = 0.75, g = 0.75, b = 0.75, a = 1 }, padding = 5 } },
+    platesmith = { padding = 4, edge = { r = 0.6, g = 0.53, b = 0.36, a = 1 } },
+    classic = { padding = 3 },
+    sleek = { padding = 3 },
+    bold = { padding = 3 },
+    tank = { padding = 3 },
+    healer = { padding = 3 },
+    minimal = { padding = 3 },
+    dungeon = { padding = 3 },
+    blizzard = { padding = 6, shape = "rounded" },
 }
 ProfilePresets.OBJECTS = OBJECTS
+-- The Action icon's gap right of the box, and what the box wraps (the icon is outside it).
+local OBJECT_ICON_GAP, OBJECT_BOX_PARTS = 3, "name,statusText"
+local NO_EDGE = { r = 0, g = 0, b = 0, a = 0 }
+local TEXT_FIELDS = { "font", "outline", "shadow" }
+
+-- The look's Objects plate from its built Enemies plate (enemy) and its OBJECTS entry (look), into object.
+local function ObjectPlate(object, enemy, look)
+    local enemyStyles = enemy.styles or {}
+    local nameStyle, level, health = enemyStyles.name or {}, enemyStyles.level, enemyStyles.health or {}
+    local smaller = level and Shown(enemy, "level") and level or nameStyle
+    local name, status = {}, {}
+    for _, field in ipairs(TEXT_FIELDS) do
+        name[field] = Table.DeepCopy(nameStyle[field])
+        status[field] = Table.DeepCopy(smaller[field])
+    end
+    object.nameFontSize = enemy.nameFontSize
+    if nameStyle.fontSize then name.fontSize = nameStyle.fontSize end
+    object.styles = object.styles or {}
+    object.styles.name = next(name) and name or nil
+    object.styles.statusText = next(status) and status or nil
+    local framed = (health.border or 0) > 0
+    object.styles.backdrop = { boxColour = Table.DeepCopy(health.background or BAR_BACKGROUND),
+        boxBorder = Table.DeepCopy(look.edge or (framed and health.borderColour) or (framed and BLACK) or NO_EDGE),
+        border = not look.edge and framed and health.border or nil, padding = look.padding, boxShape = look.shape,
+        backdropParts = OBJECT_BOX_PARTS }
+    local layout = object.layout
+    layout.actionIcon.parent, layout.actionIcon.attach, layout.actionIcon.free = "backdrop", "right", nil
+    layout.actionIcon.x, layout.actionIcon.y = OBJECT_ICON_GAP, 0
+    layout.quest.x = -(look.padding + 2)
+end
 
 -- Each look's object types (Studio's Objects › Type; Core/Designs.lua): herbs, ore, chests and quest objects in a name
 -- colour of their own (a colour rule on the name, in the type's layer), and the Status text on for herbs and ore
@@ -859,29 +913,58 @@ function ProfilePresets.Build(id)
     end
     local look, object = OBJECTS[id], Profiles(settings).object
     if look and object then
-        object.nameFontSize = look.size
-        object.styles = object.styles or {}
-        -- The box goes to the Backdrop (round the name, the Status text and the Action icon), the font to the name.
-        local name, backdrop = {}, {}
-        for field, value in pairs(look.style) do
-            if OBJECT_BOX_FIELDS[field] then
-                backdrop[field] = Table.DeepCopy(value)
-            elseif field ~= "box" then
-                name[field] = Table.DeepCopy(value)
-            end
-        end
-        object.styles.name = next(name) and name or nil
-        object.styles.backdrop = backdrop
-        object.layout.quest.x = -(look.style.padding + 2)
+        ObjectPlate(object, Profiles(settings).enemy, look)
         object.types, settings.objectFadeUnable = ObjectTypes(id)
     end
     return settings
 end
 
 -- The looks' version, recorded with the look in a profile made from one (Profiles' CreateFromPreset: settings.look and
--- settings.lookVersion): bumped when a look gains something a profile made from an older one lacks, so a later
--- version can offer it.
-ProfilePresets.LOOK_VERSION = 1
+-- settings.lookVersion): bumped when a look gains something a profile made from an older one lacks, so Studio offers
+-- the update (its Profile menu, a one-time What's new window). Each bump keeps the version's snapshot
+-- (tools/build-look-snapshots.py) and its notes (LOOK_NOTES; RELEASING.md). 2 (1.3.2): each look's Objects plate made
+-- from its Enemies plate, the Action icon outside the box; the Enemies' warm white name its own Colour, not a rule
+-- (WarmName), and the Blizzard look's friendly players' white too.
+ProfilePresets.LOOK_VERSION = 2
+
+-- What each look version changed, in words for players (Studio's What's new window): LOOK_NOTES[version] = { all =
+-- { line, ... } for every look, [look id] = { line, ... } for one }. One short line each; every version from 2 has some.
+ProfilePresets.LOOK_NOTES = {
+    [2] = {
+        all = {
+            L["Object plates match the look's enemy plates: name font, box and frame."],
+            L["The Action icon on object plates sits just outside the box, not inside it."],
+            L["Enemy names' warm white is now the Name's own Colour, not a rule."],
+            L["Enemy players › Name › Class colour now works when you tick it."],
+            L["Name › Threat is off on Enemies, so names stay warm white in a fight."],
+        },
+        blizzard = {
+            L["Friendly player names are white by the Name's own Colour, not a rule."],
+            L["Players › Name › Class colour now works when you tick it."],
+            L["Object boxes take Blizzard's rounded level box."],
+            L["Cast bar colour rules use the clearer rule words; they work as before."],
+        },
+        bold = { L["Object boxes take Bold's heavy black frame."] },
+        tank = { L["Object boxes take Tank's dark red edge."] },
+        minimal = { L["Object boxes take Minimal's faint fill."] },
+        dungeon = { L["Cast bar colour rules use the clearer rule words; they work as before."] },
+        healer = { L["Fade rules use the clearer rule words; they work as before."] },
+    },
+}
+
+-- Look id's notes for every version after from up to the latest, oldest first: { { version = n, lines = { ... } }, ... }
+-- (the shared lines, then the look's own). Empty when from is the latest or later.
+function ProfilePresets.LookNotes(id, from)
+    local notes = {}
+    for version = math.max(1, tonumber(from) or 1) + 1, ProfilePresets.LOOK_VERSION do
+        local kept, lines = ProfilePresets.LOOK_NOTES[version] or {}, {}
+        for _, group in ipairs({ kept.all or {}, kept[id] or {} }) do
+            for _, line in ipairs(group) do lines[#lines + 1] = line end
+        end
+        notes[#notes + 1] = { version = version, lines = lines }
+    end
+    return notes
+end
 
 -- The Objects style of settings (a profile, or a look's settings): the Objects' World design (its layout, styles, sizes
 -- and rules) without its context designs, its type layers, and Fade objects you can't use. A copy.
@@ -893,10 +976,12 @@ function ProfilePresets.ObjectStyleOf(settings)
 end
 
 -- A look's Objects style (Objects › Copy style from a look), as a profile made from it has it; nil for no such look.
+-- Read back from its Blueprint, as the import makes the profile (colours to 1/255).
 function ProfilePresets.ObjectStyle(id)
-    local settings = ProfilePresets.Build(id)
+    local text = ProfilePresets.Get(id) and ProfilePresets.Document(id)
+    local settings = text and PS.BlueprintCandidate(text)
     if not settings then return nil end
-    return ProfilePresets.ObjectStyleOf(S.NormalizeSettings(settings))
+    return ProfilePresets.ObjectStyleOf(settings)
 end
 
 -- The preset as Blueprint text, for the normal import.
@@ -906,5 +991,66 @@ function ProfilePresets.Document(id)
     local document
     document, reason = PS.BlueprintDocument(settings)
     if not document then return nil, reason end
+    return PS.Json.Encode(document)
+end
+
+-- Look id's current version into the working settings by the normal Blueprint import (selection: its sections, plates
+-- to limit it to some plate types; nil: all of it), unsaved like any import; the look's object types replace the
+-- profile's whole (wholeTypes). The one route a look takes into a profile after it was made: Studio's look update (the
+-- import review) and Objects › Copy style from a look (OBJECTS_ONLY).
+ProfilePresets.OBJECTS_ONLY = { settings = true, layouts = true, styles = true, values = true, contexts = true,
+    plates = { object = true } }
+local EVERY_SECTION = { settings = true, layouts = true, styles = true, values = true, contexts = true, enemyPlayers = true,
+    other = true }
+function ProfilePresets.Import(id, selection)
+    if not ProfilePresets.Get(id) then return false, "preset does not exist" end
+    local text, reason = ProfilePresets.Document(id)
+    if not text then return false, reason end
+    local chosen = { wholeTypes = true }
+    for key, value in pairs(type(selection) == "table" and selection or EVERY_SECTION) do chosen[key] = value end
+    return PS.ImportBlueprint(text, chosen)
+end
+
+-- A look's snapshot (tools/build-look-snapshots.py keeps each version's, tools/look-snapshots/v<N>.json): its
+-- Blueprint document without the build and client that made it, so it changes only when the look does.
+function ProfilePresets.SnapshotDocument(id)
+    local settings, reason = ProfilePresets.Build(id)
+    if not settings then return nil, reason end
+    local document
+    document, reason = PS.BlueprintDocument(settings)
+    if not document then return nil, reason end
+    document.addon, document.client, document.flavor = "look", nil, nil
+    return document
+end
+
+-- A patch (Data/LookSnapshots.lua) into document, in place: an object merges into the object there, "!removed" lists the
+-- keys that go, anything else (an array, a value) replaces what is there.
+local REMOVED = "!removed"
+local function Patch(document, patch)
+    local IsArray = PS.Json.IsArray
+    for key, value in pairs(patch) do
+        local there = document[key]
+        if key == REMOVED then
+            for _, gone in ipairs(value) do document[gone] = nil end
+        elseif type(value) == "table" and type(there) == "table" and not IsArray(value) and not IsArray(there) then
+            Patch(there, value)
+        else
+            document[key] = value
+        end
+    end
+end
+
+-- Look id as LOOK_VERSION version made it, as Blueprint JSON for the normal import route; nil when it is not kept. The
+-- current version is built; an older one is its patch (Data/LookSnapshots.lua, decoded only here, on demand) on it.
+function ProfilePresets.Snapshot(id, version)
+    local document = ProfilePresets.Get(id) and ProfilePresets.SnapshotDocument(id)
+    if not document then return nil end
+    if version ~= ProfilePresets.LOOK_VERSION then
+        local kept = PS.LookSnapshots and PS.LookSnapshots[version]
+        local pieces = type(kept) == "table" and kept[id]
+        local patch = type(pieces) == "table" and PS.Json.Decode(table.concat(pieces), PS.MAX_BLUEPRINT_BYTES, 32)
+        if type(patch) ~= "table" then return nil end
+        Patch(document, patch)
+    end
     return PS.Json.Encode(document)
 end

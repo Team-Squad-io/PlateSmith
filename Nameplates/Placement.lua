@@ -150,8 +150,10 @@ PS._CreatePlatePlacement = function(context)
     local function RuleHidden(region)
         return region.plateSmithRuleHidden == true or region.plateSmithRuleAlpha == 0
     end
+    -- The Backdrop is placed after the parts it wraps (its own pass), so it is hidden while they are laid out: what is
+    -- pinned to it (the Action icon) stays pinned to it.
     local function Absent(data, key)
-        if CONTAINERS[key] or IS_VALUE_KEY[key] then return false end
+        if CONTAINERS[key] or IS_VALUE_KEY[key] or key == "backdrop" then return false end
         local region = PartRegion(data, key)
         if not region or RuleHidden(region) then return false end
         return PartHidden(data, key)
@@ -332,7 +334,9 @@ PS._CreatePlatePlacement = function(context)
         local region = PartRegion(data, key)
         if not S.TurnedOff(layout[key]) and region and RuleHidden(region) then
             result = true
-        elseif not S.TurnedOff(layout[key]) and not Absent(data, key) and PartHidden(data, key) then
+        -- The Backdrop is placed after this pass (its own, in the visibility flush), so its shown state here says
+        -- nothing yet: what is pinned to it (the Action icon) asks the box's own parent instead.
+        elseif key ~= "backdrop" and not S.TurnedOff(layout[key]) and not Absent(data, key) and PartHidden(data, key) then
             result = true
         else
             local parent = parentOf[key]

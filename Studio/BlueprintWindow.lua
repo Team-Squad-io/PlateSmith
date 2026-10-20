@@ -166,6 +166,17 @@ local function ShowText(window, text)
 end
 
 local function Import(window)
+    local look = window.lookUpdate
+    if look then
+        -- A look's update: the same import, by the one route a look takes into a profile, then the version recorded.
+        local ok, reason = PS.ProfilePresets.Import(look.id, Selection(window))
+        if not ok then return Chat.Print(PS.BlueprintFailureMessage(reason)) end
+        PS.Profiles.RecordLook(look.id)
+        Options:Refresh(true)
+        window:Hide()
+        return Chat.Print(string.format(L["The latest %s look is in this profile. Press Save to keep it, or Revert to undo it."],
+            look.name))
+    end
     local ok, reason, otherFlavor, skipped = PS.ImportBlueprint(window.editBox:GetText(), Selection(window))
     if ok then
         Options:Refresh(true)
@@ -314,6 +325,17 @@ local function EnsureWindow()
         Options.ImportPreview.Schedule(window)
     end)
     window.selectSections = selectSections
+    -- A look's update: the look's notes in words (Studio/LookUpdate.lua's What's new window, without Review).
+    local lookNews = chrome.CreateStudioButton(reviewPage, L["What's new?"], 118, 26)
+    lookNews:SetPoint("LEFT", selectSections, "RIGHT", 8, 0)
+    lookNews:SetScript("OnClick", function()
+        local look = window.lookUpdate
+        if look then Options.LookUpdate.ShowNotes(look.id, look.from) end
+    end)
+    PS.UI.Controls.AttachTooltip(lookNews, L["What's new?"], { L["What the look's new version changed, in a few lines. "
+        .. "Show › The look's own changes draws it."] })
+    lookNews:Hide()
+    window.lookNews = lookNews
     -- The stage: from PREVIEW_X to the window's right, from the column's heading down to the button row;
     -- its note on general settings under Select all.
     Options.ImportPreview.Attach(window, reviewPage, PREVIEW_X, PAGE_TOP + 4, IMPORT_WIDTH - PREVIEW_X - 22,
@@ -324,6 +346,15 @@ local function EnsureWindow()
         local kept = window.importing and window.importTab == "review" and Options.ImportPreview.Key(window, key) or false
         Window.KeepKey(frame, kept)
     end)
+    -- A look's update says what it changes and what stays, under the preview's note (ShowLookUpdate).
+    local lookNote = reviewPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    lookNote:SetFont(chrome.FONT, 12)
+    lookNote:SetTextColor(chrome.LABEL[1], chrome.LABEL[2], chrome.LABEL[3])
+    lookNote:SetPoint("TOPLEFT", window.preview.note, "BOTTOMLEFT", 0, -10)
+    lookNote:SetWidth(SECTIONS_WIDTH)
+    lookNote:SetJustifyH("LEFT")
+    lookNote:Hide()
+    window.lookNote = lookNote
     local action = chrome.CreateStudioButton(reviewPage, L["Import selected"], 150, 28, "primary")
     action:SetScript("OnClick", function() Import(window) end)
     action:SetPoint("BOTTOMRIGHT", window, "BOTTOMRIGHT", -22, 20)
@@ -374,7 +405,11 @@ end
 function Options:ShowImportBlueprint()
     local window = EnsureWindow()
     SetImporting(window, true)
-    window.previewShowsNow = false
+    window.previewShowsNow, window.previewWhatsNew, window.lookUpdate = false, false, nil
+    window.lookNote:Hide()
+    window.lookNews:Hide()
+    window.selectionLabel:SetText(L["Import only these sections"])
+    window.action.label:SetText(L["Import selected"])
     window.placeholder:Show()
     window.title:SetText(L["PlateSmith · Import Blueprint"])
     -- What Context designs replaces, and what a context design keeps once World's layouts or custom
@@ -410,5 +445,40 @@ function Options:ShowImportBlueprintText(text)
     window.scroll:SetVerticalScroll(0)
     window.scrollBar:Sync()
     SelectTab(window, "review")
+    return window
+end
+
+-- A look's update (Studio/LookUpdate.lua): the import review with the look's latest version (ProfilePresets.Document)
+-- as the incoming Blueprint, so the player sees what it would change on their profile design by design and picks the
+-- sections; Update selected imports them by ProfilePresets.Import and records the version, unsaved. General settings
+-- start unticked (they are the whole profile's: Where plates show, Clicking, fonts, threat colours...). With the
+-- profile's older version kept (ProfilePresets.Snapshot), Show also offers the look's own changes, drawn, and What's new?
+-- its notes in words.
+function Options:ShowLookUpdate(id)
+    local Presets = PS.ProfilePresets
+    local preset = Presets.Get(id)
+    local text = preset and Presets.Document(id)
+    if not text then return nil end
+    local db = PS.GetSettings()
+    local from = db and db.look == id and tonumber(db.lookVersion) or nil
+    local window = self:ShowImportBlueprintText(text)
+    window.lookUpdate = { id = id, name = preset.name, from = from, text = text,
+        older = from and from < Presets.LOOK_VERSION and Presets.Snapshot(id, from) or nil }
+    window.tabs:Hide()
+    window.title:SetText(string.format(L["PlateSmith · Update to the latest %s"], preset.name))
+    window.selectionLabel:SetText(L["Update only these sections"])
+    window.action.label:SetText(L["Update selected"])
+    window.checkboxes.settings:SetChecked(false)
+    window.checkboxes.other:SetChecked(false)
+    window.checkboxes.other:Hide()
+    PlaceSections(window)
+    window.lookNote:SetText(string.format(L["Each ticked section takes the %s look's latest: its designs, sizes and styles "
+        .. "(and the rules on its parts: rules you added there go). Context designs and object types the look has none of "
+        .. "stay. General settings (Where plates show, Clicking, fonts, threat colours) stay unless you tick them. It is "
+        .. "an unsaved change: Save keeps it, Revert undoes it."], preset.name))
+    window.lookNote:Show()
+    window.lookNews:SetShown(from ~= nil and from < Presets.LOOK_VERSION)
+    Options.ImportPreview.ResetPage(window)
+    Options.ImportPreview.Schedule(window)
     return window
 end

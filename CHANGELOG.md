@@ -2,6 +2,112 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.3.2
+
+### New
+
+- **Class colours for enemy players.** Studio › **Enemy players** › Health bar and Name each have a **Class
+  colour** box: ticked, an enemy player's bar or name is in their class colour instead of red or yellow. It is off
+  until you tick it, so your plates look as they did.
+- **Class colour on Players.** Studio › **Players** › Health bar and Name have the same box, ticked, as friendly
+  players were always class coloured. Untick it for the friendly blue instead. A group, guild or friend colour still
+  comes first while **Group, guild & friends come before class colours** is on.
+- **Your own class colours.** Studio › Settings › Player colours › **Class colours** has a colour for each class,
+  Blizzard's until you change it, and **Reset to Blizzard's**: for anyone who finds two classes hard to tell apart.
+  They are used wherever PlateSmith draws a class colour: the health bar and name, the soft target glow's Class
+  colour, the Targeted by badges, the target's name and combo points' class colour. Blueprints carry them. Where
+  the game keeps a class private, the game's own class colour shows.
+- **Update a profile to its look's latest version.** A profile made from a look whose style has since changed shows
+  **Profile › Update to the latest <Look>... (new version)** in Studio. The first time you open Studio after a look
+  gets a new version, a small **What's new** window lists what changed, in a few lines, and says nothing changes until
+  you choose: **Review changes...** or **Not now**. It shows once per profile and version, never in combat or with
+  unsaved changes. Untick its **Tell me when a look has a new version** (also in Studio › Settings › Studio) and it
+  stops for every profile; the Profile menu still offers the update. **Review changes...** opens the import review
+  with the look's latest version: see what it would change on your profile design by design, pick the sections, and
+  **Update selected**. General settings (Where plates show, Clicking, fonts, threat colours) stay unless you tick
+  them. Its **What's new?** shows the same notes, and Show › **The look's own changes** draws what the look itself
+  changed since your version. It is an unsaved change: Save keeps it, Revert undoes it. Profiles made before looks
+  kept a version get **Update to a look's latest style...** with a look to pick.
+- **Objects › Copy style from a look** now uses the same route, for the Objects only.
+- **Rules can say `= true` and `= false`.** A flag can be compared, as other addons write it: `pvp.flagged = false`
+  (or `== false`, `!= true`) is the same as `not pvp.flagged`. Where the game hides the answer it is still unknown, so
+  the rule does not apply either way.
+- **Rules can set the class colour.** A rule's **Then** has **Set class colour**: the part takes the unit's class colour
+  (yours from Settings › Player colours › Class colours, else Blizzard's) while the rule applies. Where the game keeps
+  the class private, the game's own class colour shows; a unit with no class keeps the part's own colour.
+- **The Name has its own Colour.** Studio › Name › **Colour** with **Custom**: the name in the colour you pick instead of
+  its usual one (a group, guild, class or reaction colour, an object's gold). **Class colour**, while ticked, wins over
+  it, and a PvP-flagged ally's PvP colour, threat colours and colour rules still win over both.
+- **Studio says when a rule overrides a colour.** Under the Name's and the Health bar's **Class colour** and **Colour**
+  (Custom), a line says when a colour rule on that part covers it, for example "A rule sets this Name's colour (while
+  pvp.flagged = false), so its class colour shows only where that rule doesn't apply.", with **Show rule** to open
+  that rule.
+- **A rule reference.** Studio › Settings › **Help** lists every word rules and custom text can use, by topic (Unit,
+  PvP, Health & power, Cast, Threat, Quest, Level, Objects, You): its old name, what it means, its kind, an example
+  and the plates that have it, then and, or, not, `= true` / `= false` and how values the game hides fail closed.
+  **What can I use?** in a part's Rules opens it. The README has the same list.
+- **Rules › Presets › Built in** opens the options that replaced the old presets: Colour by threat, the Cast bar's
+  Colour by interrupt, the Health bar's Grey when tagged by others, and Fading. It adds no rules.
+- **New PvP words for rules and custom text:** `pvp.ffa` (the unit is flagged for free-for-all PvP) and `pvp.faction`
+  (`alliance`, `horde` or `neutral`: `pvp.faction = horde`, or `{pvp.faction}` in custom text).
+
+- **Choose where a PvP-flagged ally's colour goes.** Studio › Settings › Player colours › PvP › **PvP colour goes
+  on** (and the PvP icon's **Goes on** in Studio): **Automatic** (as before: the health bar, or the name where the bar
+  has a colour of its own, such as its class colour), **Health bar**, **Name** or **Both**.
+
+### Changed
+
+- **Clearer rule words.** Rules and custom text have names that say what they are about: `unit.elite`,
+  `unit.tagged`, `unit.target` (it is your target), `cast.active`, `cast.interruptible`, `pvp.flagged`,
+  `quest.needed`, `you.combat` (you are in combat), `you.hastarget` and so on. The old words (`elite`, `tagged`,
+  `targeted`, `casting`, `pvp`, `quest`, `combat`, `hastarget`...) keep working forever: your rules, custom text and
+  Blueprints are unchanged and behave exactly as before. `tanking` is now `threat.holding`, which it always was.
+  Studio's help, the presets and the looks use the new words. In Test values, **Tanking** is gone (it was the same as
+  **Holding threat**) and **PvP flagged** takes its place.
+- **Enemy players' Name › Class colour works on every look.** Each look's warm white enemy names are now the Name's own
+  **Colour** (Custom) instead of a rule, so ticking Studio › **Enemy players** › Name › **Class colour** colours enemy
+  players' names by class, and Studio no longer says a rule covers it. Mobs look exactly as before: the looks' Name ›
+  **Threat** is unticked, so their names stay warm white in a fight, as under the rule. Profiles made from a look keep
+  their rule until you use **Profile › Update to the latest <Look>**.
+- **The Blizzard look's friendly player names are white by the Name's own colour** (Custom white, Class colour
+  unticked) instead of a rule, so ticking **Name › Class colour** now simply works. They look as before: white, and a
+  PvP-flagged ally's name in Blizzard's green. Profiles made from the look keep their rule until you use **Profile ›
+  Update to the latest Blizzard**.
+- A Blueprint whose rules or custom text use a new word is shared as version 4, which PlateSmith 1.1.1 refuses whole
+  instead of failing on one rule; one written with the old words is shared exactly as before.
+
+- **Settings › Relationships is now Player colours**, and **Colour social relationships** (it was under Behaviour &
+  display › Names) has moved there as **Group, guild & friends come before class colours**. It is the same setting
+  with the same value, so nothing changes.
+- Where the game keeps a player's class private, a class-coloured name or health bar now takes the game's own class
+  colour instead of turning blue.
+- **Each look's object plates match its enemy plates.** A chest's or herb's box now takes the look's own style:
+  the name in the look's enemy name font, size and outline, the Status text in its smaller text, and the box in the
+  look's bar colours and frame (Bold's heavy black frame, Tank's dark red edge, Minimal's faint fill, Blizzard's
+  rounded level box). Herbs stay green, ore grey and so on.
+- **The Action icon sits beside the box,** just right of it like a level or quest icon beside a plate, instead of
+  inside it. This is for new profiles and the looks; your existing profiles keep their icon where it is.
+- **Threat colours, Grey when tagged and aura sources are now set per plate type and design.** Each was one setting
+  for the whole profile, so unticking it on Enemy players turned it off for the Enemies and every design too. Now
+  Studio's **Health bar** › **Threat** (and the new **Threat edge**), **Name** › **Threat**, **Health bar** ›
+  **Tagged**, and **Buffs** / **Debuffs** › **Source** belong to the design you have open: for example threat colours
+  on the Enemies but not on Enemy players, or only your own debuffs on mobs but everyone's on enemy players in
+  battlegrounds. Like the Colour row, a design follows World (Enemy players follow the Enemies) until you change it,
+  shown by the gold mark with its **Reset to World** / **Reset to Enemies** arrow. **Colour by threat** (Settings ›
+  Modules › Threat) is still the one switch that turns threat colours on or off everywhere; its **Apply to** now says
+  where each part takes them, and Settings › Auras says which source the designs use. Your profiles and Blueprints
+  look exactly as before: each plate type keeps the value it had. Older Blueprints import the same way.
+- The note under a setting that every design shares now says so plainly: **Shared by every plate type and
+  design**.
+
+### Fixed
+
+- **Cancelling Cultivation no longer marks the herb.** WoW Forever says the spell succeeded a moment before its
+  channel starts, so a herb said **Cultivated** even when you stopped casting. A herb is now marked only when the
+  channel runs to its end and the spell's cooldown has started (a cancelled cast starts none).
+- **A one-digit level's box is as wide as a two-digit one.** A level box behind "9" was narrower than behind "60";
+  short levels now sit centred in a box of the same width (longer text such as 60+ keeps its own).
+
 ## 1.3.1
 
 ### Fixed

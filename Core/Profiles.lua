@@ -376,6 +376,28 @@ local function CreateFromPreset(id)
 end
 function Profiles.CreateFromPreset(id) return Measured("new", CreateFromPreset, id) end
 
+-- The look the working copy now follows (Studio's look update): id at the current LOOK_VERSION, kept by Save like any
+-- change (Revert puts back what it had).
+function Profiles.RecordLook(id)
+    local Presets = PS.ProfilePresets
+    if not (working and Presets and Presets.Get(id)) then return false end
+    working.look, working.lookVersion = id, Presets.LOOK_VERSION
+    Profiles.MarkChanged()
+    return true
+end
+
+-- Studio's one-time What's new window (Studio/LookUpdate.lua): the LOOK_VERSION it last showed for this profile
+-- (lookNoticed; never in a Blueprint), written to the saved profile and the working copy alike, so it is no change to
+-- save and a Revert keeps it.
+function Profiles.LookNoticed() return working and working.lookNoticed end
+function Profiles.NoteLookNotice(version)
+    local saved = store and store.profiles[Profiles.Active()]
+    if not (working and saved) then return false end
+    working.lookNoticed, saved.lookNoticed = version, version
+    Invalidate()
+    return true
+end
+
 -- Renames the active profile for every character that uses it.
 local function Rename(name)
     local clean, reason = Profiles.CleanName(name)

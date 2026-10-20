@@ -68,20 +68,6 @@ local function HeaderLabel(parent, text)
     return label
 end
 
--- A Studio checkbox with the kit's art and a light label (the preview's Snap).
-local function KitCheckbox(parent, text, onClick)
-    local checkbox = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-    PS.UI.Controls.StyleCheckbox(checkbox, 18)
-    chrome.SkinCheckbox(checkbox)
-    local label = checkbox:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    label:SetFont(LABEL_FONT, 15)
-    label:SetPoint("LEFT", checkbox, "RIGHT", 6, 0)
-    label:SetText(text)
-    checkbox.label = label
-    checkbox:SetScript("OnClick", onClick)
-    return checkbox
-end
-
 -- A group's header row in the tree: the kit's group row, its expand / collapse arrow, its eye
 -- (shows or hides the group), its name and a drag handle.
 function Options:CreateEditorGroupHeader(content, groupKey)
@@ -254,7 +240,7 @@ local function BuildTestPanel(canvas)
         set = function(value)
             for _, choice in ipairs(Options.SAMPLE_CLASSIFICATIONS) do
                 if choice.value == value then
-                    samples.elite, samples.rare, samples.boss = choice.elite, choice.rare, choice.boss
+                    samples["unit.elite"], samples["unit.rare"], samples["unit.boss"] = choice.elite, choice.rare, choice.boss
                 end
             end
             Changed()
@@ -287,20 +273,22 @@ local function BuildTestPanel(canvas)
         .. "rules and custom text read this as object.kind (herb, ore, inspect, loot, quest, talk, trainer)."] })
     Options.editorTestObjectKind = objectKind
     testControls[#testControls + 1] = objectKind
-    -- Each flag shows in the preview (and in rules and custom text): tagged the indicator (elite,
-    -- rare and boss are the Elite / rare choice above), casting and interruptible the cast bar, combat and tanking
-    -- the threat text, targeted the glow, quest the marker, friendly, hostile and player the name.
-    -- interruptReady colours the cast bar with Colour by interrupt. The role and threat-state flags
-    -- show Threat colours (with combat) and are for rules, hastarget and inrange for the fades.
+    -- Each flag shows in the preview (and in rules and custom text): unit.tagged the indicator (elite,
+    -- rare and boss are the Elite / rare choice above), cast.active and cast.interruptible the cast bar, you.combat and
+    -- threat.holding the threat text, unit.target the glow, quest.needed the marker, unit.friendly, unit.hostile and
+    -- unit.player the name, pvp.flagged a friendly player's PvP colour. cast.interruptready colours the cast bar with
+    -- Colour by interrupt. The role and threat-state flags show Threat colours (with you.combat) and are for rules,
+    -- you.hastarget and unit.inrange for the fades.
     -- Each box says what it is in plain words; its tooltip names the flag rules and custom text read.
     local flags = {
-        { "tagged", L["Tagged"] }, { "casting", L["Casting"] }, { "interruptible", L["Interruptible"] },
-        { "interruptReady", L["Interrupt ready"] },
-        { "combat", L["In combat"] }, { "tanking", L["Tanking"] }, { "targeted", L["Your target"] },
-        { "quest", L["Quest unit"] }, { "friendly", L["Friendly"] }, { "hostile", L["Hostile"] }, { "player", L["Player"] },
+        { "unit.tagged", L["Tagged"] }, { "cast.active", L["Casting"] }, { "cast.interruptible", L["Interruptible"] },
+        { "cast.interruptready", L["Interrupt ready"] },
+        { "you.combat", L["In combat"] }, { "pvp.flagged", L["PvP flagged"] }, { "unit.target", L["Your target"] },
+        { "quest.needed", L["Quest unit"] }, { "unit.friendly", L["Friendly"] }, { "unit.hostile", L["Hostile"] },
+        { "unit.player", L["Player"] },
         { "role.tank", L["You tank"] }, { "threat.holding", L["Holding threat"] }, { "threat.losing", L["Losing threat"] },
         { "threat.pulling", L["Pulling threat"] }, { "threat.other", L["Someone else has it"] },
-        { "threat.offtank", L["Other tank has it"] }, { "hastarget", L["Has a target"] }, { "inrange", L["In range"] },
+        { "threat.offtank", L["Other tank has it"] }, { "you.hastarget", L["Has a target"] }, { "unit.inrange", L["In range"] },
         -- object.unable: the Action icon's Unable look (its Can't use choice) and the Objects preset's fade.
         -- object.cancultivate: a herb's Status text adds Cultivate ready, and it does not fade.
         { "object.unable", L["Can't use yet"] }, { "object.cancultivate", L["Cultivation ready"], slot = 22 },
@@ -468,6 +456,8 @@ function PS.CreateVisualEditor()
         Options:FitEditorPreview() -- opens fitted: as large as fits, up to 200%, centred
         -- Off (the default) makes nothing; a model chosen before is shown again (you, or the new target).
         Options:ApplyEditorModel()
+        -- Once per look version: this profile's look has a newer one (Studio/LookUpdate.lua).
+        Options.LookUpdate.Opened()
     end
     -- The client reports an error in a script handler itself, so OnShow catches its own and closes.
     editor:SetScript("OnShow", function()
@@ -561,6 +551,7 @@ function PS.CreateVisualEditor()
         profileNotice:SetText(PS.Profiles.IsDirty()
             and string.format(L["Profile: %s · |cffffc94aUnsaved changes|r · Save or revert before switching profile"], active)
             or "")
+        Options.LookUpdate.Refresh()
     end
     -- Studio always shows and edits the active profile: a profile loaded into the working copy (a switch from
     -- anywhere: Settings, a slash command, New from preset) redraws it once, whoever asks first (the listener
@@ -611,6 +602,8 @@ function PS.CreateVisualEditor()
         end
         items[#items + 1] = { text = L["New from preset..."], children = presets, disabled = dirty,
             tooltip = dirty and switchTip or L["A new profile from a built-in design, named after it. Your profiles are not changed."] }
+        -- Bringing this profile up to its look's latest version (Studio/LookUpdate.lua), when there is one to take.
+        for _, item in ipairs(Options.LookUpdate.MenuItems(dirty)) do items[#items + 1] = item end
         items[#items + 1] = { text = L["Duplicate this profile..."], disabled = dirty, tooltip = dirty and switchTip or nil,
             func = function()
                 Options:PromptStudioName(L["Name for the copy:"], string.format(L["%s copy"], active),
@@ -854,7 +847,7 @@ function PS.CreateVisualEditor()
     local fit = CreateStudioButton(previewControls, L["Fit"], 62, 32)
     fit:SetScript("OnClick", function() Options:FitEditorPreview() end)
     Options.editorFitButton = fit
-    local snap = KitCheckbox(previewControls, L["Snap"], function(instance)
+    local snap = chrome.KitCheckbox(previewControls, L["Snap"], function(instance)
         Options.editorSnap = instance:GetChecked() and true or false
     end)
     snap:SetChecked(Options.editorSnap)

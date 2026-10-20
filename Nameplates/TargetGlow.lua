@@ -189,6 +189,11 @@ function Glow.Reaction(unit, friendly)
     return nil
 end
 
+-- The general settings, whose Player colours' class colours the Class mode takes (PlateColours.Class).
+local function General()
+    return type(PS.GetSettings) == "function" and PS.GetSettings() or nil
+end
+
 -- The settings' colour (r, g, b) from readable facts: classFile (a player's, or nil), then reaction
 -- (a REACTION colour, or nil), or for the Threat mode threat (a threat colour { r, g, b }, or nil), then
 -- the custom colour, which is also what any unknown falls back to. ColourFor and Studio's preview (a
@@ -196,7 +201,7 @@ end
 function Glow.Colour(settings, classFile, reaction, threat)
     local mode = settings.targetGlowColourMode
     if mode == "class" then
-        local r, g, b = Secret.ClassColour(classFile) -- nil for none, or one it cannot read
+        local r, g, b = PS.PlateColours.Class(General(), classFile) -- nil for none, or one it cannot read
         if r then return r, g, b end
     end
     if mode == "threat" then
@@ -240,7 +245,7 @@ function Glow.ColourFor(glow, settings, unit, friendly, data)
     if mode == "class" and unit and Secret.ReadBoolean(UnitIsPlayer, unit) == true then
         local classFile, has = Secret.ClassFile(unit)
         if has then
-            local r, g, b = Secret.ClassColour(classFile)
+            local r, g, b = PS.PlateColours.Class(General(), classFile)
             if r then
                 Glow.Paint(glow, r, g, b)
                 return "class"

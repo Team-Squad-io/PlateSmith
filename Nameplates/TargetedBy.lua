@@ -16,6 +16,10 @@ TargetedBy.TICKER = "plates.targetedBy"
 TargetedBy.INTERVAL, TargetedBy.BUDGET = 0.5, 8
 local MAX, EMPTY = TargetedBy.MAX, {}
 local FALLBACK_COLOUR = { 0.6, 0.6, 0.6 }
+-- A readable class's colour: Player colours' own or Blizzard's (PlateColours.Class), or nil.
+local function ClassColour(classFile)
+    return PS.PlateColours.Class(type(PS.GetSettings) == "function" and PS.GetSettings() or nil, classFile)
+end
 local ROSTER_EVENTS = { "GROUP_ROSTER_UPDATE", "PLAYER_ROLES_ASSIGNED", "PLAYER_ENTERING_WORLD" }
 local GROUP_EVENTS = { "UNIT_TARGET", "PLAYER_TARGET_CHANGED" }
 
@@ -86,7 +90,7 @@ local function IsTank(unit)
 end
 
 -- The members badges are drawn for: a party's party1..party4, or a raid's tanks (up to MAX, never
--- the player). members[i] = { unit, targetToken, r, g, b (readable) or classFile (opaque), initial }.
+-- the player). members[i] = { unit, targetToken, classFile (readable, or opaque: classOpaque), initial }.
 local members, memberIndex = {}, {}
 -- Bumped by every rebuild: a plate's row drawn for an older roster is styled again.
 TargetedBy.revision = 0
@@ -101,10 +105,10 @@ local function RebuildMembers()
         TARGET_TOKENS[unit] = TARGET_TOKENS[unit] or Secret.TargetToken(unit)
         member.unit, member.targetToken, member.initial = unit, TARGET_TOKENS[unit], Initial(unit)
         -- classOpaque: the class is protected; classFile is then only ever passed to the colour sink.
-        member.r, member.g, member.b, member.classFile, member.classOpaque = nil, nil, nil, nil, false
+        member.classFile, member.classOpaque = nil, false
         local classFile, has = Secret.ClassFile(unit)
         if has and IsReadable(classFile) and type(classFile) == "string" then
-            member.r, member.g, member.b = Secret.ClassColour(classFile)
+            member.classFile = classFile
         elseif has then
             member.classFile, member.classOpaque = classFile, true
         end
@@ -184,8 +188,10 @@ PS._CreatePlateTargetedBy = function(context)
             badge.fill:SetColorTexture(1, 1, 1, 1)
             local used = member ~= nil
             if used then
-                -- A protected class goes through the client's colour sink; nothing readable is grey.
-                local r, g, b = member.r, member.g, member.b
+                -- The class colour (Player colours' own or Blizzard's, PlateColours.Class); a protected class goes
+                -- through the client's colour sink; nothing readable is grey.
+                local r, g, b
+                if not member.classOpaque then r, g, b = ClassColour(member.classFile) end
                 if not r and not (member.classOpaque and Secret.SetClassColour(badge.fill, member.classFile, "SetVertexColor")) then
                     r, g, b = FALLBACK_COLOUR[1], FALLBACK_COLOUR[2], FALLBACK_COLOUR[3]
                 end
@@ -409,7 +415,8 @@ function TargetedBy.Report()
     }
     for _, member in ipairs(members) do
         report.members[#report.members + 1] = {
-            unit = member.unit, colour = member.r and "readable" or (member.classOpaque and "protected" or "none"),
+            unit = member.unit, colour = member.classOpaque and "protected"
+                or (ClassColour(member.classFile) and "readable" or "none"),
             initial = member.initial ~= nil,
         }
     end

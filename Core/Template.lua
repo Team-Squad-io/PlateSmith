@@ -6,12 +6,12 @@ local Format = assert(PS.Format, "PlateSmith Format missing")
 --
 --   {health} / {health.max} ({health.percent}%)
 --   [if health.percent < 35]LOW {health.percent}%[else]{health:short}[end]
---   [if elite and not tagged]{name}[end]
+--   [if unit.elite and unit.tagged = false]{name}[end]
 --
 -- A token is {name} or {name:format}; format is short (1.2k) or 0, 1 or 2 decimals. Conditions
 -- are [if ...], [elseif ...], [else] and [end], nesting up to four deep, with and, or, not,
--- brackets and comparisons (< <= > >= = == !=) between tokens and numbers, or an enum token and one of its
--- values (object.kind = herb). {{ and [[ write a
+-- brackets and comparisons (< <= > >= = == !=) between tokens and numbers, an enum token and one of its
+-- values (object.kind = herb), or a flag and true or false (pvp.flagged = false). {{ and [[ write a
 -- literal { or [. Protected values are only ever shown: they pass straight into the client's
 -- SetFormattedText, never compared or calculated. Conditions use three values: a protected or
 -- missing value is unknown, unknown carries through not, and, or (Kleene logic), and only a
@@ -29,24 +29,26 @@ local MAX_DEPTH, MAX_ARGUMENTS = 4, 8
 -- prefix typed, so each cache is emptied when it passes CACHE_LIMIT entries.
 local CACHE_LIMIT = 256
 
--- Tokens: numbers, text and flags (true or false). kind decides how each is shown.
+-- Tokens: numbers, text and flags (true or false). kind decides how each is shown. What each means, for help and
+-- the rule reference, is Core/RuleWords.lua's (a test fails while a token has no description there).
 Template.tokens = {
     ["health"] = "number", ["health.max"] = "number", ["health.percent"] = "percent", ["health.missing"] = "number",
     ["power"] = "number", ["power.max"] = "number", ["power.percent"] = "percent",
     ["threat.percent"] = "percent", ["threat.lead"] = "signed", ["threat.raw"] = "number",
     ["threat.leadpercent"] = "percent",
     ["level"] = "number", ["name"] = "text", ["target"] = "text",
-    ["tagged"] = "flag", ["elite"] = "flag", ["rare"] = "flag", ["boss"] = "flag", ["casting"] = "flag",
-    ["combat"] = "flag", ["tanking"] = "flag", ["targeted"] = "flag", ["player"] = "flag",
-    ["focus"] = "flag", ["quest"] = "flag", ["friendly"] = "flag",
+    ["unit.tagged"] = "flag", ["unit.elite"] = "flag", ["unit.rare"] = "flag", ["unit.boss"] = "flag",
+    ["cast.active"] = "flag", ["you.combat"] = "flag", ["unit.target"] = "flag", ["unit.player"] = "flag",
+    ["unit.focus"] = "flag", ["quest.needed"] = "flag", ["unit.friendly"] = "flag",
     ["level.smart"] = "text", ["level.diff"] = "signed", ["classification"] = "text", ["guild"] = "text",
     ["cast.name"] = "text", ["threat.hold"] = "text",
-    ["hostile"] = "flag", ["neutral"] = "flag", ["interruptible"] = "flag", ["interruptReady"] = "flag",
-    ["questdrop"] = "flag",
-    ["pvp"] = "flag", ["instance"] = "flag", ["ingroup"] = "flag", ["inguild"] = "flag",
+    ["unit.hostile"] = "flag", ["unit.neutral"] = "flag", ["cast.interruptible"] = "flag",
+    ["cast.interruptready"] = "flag", ["quest.drop"] = "flag",
+    ["pvp.flagged"] = "flag", ["pvp.ffa"] = "flag", ["pvp.faction"] = "enum",
+    ["you.instance"] = "flag", ["unit.ingroup"] = "flag", ["unit.inguild"] = "flag",
     ["role.tank"] = "flag", ["threat.holding"] = "flag", ["threat.losing"] = "flag", ["threat.pulling"] = "flag",
     ["threat.other"] = "flag", ["threat.offtank"] = "flag", ["threat.loose"] = "flag",
-    ["hastarget"] = "flag", ["inrange"] = "flag", ["quest.progress"] = "text", ["quest.percent"] = "percent",
+    ["you.hastarget"] = "flag", ["unit.inrange"] = "flag", ["quest.progress"] = "text", ["quest.percent"] = "percent",
     ["combo"] = "number",
     -- Objects and NPCs you can interact with (Nameplates/ActionIcon.lua): what the game's cursor icon says the
     -- unit is for, whether it says you cannot (a too-low skill), whether it is within reach, its ID from the game.
@@ -61,6 +63,7 @@ Template.tokens = {
 Template.enums = {
     ["object.kind"] = { herb = true, ore = true, skin = true, loot = true, quest = true, inspect = true, interact = true,
         talk = true, trainer = true, vendor = true, flight = true, repair = true, mail = true, other = true },
+    ["pvp.faction"] = { alliance = true, horde = true, neutral = true },
 }
 -- Short names people know from other addons.
 Template.aliases = {
@@ -68,9 +71,22 @@ Template.aliases = {
     ["health.current"] = "health", ["health.deficit"] = "health.missing",
     pp = "power", maxpp = "power.max", ppp = "power.percent", ["power.current"] = "power",
     tp = "threat.percent", ["threat.diff"] = "threat.lead",
-    hasTarget = "hastarget", inRange = "inrange",
+    hasTarget = "you.hastarget", inRange = "unit.inrange",
 }
+-- The words before 1.3.2, kept for good: saved rules, custom text and Blueprints written with them compile to the same
+-- token (so read and evaluate the same) forever. Shipped content and help use the new names.
+Template.FORMER_NAMES = {
+    pvp = "pvp.flagged", casting = "cast.active", interruptible = "cast.interruptible",
+    interruptReady = "cast.interruptready", elite = "unit.elite", rare = "unit.rare", boss = "unit.boss",
+    player = "unit.player", friendly = "unit.friendly", hostile = "unit.hostile", neutral = "unit.neutral",
+    tagged = "unit.tagged", targeted = "unit.target", focus = "unit.focus", hastarget = "you.hastarget",
+    combat = "you.combat", inrange = "unit.inrange", ingroup = "unit.ingroup", inguild = "unit.inguild",
+    quest = "quest.needed", questdrop = "quest.drop", tanking = "threat.holding", instance = "you.instance",
+}
+for former, name in pairs(Template.FORMER_NAMES) do Template.aliases[former] = name end
 local function Resolve(name) return Template.aliases[name] or name end
+-- A name as it compiles: its token for an alias or former name, else itself (the plates' readers take either).
+Template.Resolve = Resolve
 local FORMATS = { short = true, ["0"] = true, ["1"] = true, ["2"] = true }
 -- Tokens and formatters other addons registered (RegisterToken, RegisterFormatter). A registered
 -- token's kind is also written into Template.tokens, so templates and conditions compile with it.
@@ -133,7 +149,23 @@ local function ParseCondition(text)
         if not left then return nil, failure end
         local operator = Peek()
         local values = left.token and Template.enums[left.token]
-        if operator and COMPARISONS[operator.text] and values then
+        local truth = operator and COMPARISONS[operator.text] and list[index + 1]
+        truth = truth and truth.word and (truth.text == "true" or truth.text == "false") and truth.text or nil
+        if truth then
+            -- A flag = true or false (== and != too) is the flag itself or its not, so unknown stays unknown and
+            -- x = false fails closed exactly as not x does.
+            Take()
+            Take()
+            if not left.token or Template.tokens[left.token] ~= "flag" then
+                return nil, string.format(L["%s is not a flag: only a flag is = true or = false"],
+                    left.token or tostring(left.number))
+            end
+            if operator.text ~= "=" and operator.text ~= "!=" then
+                return nil, string.format(L["%s takes = or !="], left.token)
+            end
+            if (operator.text == "=") == (truth == "true") then return { truth = left } end
+            return { negate = { truth = left } }
+        elseif operator and COMPARISONS[operator.text] and values then
             -- An enum: = or != one of its values, a bare word.
             Take()
             local value = Take()
@@ -509,6 +541,58 @@ function Template.Test(tree, read) return tree ~= nil and Evaluate(tree, read) =
 function Template.Evaluate(tree, read)
     if tree == nil then return nil end
     return Evaluate(tree, read)
+end
+
+-- Whether two conditions say the same: the same text, or the same compiled condition (a former name and its new one;
+-- not x and x = false). A blank condition is the same only as another blank one.
+function Template.SameCondition(a, b)
+    if a == b then return true end
+    if type(a) ~= "string" or type(b) ~= "string" then return false end
+    local left, right = Template.CompileCondition(a), Template.CompileCondition(b)
+    return left ~= nil and right ~= nil and PS.Table.DeepEqual(left, right)
+end
+
+-- Words a reader before 1.3.2 does not know (Blueprint: a document using one is version 4): the new names (not
+-- threat.holding, which tanking now names), pvp.ffa, pvp.faction, and true and false after = or !=.
+local SINCE_132 = { ["pvp.ffa"] = true, ["pvp.faction"] = true, ["true"] = true, ["false"] = true }
+for _, name in pairs(Template.FORMER_NAMES) do
+    if name ~= "threat.holding" then SINCE_132[name] = true end
+end
+local function ConditionUsesNewWords(text)
+    local list = Tokenize(text)
+    for _, piece in ipairs(list or {}) do
+        if piece.word and SINCE_132[piece.text] then return true end
+    end
+    return false
+end
+-- Whether text (a rule's condition when condition, else a template) names one of them as a token or in a condition;
+-- literal text and escapes ({{, [[) do not count.
+function Template.UsesNewWords(text, condition)
+    if type(text) ~= "string" then return false end
+    if condition then return ConditionUsesNewWords(text) end
+    local position = 1
+    while position <= #text do
+        local char, nextChar = text:sub(position, position), text:sub(position + 1, position + 1)
+        if (char == "{" and nextChar == "{") or (char == "[" and nextChar == "[") then
+            position = position + 2
+        elseif char == "{" or char == "[" then
+            local close = text:find(char == "{" and "}" or "]", position, true)
+            if not close then return false end
+            local inner = text:sub(position + 1, close - 1)
+            if char == "{" then
+                local name = inner:match("^%s*([%a][%w%.]*)")
+                if name and SINCE_132[name] then return true end
+            else
+                local keyword, rest = inner:match("^%s*(%a+)%s*(.-)%s*$")
+                keyword = keyword and keyword:lower()
+                if (keyword == "if" or keyword == "elseif") and ConditionUsesNewWords(rest) then return true end
+            end
+            position = close + 1
+        else
+            position = position + 1
+        end
+    end
+    return false
 end
 
 -- Writes a template into a font string. Returns true when something shows.

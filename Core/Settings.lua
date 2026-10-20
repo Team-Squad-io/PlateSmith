@@ -919,7 +919,8 @@ PS._CreatePlateSettings = function(context)
     end
 
     -- Settings › Fading: a fade rule preset (ProfilePresets' fadeNonTarget, fadeOutOfRange) on every
-    -- part the enemy plates show, found again by its condition. They stay ordinary rules, so Studio
+    -- part the enemy plates show, found again by its condition (as it compiles: one saved with the former names,
+    -- "hastarget and not targeted", is the same fade). They stay ordinary rules, so Studio
     -- shows and edits them part by part; the shortcut only reads them back.
     local FADE_PRESETS = { fadeNonTarget = true, fadeOutOfRange = true }
     local function FadeRule(id)
@@ -927,7 +928,7 @@ PS._CreatePlateSettings = function(context)
         return preset and preset.rules[1]
     end
     local function IsFade(rule, fade)
-        return type(rule) == "table" and rule.set == "alpha" and rule.when == fade.when
+        return type(rule) == "table" and rule.set == "alpha" and PS.Template.SameCondition(rule.when, fade.when)
     end
     -- Whether a fade applies to key in profile: a part shown there, not deleted, and for a custom
     -- part one in use. The loot bag is not a part of its own in Studio, so it is left out.
@@ -1025,11 +1026,12 @@ PS._CreatePlateSettings = function(context)
         if not fade or not GetSettings() or type(enabled) ~= "boolean" then return false end
         local _, alpha = GetFadeState(id)
         return EditFades(function(list)
-            local kept, removed = {}, false
+            local kept, removed = {}, nil
             for _, rule in ipairs(list) do
-                if IsFade(rule, fade) then removed = true else kept[#kept + 1] = rule end
+                if IsFade(rule, fade) then removed = removed or rule.when else kept[#kept + 1] = rule end
             end
-            if enabled then kept[#kept + 1] = { when = fade.when, set = "alpha", alpha = alpha or fade.alpha } end
+            -- A fade already there keeps its words (one saved with the former names stays as it was written).
+            if enabled then kept[#kept + 1] = { when = removed or fade.when, set = "alpha", alpha = alpha or fade.alpha } end
             if enabled or removed then return kept end
         end)
     end
@@ -1294,32 +1296,14 @@ PS._CreatePlateSettings = function(context)
         return DesignsChanged()
     end
 
-    -- Objects › Copy style from a look: look id's Objects style (ProfilePresets.ObjectStyle: the Objects' World design,
-    -- its type layers and Fade objects you can't use) replaces this profile's, as one edit (Save keeps it, Revert undoes
-    -- it). The Objects' context designs stay, dropping what no longer means the same over the new World, as a
-    -- Blueprint import does (Blueprint's Rebase); the World table keeps its identity (plates and Studio hold it).
+    -- Objects › Copy style from a look: look id's Objects style (the Objects' World design, the type layers it has and Fade
+    -- objects you can't use) into this profile, by the one route a look takes into a profile (ProfilePresets.Import: the
+    -- Blueprint import, limited to the Objects), as one edit (Save keeps it, Revert undoes it). Types and context
+    -- designs the look has none of stay, dropping what no longer means the same over the new World (Blueprint's Rebase).
     function designs.CopyObjectLook(id)
-        local db = GetSettings()
         local Presets = PS.ProfilePresets
-        local style = db and Presets and Presets.Get(id) and Presets.ObjectStyle(id)
-        if not style then return false end
-        local object = db.plateProfiles.object
-        local before = { layout = object.layout, namesLayout = object.namesLayout, valueSlots = object.valueSlots }
-        local contexts = object.contexts
-        local world = style.world
-        world.types = style.types
-        Table.Replace(object, world)
-        if type(contexts) == "table" then
-            local kept = {}
-            for place, record in pairs(contexts) do
-                if type(record) == "table" and record.full ~= true and PS._RebaseDesign then
-                    record = PS._RebaseDesign(record, before, object)
-                end
-                kept[place] = record
-            end
-            object.contexts = next(kept) ~= nil and kept or nil
-        end
-        db.objectFadeUnable = style.fade
+        if not (GetSettings() and Presets and Presets.Get(id)) then return false end
+        if not Presets.Import(id, Presets.OBJECTS_ONLY) then return false end
         return DesignsChanged()
     end
 
@@ -1384,6 +1368,31 @@ PS._CreatePlateSettings = function(context)
         ApplyStylePreset = ApplyStylePreset,
         SetPlateProfileHealthColour = SetProfileHealthColour,
         SetRelationshipColour = SetRelationshipColour,
+        -- A class's colour (Settings › Player colours › Class colours; classColours, Schema's CLASS_COLOUR): stored only
+        -- while it is not Blizzard's own (r nil, or Blizzard's colour, puts Blizzard's back), so a profile keeps none
+        -- until the player changes one.
+        SetClassColour = function(classFile, r, g, b)
+            local db = GetSettings()
+            if not db or not S.CLASS_COLOUR.FileKey(classFile) then return false end
+            local colours = Table.DeepCopy(db.classColours) or {}
+            local colour = r ~= nil and NormalizeColour({ r = r, g = g, b = b }, { r = 1, g = 1, b = 1 }) or nil
+            local br, bg, bb = PS.Secret.ClassColour(classFile)
+            if colour and br and PS.Format.ColourToHex(colour) == PS.Format.ColourToHex({ r = br, g = bg, b = bb }) then
+                colour = nil
+            end
+            colours[classFile] = colour
+            db.classColours = S.CLASS_COLOUR.Normalize(colours)
+            RefreshAll()
+            return true
+        end,
+        -- Every class back to Blizzard's colours.
+        ResetClassColours = function()
+            local db = GetSettings()
+            if not db then return false end
+            db.classColours = nil
+            RefreshAll()
+            return true
+        end,
         SetThreatColour = SetThreatColour,
         SetThreatPartOwnColours = SetThreatPartOwnColours,
         GetCharacterSettings = GetCharacterSettings,

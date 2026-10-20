@@ -526,9 +526,10 @@ PS._CreatePlateObjectStatus = function(context)
             end
         end
         if not herbs then Cooldowns(false) end
+        local settled = Cultivation.Settle()
         local stamp = Cultivation.Stamp()
         if not herbs or stamp <= 0 then Sleep() end
-        if herbs and stamp ~= Pass.stamp then
+        if herbs and (settled or stamp ~= Pass.stamp) then
             Pass.stamp = stamp
             FollowHerbs()
         end
@@ -604,7 +605,7 @@ PS._CreatePlateObjectStatus = function(context)
             return CultivationChanged(true)
         elseif event == "SPELL_UPDATE_COOLDOWN" then
             if not HerbsUp() then return Cooldowns(false) end
-            CultivationChanged(false)
+            CultivationChanged(Cultivation.Settle())
             return Wake()
         elseif event == "UNIT_SPELLCAST_SENT" then
             -- unit, target's name, cast GUID, spell
@@ -612,10 +613,13 @@ PS._CreatePlateObjectStatus = function(context)
             return
         elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
             -- unit, cast GUID, spell
-            if Cultivation.Mine(unit, third) and Cultivation.Succeeded() then
-                CultivationChanged(true)
+            if Cultivation.Mine(unit, third) then
+                Cultivation.Succeeded()
                 Wake()
             end
+            return
+        elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
+            if Cultivation.Mine(unit, third) then Cultivation.ChannelStarted() end
             return
         elseif event == "UNIT_SPELLCAST_CHANNEL_UPDATE" then
             if Cultivation.Mine(unit, third) then Cultivation.ChannelUpdated() end

@@ -40,15 +40,16 @@ local TEMPLATE_SAMPLES = {
     ["power"] = 320, ["power.max"] = 500, ["power.percent"] = 64,
     ["threat.percent"] = 82, ["threat.lead"] = 1400, ["threat.raw"] = 60000, ["threat.leadpercent"] = 82,
     ["level"] = 14, ["name"] = L["Training Raider"], ["target"] = L["Target Name"],
-    ["tagged"] = false, ["elite"] = true, ["rare"] = false, ["boss"] = false, ["casting"] = true,
-    ["combat"] = true, ["tanking"] = false, ["targeted"] = true, ["player"] = false,
-    ["focus"] = false, ["quest"] = true, ["friendly"] = false, ["level.smart"] = "14+", ["level.diff"] = -3,
+    ["unit.tagged"] = false, ["unit.elite"] = true, ["unit.rare"] = false, ["unit.boss"] = false, ["cast.active"] = true,
+    ["you.combat"] = true, ["unit.target"] = true, ["unit.player"] = false,
+    ["unit.focus"] = false, ["quest.needed"] = true, ["unit.friendly"] = false, ["level.smart"] = "14+", ["level.diff"] = -3,
     ["classification"] = L["Elite"], ["guild"] = L["Guild Name"], ["cast.name"] = L["Fireball"], ["threat.hold"] = L["TANK"],
-    ["hostile"] = true, ["neutral"] = false, ["interruptible"] = true, ["interruptReady"] = true, ["questdrop"] = false, ["pvp"] = false,
-    ["instance"] = false, ["ingroup"] = false, ["inguild"] = false,
+    ["unit.hostile"] = true, ["unit.neutral"] = false, ["cast.interruptible"] = true, ["cast.interruptready"] = true,
+    ["quest.drop"] = false, ["pvp.flagged"] = false, ["pvp.ffa"] = false, ["pvp.faction"] = "alliance",
+    ["you.instance"] = false, ["unit.ingroup"] = false, ["unit.inguild"] = false,
     ["role.tank"] = false, ["threat.holding"] = false, ["threat.losing"] = false, ["threat.pulling"] = false,
     ["threat.other"] = false, ["threat.offtank"] = false, ["threat.loose"] = false,
-    ["hastarget"] = true, ["inrange"] = true, ["quest.progress"] = "3/8", ["quest.percent"] = 38,
+    ["you.hastarget"] = true, ["unit.inrange"] = true, ["quest.progress"] = "3/8", ["quest.percent"] = 38,
     ["combo"] = 3,
     -- An object or NPC you can interact with (Test values' Object): a quest object, as the Objects tab's sample is,
     -- within reach. object.id is the book's, unit.id an innkeeper's.
@@ -66,9 +67,9 @@ Options.templateSamples = TEMPLATE_SAMPLES
 -- (samples: a view's own, Studio's by default).
 local function SampleClassification(samples)
     samples = samples or TEMPLATE_SAMPLES
-    if samples.boss then return "worldboss" end
-    if samples.rare then return samples.elite and "rareelite" or "rare" end
-    return samples.elite and "elite" or nil
+    if samples["unit.boss"] then return "worldboss" end
+    if samples["unit.rare"] then return samples["unit.elite"] and "rareelite" or "rare" end
+    return samples["unit.elite"] and "elite" or nil
 end
 Options.SampleClassification = SampleClassification
 -- Test values' Elite / rare choice writes the flags it reads (one source: elite, rare, boss); a boss is elite too,
@@ -186,22 +187,20 @@ PS.RegisterEditorComponent("health", {
         if component.previewBar then
             PS.Media.SetStatusBar(component.previewBar, settings.healthTexture)
             local colour = settings.healthColour
-            if settings.healthColourMode == "custom" and colour then
+            local owner = component.previewOwner or Options
+            local general = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
+            local pvp, onBar = nil, false
+            if general then pvp, onBar = owner:EditorPvPColour(general, settings) end
+            if pvp and onBar then
+                component.previewBar:SetStatusBarColor(pvp.r, pvp.g, pvp.b)
+            elseif settings.healthColourMode == "custom" and colour then
                 component.previewBar:SetStatusBarColor(colour.r, colour.g, colour.b)
             else
                 -- As a plate's automatic bar: a flagged ally's PvP colour where the bar takes it (EditorPvPColour), else
                 -- the plates' base colour for its Test values (Options.SampleBaseColour). previewOwner: the import
                 -- preview's plate this part belongs to (Studio's own: none).
-                local owner = component.previewOwner or Options
-                local general = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
-                local pvp, onBar = nil, false
-                if general then pvp, onBar = owner:EditorPvPColour(general, settings) end
-                if pvp and onBar then
-                    component.previewBar:SetStatusBarColor(pvp.r, pvp.g, pvp.b)
-                else
-                    component.previewBar:SetStatusBarColor(Options.SampleBaseColour(general, owner.templateSamples,
-                        owner.editorProfile))
-                end
+                PS.PlateColours.Paint(component.previewBar, "SetStatusBarColor", Options.SampleBaseColour(general,
+                    owner.templateSamples, owner.editorProfile, settings, "health"))
             end
         end
     end,
@@ -257,7 +256,7 @@ PS.RegisterEditorComponent("cast", {
         local height = settings.castHeight or math.max(5, (settings.healthHeight or 10) - 3)
         local drawn = math.floor(height * scale + 0.5)
         component:SetSize(math.floor((settings.castWidth or settings.width or 112) * scale + 0.5), drawn)
-        local casting = TEMPLATE_SAMPLES.casting == true
+        local casting = TEMPLATE_SAMPLES["cast.active"] == true
         local bar, spell, time, icon = component.previewBar, component.previewSpell, component.previewTime, component.previewIcon
         -- Not casting: idle, as on the plates, so it takes no room in its stack (what follows closes up);
         -- drawn faint to place it.
@@ -267,13 +266,13 @@ PS.RegisterEditorComponent("cast", {
         if settings.castInterruptColours == true then
             local colours = PS.ProfileSchema.NormalizeCastColours(settings.castColours)
             local colour = colours.cooldown
-            if TEMPLATE_SAMPLES.interruptible == false then
+            if TEMPLATE_SAMPLES["cast.interruptible"] == false then
                 colour = colours.locked
-            elseif TEMPLATE_SAMPLES.interruptReady == true then
+            elseif TEMPLATE_SAMPLES["cast.interruptready"] == true then
                 colour = colours.ready
             end
             bar:SetStatusBarColor(colour.r, colour.g, colour.b)
-        elseif TEMPLATE_SAMPLES.interruptible == false then
+        elseif TEMPLATE_SAMPLES["cast.interruptible"] == false then
             bar:SetStatusBarColor(0.6, 0.6, 0.65)
         else
             bar:SetStatusBarColor(0.95, 0.65, 0.12)
@@ -327,7 +326,7 @@ PS.RegisterEditorComponent("threat", {
     -- combat there is none (drawn faint, to place it); tanking, you hold it.
     refresh = function(component, settings)
         local access = Options.StudioAccess and Options:StudioAccess() or {}
-        local combat, tanking = TEMPLATE_SAMPLES.combat ~= false, TEMPLATE_SAMPLES.tanking == true
+        local combat, tanking = TEMPLATE_SAMPLES["you.combat"] ~= false, TEMPLATE_SAMPLES["threat.holding"] == true
         component.previewText:SetAlpha(combat and 1 or 0.3)
         local format = PS.ThreatText and PS.ThreatText.Format and PS.ThreatText.Format() or "gap"
         if format == "percent" then
@@ -453,7 +452,7 @@ PS.RegisterEditorComponent("tagged", {
     end,
     -- Test values: lit on a tagged unit, faint otherwise (so it can still be found and placed).
     refresh = function(component, settings)
-        component.previewText:SetAlpha(TEMPLATE_SAMPLES.tagged == true and 1 or 0.3)
+        component.previewText:SetAlpha(TEMPLATE_SAMPLES["unit.tagged"] == true and 1 or 0.3)
         if type(PS.ApplyNameplateFont) == "function" then
             PS.ApplyNameplateFont(component.previewText, math.max(8, (settings.nameFontSize or 14) - 3))
         end
@@ -485,8 +484,8 @@ PS.RegisterEditorComponent("combo", {
         Combo.ShowPips(component, pips, #pips, count)
         -- Show row, as on the plates (Test values' combo points and In combat): a row its style hides
         -- with 0 is drawn faint and takes no room in its stack.
-        component.previewIdle = count == 0 and Combo.EmptyHidden(style.pipShowRow, TEMPLATE_SAMPLES.combat ~= false) or nil
-        local alpha = (TEMPLATE_SAMPLES.targeted == false or component.previewIdle) and 0.3 or 1
+        component.previewIdle = count == 0 and Combo.EmptyHidden(style.pipShowRow, TEMPLATE_SAMPLES["you.combat"] ~= false) or nil
+        local alpha = (TEMPLATE_SAMPLES["unit.target"] == false or component.previewIdle) and 0.3 or 1
         for _, pip in ipairs(pips) do
             for _, texture in pairs(pip) do texture:SetAlpha(alpha) end
         end
@@ -520,7 +519,8 @@ PS.RegisterEditorComponent("targetedBy", {
         local size, spacing, vertical, initials = geometry.StyleOf(style)
         local width, height = geometry.RowSize(#component.previewBadges, size, spacing, vertical)
         component:SetSize(width * scale, height * scale)
-        local colours = rawget(_G, "RAID_CLASS_COLORS")
+        -- The plates' class colours (PlateColours.Class: Player colours' own or Blizzard's), else the sample's own.
+        local general = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
         for index, badge in ipairs(component.previewBadges) do
             local class, initial = TARGETED_BY_SAMPLES[index][1], TARGETED_BY_SAMPLES[index][2]
             local x, y = geometry.BadgeOffset(index, size, spacing, vertical)
@@ -528,9 +528,8 @@ PS.RegisterEditorComponent("targetedBy", {
             badge.edge:SetPoint("TOPLEFT", component, "TOPLEFT", x * scale, -y * scale)
             badge.edge:SetSize(size * scale, size * scale)
             badge.edge:SetColorTexture(0, 0, 0, 0.9)
-            local colour = type(colours) == "table" and colours[class]
-            local r, g, b = SAMPLE_CLASS_COLOURS[class][1], SAMPLE_CLASS_COLOURS[class][2], SAMPLE_CLASS_COLOURS[class][3]
-            if type(colour) == "table" and type(colour.r) == "number" then r, g, b = colour.r, colour.g, colour.b end
+            local r, g, b = PS.PlateColours.Class(general, class)
+            if not r then r, g, b = SAMPLE_CLASS_COLOURS[class][1], SAMPLE_CLASS_COLOURS[class][2], SAMPLE_CLASS_COLOURS[class][3] end
             badge.fill:SetColorTexture(r, g, b, 1)
             if type(PS.ApplyNameplateFont) == "function" then
                 PS.ApplyNameplateFont(badge.text, geometry.InitialFontSize(size * scale))
@@ -571,7 +570,7 @@ PS.RegisterEditorComponent("quest", {
     -- progress text shows its sample beside the mark or in its place.
     refresh = function(component, settings)
         MarkerSize(component, settings, 4, 14)
-        local alpha = TEMPLATE_SAMPLES.quest ~= false and 1 or 0.3
+        local alpha = TEMPLATE_SAMPLES["quest.needed"] ~= false and 1 or 0.3
         local mode, progress = settings.questProgress or "off", component.previewProgress
         progress:ClearAllPoints()
         if mode == "instead" then
@@ -664,7 +663,7 @@ PS.RegisterEditorComponent("looseMark", {
         LooseMark.Paint(component.previewIcon, style)
         local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or {}
         local tank = PS.ThreatColours.IsTank(settings, function() return samples["role.tank"] == true end)
-        local shown = LooseMark.Shows(style, tank, samples["threat.loose"] == true and samples.combat ~= false)
+        local shown = LooseMark.Shows(style, tank, samples["threat.loose"] == true and samples["you.combat"] ~= false)
         component.previewIcon:SetAlpha(shown and 1 or 0.3)
     end,
 })

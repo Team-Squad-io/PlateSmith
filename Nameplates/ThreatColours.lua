@@ -1,6 +1,6 @@
 -- Threat colours: the colour an enemy's health bar, name or health bar edge takes for its threat
--- state (Schema's colourByThreat and threatColour* settings), from the same record and reading as
--- the plate's threat text (PlateState). With only protected answers, the colour is picked inside the
+-- state (Schema's colourByThreat, the one switch, and each design's threatColour* options), from the same
+-- record and reading as the plate's threat text (PlateState). With only protected answers, the colour is picked inside the
 -- client by who holds the mob (PickByHolder), as the text's colour is. A rule's colour on the part wins
 -- (Lifecycle's ApplyPartRules); an unknown state or role, a unit not in combat with you or your group,
 -- or Safe while it keeps the part's colour leaves the part's own colour. Studio's preview resolves the
@@ -14,7 +14,8 @@ local Secret = assert(PS.Secret, "PlateSmith Secret missing")
 local ThreatColours = {}
 PS.ThreatColours = ThreatColours
 
--- Each part's Apply to setting. The edge is the health bar's border, not a part; rules colour the others.
+-- Each part's design option (a plate's own: its design's, Enemy players' layer included). The edge is the health
+-- bar's border, not a part; rules colour the others.
 local PART_SETTINGS = { health = "threatColourHealth", name = "threatColourName", border = "threatColourBorder" }
 ThreatColours.PART_SETTINGS = PART_SETTINGS
 ThreatColours.RULE_PARTS = { "health", "name" }
@@ -38,18 +39,20 @@ ThreatColours.STATE_HELP = {
     aggro = L["You hold its threat."],
 }
 
--- Whether settings colour anything by threat, and whether they colour part.
-function ThreatColours.Enabled(settings)
-    if type(settings) ~= "table" or settings.colourByThreat ~= true then return false end
+-- Whether threat colours colour anything on plates drawn with profile (a design's effective profile), and whether
+-- they colour part there: the general switch (settings.colourByThreat) and the design's part.
+function ThreatColours.Enabled(settings, profile)
+    if type(settings) ~= "table" or settings.colourByThreat ~= true or type(profile) ~= "table" then return false end
     for _, key in pairs(PART_SETTINGS) do
-        if settings[key] == true then return true end
+        if profile[key] == true then return true end
     end
     return false
 end
 
-function ThreatColours.Applies(settings, part)
+function ThreatColours.Applies(settings, part, profile)
     local key = PART_SETTINGS[part]
-    return key ~= nil and type(settings) == "table" and settings.colourByThreat == true and settings[key] == true
+    return key ~= nil and type(settings) == "table" and settings.colourByThreat == true and type(profile) == "table"
+        and profile[key] == true
 end
 
 -- The soft target glow's Threat colour mode asks as part "glow": it takes the shared colours whenever its
@@ -58,9 +61,9 @@ ThreatColours.GLOW = "glow"
 -- The threat edge on Blizzard's own plates (Extras.lua) asks as part "extras": it takes the shared colours whenever
 -- its extra is on, on a plate PlateSmith does not draw (data.extras), as the glow there does.
 ThreatColours.EXTRAS = "extras"
-local function Asks(settings, part)
+local function Asks(settings, part, profile)
     if part == ThreatColours.GLOW or part == ThreatColours.EXTRAS then return type(settings) == "table" end
-    return ThreatColours.Applies(settings, part)
+    return ThreatColours.Applies(settings, part, profile)
 end
 -- Whether the plate takes threat colours for part: an owned plate, or Blizzard's with the extras (the edge and glow).
 local function Drawn(data, part)
@@ -199,11 +202,11 @@ local function Settings()
 end
 
 -- Whether a plate can take threat colours now: an owned enemy plate in combat with you or your
--- group (an engaged threat record), with Threat colours on.
+-- group (an engaged threat record), with Threat colours on for a part of its design.
 function ThreatColours.Wanted(data)
     local info = data.threatInfo
     return data.own == true and data.friendly == false and type(info) == "table" and info.engaged == true
-        and ThreatColours.Enabled(Settings())
+        and ThreatColours.Enabled(Settings(), data.profile)
 end
 
 -- The state a plate's record says, from the facts its threat text is coloured by (ThreatText.Facts:
@@ -221,7 +224,7 @@ ThreatColours.PlateState = PlateState
 -- Settings, record and role for a plate's part, or nil when it takes no threat colour.
 local function PlateContext(data, part)
     local settings = Settings()
-    if not Asks(settings, part) or not Drawn(data, part) or data.friendly ~= false then return nil end
+    if not Asks(settings, part, data.profile) or not Drawn(data, part) or data.friendly ~= false then return nil end
     local info = data.threatInfo
     if type(info) ~= "table" or info.engaged ~= true then return nil end
     local tank = ThreatColours.IsTank(settings, PlayerTanks)
@@ -300,7 +303,7 @@ end
 -- Each state is a view of the plate's record with who holds it set; every other field reads through
 -- to the record, so ThreatText.Facts answer as they would there. Threat tokens read the view's facts,
 -- any other token the plate's own reader.
-local WORLD_FACTS = { tanking = "holding", ["threat.holding"] = "holding", ["threat.losing"] = "losing",
+local WORLD_FACTS = { ["threat.holding"] = "holding", ["threat.losing"] = "losing",
     ["threat.pulling"] = "pulling", ["threat.other"] = "other", ["threat.offtank"] = "offtank" }
 -- (threat.loose is not folded: whether your holding it is loose depends on your role and group, which a view does not
 -- say, so it reads the record's own answer there, unknown where the record is UNKNOWN: the rule does not apply.)
@@ -378,7 +381,9 @@ function ThreatColours.FoldRules(data, list, from, read, r, g, b)
     for index = from, #list do
         local rule = list[index]
         local colour, when = rule.colour, rule.when
-        if rule.enabled ~= false and rule.set == "colour" and type(colour) == "table" and type(when) == "string" then
+        -- (A Class colour rule is not folded: its colour may itself be protected; it fails closed here.)
+        if rule.enabled ~= false and rule.set == "colour" and rule.colourSource == nil and type(colour) == "table"
+            and type(when) == "string" then
             local tree = Template.CompileCondition(when)
             if tree and Template.Evaluate(tree, read) == nil then
                 local you, other, tank = HoldsIn(tree, reads[YOU]), HoldsIn(tree, reads[OTHER]), nil
@@ -400,31 +405,31 @@ function ThreatColours.FoldRules(data, list, from, read, r, g, b)
     return false
 end
 
--- Grey when tagged by others (Schema's greyWhenTagged): the health bar's colour on an enemy plate while another
--- player or group has tagged the mob (tapped: UnitIsTapDenied read readable and true; protected or unknown is
+-- Grey when tagged by others (a design's greyWhenTagged; profile: the plate's): the health bar's colour on an enemy
+-- plate while another player or group has tagged the mob (tapped: UnitIsTapDenied read readable and true; protected or unknown is
 -- false, so the bar keeps its colour). It wins over threat colours, as Blizzard's tapped grey wins over its
 -- in-combat red (CompactUnitFrame_UpdateHealthColor): a tagged mob gives you no credit, whoever holds it. A colour
 -- rule on the health bar still wins (Lifecycle's ApplyPartRules). nil when the bar keeps its own colour. The plates
 -- and Studio's preview (GreyForSample) both ask here.
 ThreatColours.TAGGED_GREY = { r = 0.5, g = 0.5, b = 0.5 }
-function ThreatColours.GreyWhenTagged(settings, enemy, tapped)
-    if enemy == true and tapped == true and type(settings) == "table" and settings.greyWhenTagged == true then
+function ThreatColours.GreyWhenTagged(profile, enemy, tapped)
+    if enemy == true and tapped == true and type(profile) == "table" and profile.greyWhenTagged == true then
         return ThreatColours.TAGGED_GREY
     end
     return nil
 end
 
--- Studio's preview: the health bar's grey from its test values (Tagged), on an enemy design.
-function ThreatColours.GreyForSample(settings, samples, enemy)
-    if type(samples) ~= "table" or samples.friendly == true then return nil end
-    return ThreatColours.GreyWhenTagged(settings, enemy, samples.tagged == true)
+-- Studio's preview: the health bar's grey from its test values (Tagged), on an enemy design (profile: the open one's).
+function ThreatColours.GreyForSample(profile, samples, enemy)
+    if type(samples) ~= "table" or samples["unit.friendly"] == true then return nil end
+    return ThreatColours.GreyWhenTagged(profile, enemy, samples["unit.tagged"] == true)
 end
 
--- Studio's preview: the colour for part from its test values (samples: token -> value). A friendly
--- sample, or one out of combat, keeps the part's colour as a plate would.
-function ThreatColours.ForSample(settings, part, samples)
-    if not Asks(settings, part) or type(samples) ~= "table" then return nil end
-    if samples.friendly == true or samples.combat == false then return nil end
+-- Studio's preview: the colour for part from its test values (samples: token -> value), drawn with profile (the open
+-- design's). A friendly sample, or one out of combat, keeps the part's colour as a plate would.
+function ThreatColours.ForSample(settings, part, samples, profile)
+    if not Asks(settings, part, profile) or type(samples) ~= "table" then return nil end
+    if samples["unit.friendly"] == true or samples["you.combat"] == false then return nil end
     local tank = ThreatColours.IsTank(settings, function() return samples["role.tank"] == true end)
     local state = ThreatColours.State(tank, function(name) return samples["threat." .. name] end)
     return ThreatColours.Colour(settings, part, state)
