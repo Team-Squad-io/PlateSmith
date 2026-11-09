@@ -366,6 +366,37 @@ function PlateColours.UnitClassChannels(unit)
     return PlateColours.ClassChannels(type(PS.GetSettings) == "function" and PS.GetSettings() or nil, classFile, has)
 end
 
+-- The game's colour for a level against yours (the Level's Colour › Difficulty, a colour rule's Set difficulty colour):
+-- GetCreatureDifficultyColor, else GetQuestDifficultyColor (red, orange, yellow, green or grey), and red for a level the
+-- game hides (-1, "??"); a { r, g, b } table (the client's own, shared: never written), or nil for a level that is not
+-- readable, a client without either function or an answer that is not a readable colour, so the part keeps its normal
+-- colour (fail closed). One answer for the plates and Studio's preview.
+PlateColours.HIDDEN_LEVEL = { r = 1, g = 0.1, b = 0.1 }
+function PlateColours.LevelDifficulty(level)
+    if not PS.Secret.IsReadable(level) or type(level) ~= "number" then return nil end
+    if level < 0 then
+        local colours = rawget(_G, "QuestDifficultyColors")
+        local impossible = type(colours) == "table" and colours.impossible
+        if type(impossible) == "table" and type(impossible.r) == "number" then return impossible end
+        return PlateColours.HIDDEN_LEVEL
+    end
+    if level == 0 then return nil end
+    local api = rawget(_G, "GetCreatureDifficultyColor")
+    if type(api) ~= "function" then api = rawget(_G, "GetQuestDifficultyColor") end
+    if type(api) ~= "function" then return nil end
+    local ok, colour = pcall(api, level)
+    if not (ok and PS.Secret.IsReadable(colour) and type(colour) == "table") then return nil end
+    local Number = PS.Secret.Number
+    if not (Number(colour.r) and Number(colour.g) and Number(colour.b)) then return nil end
+    return colour
+end
+-- LevelDifficulty's r, g, b (nil: none), for a colour rule (Styles' StyleRules.Colour).
+function PlateColours.LevelDifficultyChannels(level)
+    local colour = PlateColours.LevelDifficulty(level)
+    if colour then return colour.r, colour.g, colour.b end
+    return nil
+end
+
 -- The Name's own colour (Schema's NAME_COLOUR: Studio's Name › Colour, Custom) while its Class colour (classColour:
 -- CLASS_COLOUR.On's answer) is not ticked; nil: the automatic colour. A PvP-flagged ally's PvP colour still wins over
 -- it, as over the class colour. One answer for the plates (Lifecycle's UpdateIdentity) and Studio's preview.
@@ -660,8 +691,57 @@ PS._CreatePlateIdentity = function(context)
         return ok
     end
 
+    -- A friendly NPC's title ("Flight Master") for Friendly NPCs' Guild / title line: the second line of its tooltip, the
+    -- game's only way to give it. An NPC without one has its level line there ("Level 30 Humanoid"), told apart by the
+    -- game's own level texts, so it works in every language. Kept per creature ID, as a title never changes (false:
+    -- none); bounded, starting over when full.
+    local titles, titleCount, levelPatterns = {}, 0, nil
+    local MAX_TITLES = 400
+    local function IsLevelLine(text)
+        if not levelPatterns then
+            levelPatterns = {}
+            for _, name in ipairs({ "TOOLTIP_UNIT_LEVEL", "TOOLTIP_UNIT_LEVEL_TYPE", "TOOLTIP_UNIT_LEVEL_CLASS",
+                "TOOLTIP_UNIT_LEVEL_RACE_CLASS", "UNIT_LEVEL_TEMPLATE" }) do
+                local template = rawget(_G, name)
+                if type(template) == "string" and template ~= "" then
+                    -- Each %s or %d (with or without a position) stands for anything; the rest is matched as it is.
+                    local pattern = (template:gsub("%%%d*%$?[sd]", "\001"))
+                    pattern = (pattern:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"))
+                    levelPatterns[#levelPatterns + 1] = "^" .. (pattern:gsub("\001", ".-"))
+                end
+            end
+        end
+        for _, pattern in ipairs(levelPatterns) do
+            if text:find(pattern) then return true end
+        end
+        return false
+    end
+    local function ReadTitle(unit)
+        local api = C_TooltipInfo and C_TooltipInfo.GetUnit
+        if type(api) ~= "function" then return false end
+        local ok, info = pcall(api, unit)
+        if not ok or not IsReadable(info) or type(info) ~= "table" then return false end
+        local lines = info.lines
+        local line = IsReadable(lines) and type(lines) == "table" and lines[2] or nil
+        local text = IsReadable(line) and type(line) == "table" and line.leftText or nil
+        if not IsReadable(text) or type(text) ~= "string" or text == "" or IsLevelLine(text) then return false end
+        return text:match("^<(.+)>$") or text
+    end
+    local function NpcTitle(unit)
+        local guid = PS.Secret.ReadGUID(unit)
+        local npcID = guid and tonumber(guid:match("^Creature%-[^-]*%-[^-]*%-[^-]*%-[^-]*%-(%d+)"))
+        if npcID and titles[npcID] ~= nil then return titles[npcID] or nil end
+        local title = ReadTitle(unit)
+        if npcID then
+            if titleCount >= MAX_TITLES then titles, titleCount = {}, 0 end
+            titles[npcID], titleCount = title, titleCount + 1
+        end
+        return title or nil
+    end
+
     return {
         SetPlateText = SetPlateText,
+        NpcTitle = NpcTitle,
         ReadUnitName = ReadUnitName,
         UnitDisplayNameValue = UnitDisplayNameValue,
         FriendlyRelationship = FriendlyRelationship,

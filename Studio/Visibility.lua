@@ -8,8 +8,8 @@ local Theme = assert(PS.StudioTheme, "PlateSmith StudioTheme missing")
 local L = PS.L
 local WidgetName = model.WidgetName
 
--- Studio's Where plates show (Nameplates/Visibility.lua): Settings › Behaviour & display › Where plates
--- show, a grid of switches (a row per plate type, a column per kind of place), and the design row's
+-- Studio's Where plates show (Nameplates/Visibility.lua): its own Settings page (Settings › Where plates show),
+-- a grid of switches (a row per plate type, a column per kind of place), and the design row's
 -- eye that opens it.
 local V = Schema.VISIBILITY
 local PLACE_HEADERS = { world = L["World"], dungeon = L["Dungeons & raids"], pvp = L["Battlegrounds & arenas"],
@@ -19,6 +19,9 @@ local ENEMY_PLAYERS_NOTE = L["Enemy players show and hide with the Enemies row: 
 -- Objects have no row: the game has no switch for object plates, so where they show is the game's.
 local OBJECTS_NOTE = L["Objects show wherever the game gives them a plate: the game has no switch for object plates, "
     .. "so they have no row here."]
+-- Friendly players' choices (shownFriendlyPlayerWho), here and in Players › Plate settings › Friendly plates.
+Options.FRIENDLY_PLAYER_WHO = { { value = "everyone", label = L["Everyone"] }, { value = "group", label = L["Your group only"] },
+    { value = "groupGuild", label = L["Your group & guild"] } }
 -- The grid's label column and the header's height.
 local GRID_LABEL_W, HEADER_H = 128, 40
 -- The eye's icon (the tree's, 26 wide) and its count's colours.
@@ -121,12 +124,12 @@ function Options.PlateVisibilitySummary()
     return string.format(L["Limited for %d"], limited)
 end
 
--- Opens Settings › Behaviour & display at Where plates show (unfolded, scrolled to, flashed).
+-- Opens Settings › Where plates show (the section unfolded, scrolled to, flashed).
 function Options:OpenPlateVisibilitySettings()
-    self:EditorSettingsPage("plate")
+    self:EditorSettingsPage("visibility")
     local section = self.editorPlateVisibilitySection
     if not (section and self.settingsSearch) then return false end
-    return self.settingsSearch.Pick({ place = "studio", category = "plate", frame = section, section = section })
+    return self.settingsSearch.Pick({ place = "studio", category = "visibility", frame = section, section = section })
 end
 
 -- Places the grid's header texts and boxes for the row's width; returns a header text's width.
@@ -167,7 +170,7 @@ local function FitHeaders(SK, header, columns, width)
     header.fontSize = size
 end
 
--- Settings › Behaviour & display › Where plates show (Inspector's plate page builds the section).
+-- Settings › Where plates show (Inspector's visibility page makes the section).
 function Options.BuildPlateVisibilitySettings(SK, section, Bind)
     Options.editorPlateVisibilitySection = section
     local allColumns = { "world", "dungeon", "pvp", "city", "inCombat", "noCombat" }
@@ -208,7 +211,7 @@ function Options.BuildPlateVisibilitySettings(SK, section, Bind)
                 { L["Ticked: shown there. Unticked: Blizzard's switch for these plates is turned off there and put back "
                     .. "when you leave."] })
             row.cells[column] = checkbox
-            Bind("plate.shown." .. plateType .. "." .. column, checkbox)
+            Bind("visibility.shown." .. plateType .. "." .. column, checkbox)
         end
         SK.OnWidth(row, function(width)
             for _, column in ipairs(allColumns) do row.cells[column]:SetShown(Shown(column)()) end
@@ -219,6 +222,17 @@ function Options.BuildPlateVisibilitySettings(SK, section, Bind)
         rows[#rows + 1] = row
     end
     Options.editorPlateVisibilityRows = rows
+    -- Which friendly players get a plate (Nameplates/Lifecycle.lua's rounds.WhoHides), on plates PlateSmith draws. Its
+    -- home; Players › Plate settings › Friendly plates has a row writing the same setting.
+    local get, set = Options.BindSetting("shownFriendlyPlayerWho")
+    local whoRow, who = SK.DropdownRow(section, L["Friendly players"], { get = get, set = set,
+        name = WidgetName("editor_shownFriendlyPlayerWho", "Dropdown"), choices = Options.FRIENDLY_PLAYER_WHO })
+    whoRow.kitSearchKeywords = L["group only guild strangers hide others party raid friends"]
+    SK.Add(section, whoRow)
+    SK.Add(section, SK.ControlHelp(section, L["Which friendly players get a plate where PlateSmith draws them: others "
+        .. "get none, except whoever you target, and someone who joins your group gets one. Blizzard's own plates (Show "
+        .. "as Blizzard's plates, and dungeons & raids) are never hidden by it. Not shared in Blueprints."]))
+    Bind("visibility.shownFriendlyPlayerWho", who)
     SK.Add(section, SK.Help(section, L["Hides a plate type's plates in the places you untick, through Blizzard's own "
         .. "switches, and shows them again when you leave. Friendly plates in dungeons & raids are Blizzard's: they can be "
         .. "shown or hidden here, but PlateSmith does not draw them."]))

@@ -43,19 +43,21 @@ PS._CreatePlateFactory = function(context)
         return border
     end
 
+    -- Made in the edge's golds (TargetGlow.EDGE_GOLD); another Edge colour paints them after (Lifecycle).
     local function CreateTargetBarGlow(bar)
+        local gold = PS.TargetGlow.EDGE_GOLD
         -- Keep both layers attached to the bar itself, never to the whole plate canvas.
         local steady = EdgeFrame(bar, 1)
         steady:SetPoint("TOPLEFT", bar, "TOPLEFT", -1, 1)
         steady:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 1, -1)
-        steady:SetBackdropBorderColor(1, 0.72, 0.16, 0.65)
+        steady:SetBackdropBorderColor(gold.steady[1], gold.steady[2], gold.steady[3], gold.steady[4])
         steady:EnableMouse(false)
         steady:Hide()
 
         local pulse = EdgeFrame(bar, 2)
         pulse:SetPoint("TOPLEFT", bar, "TOPLEFT", -3, 3)
         pulse:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 3, -3)
-        pulse:SetBackdropBorderColor(1, 0.68, 0.1, 0.55)
+        pulse:SetBackdropBorderColor(gold.pulse[1], gold.pulse[2], gold.pulse[3], gold.pulse[4])
         pulse:EnableMouse(false)
         pulse:Hide()
         return { steady = steady, pulse = pulse }

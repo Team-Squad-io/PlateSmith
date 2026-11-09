@@ -48,7 +48,7 @@ end
 -- them here; without it each says so in one line. "console sample" is the console's developer form. Only these
 -- names can be registered, so the developer addon adds no command of its own.
 local DEV_COMMANDS = {
-    status = true, perf = true, performance = true, fetch = true, playerprobe = true, testname = true,
+    status = true, perf = true, performance = true, fetch = true, playerprobe = true, testname = true, dev = true,
     ["console sample"] = true,
 }
 local devHandlers = {}
@@ -178,16 +178,19 @@ PS.Ticker.Register("commands.deferred", 0, function()
 end)
 PS.Ticker.SetEnabled("commands.deferred", false)
 
--- Addon Compartment (the minimap addon menu), declared in the TOC.
-function PlateSmith_OnAddonCompartmentClick()
-    Commands.OpenSettings()
+-- Addon Compartment (the minimap addon menu), declared in the TOC: clicked as the minimap button is (left Studio,
+-- right Studio's Settings). The client passes the addon's name, then the mouse button.
+function PlateSmith_OnAddonCompartmentClick(_, mouseButton)
+    if PS.MinimapButton then return PS.MinimapButton.Click(mouseButton) end
+    return PS.OpenVisualEditor and PS.OpenVisualEditor()
 end
 
 function PlateSmith_OnAddonCompartmentEnter(_, menuButton)
     if not GameTooltip then return end
     GameTooltip:SetOwner(menuButton, "ANCHOR_LEFT")
     GameTooltip:SetText("PlateSmith")
-    GameTooltip:AddLine(L["Click to open settings."], 1, 1, 1)
+    GameTooltip:AddLine(L["Left-click: open or close Blueprint Studio."], 1, 1, 1)
+    GameTooltip:AddLine(L["Right-click: open or close Studio's Settings."], 1, 1, 1)
     GameTooltip:AddLine(tostring(PS.RUNTIME_BUILD), 0.6, 0.6, 0.6)
     GameTooltip:Show()
 end

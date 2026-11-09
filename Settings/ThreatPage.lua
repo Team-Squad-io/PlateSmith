@@ -68,9 +68,8 @@ local rescueFilterChoices = {
 local DOCK_SIDES = { { "right", L["Right"] }, { "left", L["Left"] }, { "above", L["Above"] }, { "below", L["Below"] } }
 local METER_WINDOWS = 3
 
-local function Seconds(value)
-    return value == 1 and L["1 second"] or string.format(L["%d seconds"], value)
-end
+-- Short, so the slider's value box shows it whole ("3 seconds" was cut to "3 seco...").
+local function Seconds(value) return string.format(L["%d s"], value) end
 local function Visible(value) return string.format(L["%d%% visible"], math.floor(value * 100 + 0.5)) end
 
 local function Selected()
@@ -180,6 +179,8 @@ end
 local function BuildThreatColours(kit)
     local section = kit.Section(nil, L["Threat colours"], { key = "colours", anchor = "colours",
         summary = Options.ThreatColourSummary })
+    -- Behaviour & display had a link here; these words find the section instead.
+    section.kitSearchKeywords = L["aggro colour by threat"]
     Options.BuildThreatColourSettings(kit.internal.SK, section, kit.internal.Bind)
 end
 
@@ -413,6 +414,14 @@ local function BuildWindows(module)
         .. "or Glass: the theme of the window following that meter window, else of the first shown window; Forge for "
         .. "the other themes): its frame, header, buttons, bars, scroll bar and breakdown. Only its look changes; Edit "
         .. "Mode still places and sizes it. Off puts Blizzard's look back at once. For every character."]))
+    -- The same window as the title menu's Threat breakdown... (Threat/Breakdown.lua, a built-in module).
+    local breakdownRow, breakdown = kit.ButtonRow(section, L["Threat breakdown..."], 200)
+    breakdown:SetScript("OnClick", function() if PS.ThreatBreakdown then PS.ThreatBreakdown:Show() end end)
+    Availability(breakdown, function() return PS.ThreatBreakdown ~= nil end)
+    kit.Add(section, breakdownRow)
+    kit.AttachHelp(breakdownRow, L["Opens the threat breakdown: an estimate of your own threat on each of your recent "
+        .. "pulls, beside the game's figure where it can be read. Also in a threat window's title menu."])
+    Options.threatBreakdownButton = breakdown
 
     kit.Add(section, kit.SubHeader(section, L["This window"]))
     local modeRow, mode = kit.DropdownRow(section, L["Mode"], {

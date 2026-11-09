@@ -31,7 +31,7 @@ local AREAS = {
     { label = L["Sizes"], fields = { "scale", "width", "healthHeight", "powerWidth", "powerHeight", "castWidth", "castHeight",
         "nameFontSize" } },
     { label = L["Styles"], fields = { "styles", "healthTexture", "healthColourMode", "healthColour", "healthClassColour",
-        "nameClassColour", "nameColour" } },
+        "nameClassColour", "nameColour", "healPrediction", "healPredictionColour", "absorbs", "absorbColour" } },
     { label = L["Cast bar"], fields = { "castIcon", "castTime", "castName", "castInterruptColours", "castOnTop", "castColours" } },
     { label = L["Rules"], fields = { "rules" } },
     { label = L["Custom parts"], fields = { "valueSlots" } },
@@ -628,13 +628,32 @@ function ImportPreview.Build(window)
         return ImportPreview.Clear(window, L["This Blueprint cannot be imported as it is: Import selected says why."])
     end
     local changes, general = ImportPreview.Changes(PS.GetSettings(), result)
+    local missing = ImportPreview.MissingLine(result)
     if #changes == 0 then
-        ImportPreview.Clear(window, general and L["No design changes: only general settings (fonts, colours and more) would change."]
-            or L["Nothing on your plates would look different."])
+        ImportPreview.Clear(window, missing .. (general and L["No design changes: only general settings (fonts, colours "
+            .. "and more) would change."] or L["Nothing on your plates would look different."]))
         return
     end
     ShowChanges(window, changes,
-        general and L["General settings change too (fonts, colours and more); the preview shows yours."] or "")
+        missing .. (general and L["General settings change too (fonts, colours and more); the preview shows yours."] or ""))
+end
+
+-- The pictures an import's image parts name that this install does not have (PS.BlueprintMissingPictures), as the
+-- review's first line ("" when none): those parts draw nothing until the player has them.
+local MISSING_SHOWN = 3
+function ImportPreview.MissingLine(result)
+    local missing = PS.BlueprintMissingPictures(result)
+    if #missing == 0 then return "" end
+    local shown = {}
+    for index = 1, math.min(MISSING_SHOWN, #missing) do shown[index] = missing[index] end
+    local list = table.concat(shown, ", ")
+    if #missing > MISSING_SHOWN then list = string.format(L["%s and %d more"], list, #missing - MISSING_SHOWN) end
+    if #missing == 1 then
+        return string.format(L["This Blueprint uses 1 picture you don't have: %s. That part draws nothing until you add "
+            .. "it (My media for your own)."], list) .. "\n"
+    end
+    return string.format(L["This Blueprint uses %d pictures you don't have: %s. Those parts draw nothing until you add "
+        .. "them (My media for your own)."], #missing, list) .. "\n"
 end
 
 -- A paste or a ticked box: the preview follows a moment later, once (a burst of keystrokes builds it

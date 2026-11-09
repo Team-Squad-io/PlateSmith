@@ -93,14 +93,15 @@ local function TextHeight(text)
     local _, breaks = tostring(text:GetText() or ""):gsub("\n", "")
     return (breaks + 1) * 18
 end
+LookUpdate.TextHeight = TextHeight
 
--- Studio's dialog (ConfirmStudioAction's chrome): the title, the notes, and for an offer the line that nothing changes
--- yet, the opt-out box, Review changes... and Not now. Escape is Not now.
-local function Dialog()
-    if LookUpdate.dialog then return LookUpdate.dialog end
+-- A notes window in Studio's dialog look (ConfirmStudioAction's chrome): a gold title and dialog.notes, NOTES_TOP below
+-- its top; Escape closes it. This window's and the release What's new window's (Studio/WhatsNew.lua).
+LookUpdate.NOTES_TOP, LookUpdate.NOTES_X = TOP, TEXT_X
+function LookUpdate.NotesDialog(name, width)
     local Window, chrome = PS.UI.Window, Options.studioChrome
-    local dialog = Window.Create("PlateSmithLookNewsDialog", {
-        width = WIDTH, height = 300, title = "", closeButton = false, closeOnEscape = true, movable = false,
+    local dialog = Window.Create(name, {
+        width = width, height = 300, title = "", closeButton = false, closeOnEscape = true, movable = false,
         border = Window.colours.studio,
     })
     chrome.DressStudioDialog(dialog)
@@ -108,10 +109,20 @@ local function Dialog()
     notes:SetFont(chrome.FONT, 14)
     notes:SetTextColor(0.93, 0.90, 0.84)
     notes:SetPoint("TOPLEFT", dialog, "TOPLEFT", TEXT_X, -TOP)
-    notes:SetWidth(WIDTH - 2 * TEXT_X)
+    notes:SetWidth(width - 2 * TEXT_X)
     notes:SetJustifyH("LEFT")
     if notes.SetSpacing then notes:SetSpacing(3) end
     dialog.notes = notes
+    return dialog
+end
+
+-- The look's dialog: the title, the notes, and for an offer the line that nothing changes yet, the opt-out box, Review
+-- changes... and Not now. Escape is Not now.
+local function Dialog()
+    if LookUpdate.dialog then return LookUpdate.dialog end
+    local chrome = Options.studioChrome
+    local dialog = LookUpdate.NotesDialog("PlateSmithLookNewsDialog", WIDTH)
+    local notes = dialog.notes
     local after = dialog:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     after:SetFont(chrome.FONT, 13)
     after:SetTextColor(chrome.LABEL[1], chrome.LABEL[2], chrome.LABEL[3])

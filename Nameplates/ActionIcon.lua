@@ -40,8 +40,56 @@ ActionIcon.TYPE_OF = { herb = "herb", ore = "ore", loot = "loot", skin = "loot",
     talk = "service", trainer = "service", vendor = "service", flight = "service", repair = "service", mail = "service",
     interact = "other", other = "other" }
 -- A type's sample kind (Studio: choosing a Type shows that kind's icon and status in the preview).
-ActionIcon.TYPE_SAMPLES = { herb = "herb", ore = "ore", loot = "loot", quest = "quest", book = "inspect",
+ActionIcon.TYPE_SAMPLES = { herb = "herb", ore = "ore", loot = "loot", corpse = "loot", quest = "quest", book = "inspect",
     service = "talk", other = "interact" }
+
+-- Corpse plates (Settings › Objects & interacting › Corpses: corpsePlates, off by default): a
+-- creature the client readably says is dead (never a player) draws as an Objects plate of the Corpses type ("corpse") at
+-- any distance: the name and the Action icon, no health bar or level. Death alone decides it (Lifecycle's rounds.Kind),
+-- never the cursor icon or the interaction target, so holding a modifier or walking away never turns it back into an
+-- enemy plate. The icon shows once the game gives the loot or skin one (hide it with the Corpses type's Action icon);
+-- a corpse with nothing to loot keeps the plain plate. Unknown death changes
+-- nothing. PlateSmith makes no frame that takes the mouse, so a click lands where it did before. With corpse plates off a
+-- dead creature gets no PlateSmith plate (Lifecycle).
+ActionIcon.CORPSE = "corpse"
+ActionIcon.CORPSE_KINDS = { loot = true, skin = true }
+
+-- Whether a corpse plate shows the icon of kind: the game's loot or skin icon.
+function ActionIcon.CorpseIncluded(_, kind)
+    return kind ~= nil and ActionIcon.CORPSE_KINDS[kind] == true
+end
+
+-- Whether settings draw corpse plates at all (and PlateSmith draws objects).
+function ActionIcon.CorpsesOn(settings)
+    return type(settings) == "table" and settings.corpsePlates == true and settings.objectPlates ~= "blizzard"
+end
+
+-- Whether unit is a dead creature: UnitIsDead readably true and UnitIsPlayer readably false (anything unknown: no).
+-- The second result is UnitIsDead's readable answer (nil: unknown), which Lifecycle keeps to see a death.
+function ActionIcon.IsDeadCreature(unit)
+    local dead = Secret.ReadBoolean(UnitIsDead, unit)
+    if dead ~= true then return false, dead end
+    return Secret.ReadBoolean(UnitIsPlayer, unit) == false, dead
+end
+
+-- Whether unit is a corpse PlateSmith draws as one: corpse plates on and a dead creature, whatever its icon.
+function ActionIcon.IsCorpse(unit, settings)
+    return ActionIcon.CorpsesOn(settings) and (ActionIcon.IsDeadCreature(unit)) == true
+end
+
+-- Out of reach (Settings › Objects & interacting › When out of reach: interactRangeCue): how a plate with an Action icon (an
+-- object, a corpse or a Friendly NPC the game gives an icon) shows that UnitIsInInteractRange readably says no. off: as
+-- the game shows it (its greyed cursor icon only); dim: the plate fades as Fade objects you can't use fades it (Lifecycle's
+-- ObjectFade); grey: the name in GREY, under a colour rule of its own (Lifecycle's ApplyPartRules). Unknown reach or no
+-- icon: no change. (Words such as "Too far" are the Objects' Range part: Range.lua, from this pass's facts.)
+ActionIcon.CUES = { off = true, dim = true, grey = true }
+ActionIcon.GREY = { r = 0.5, g = 0.5, b = 0.5 }
+
+-- The cue a plate shows (nil: none) for the setting, its icon's kind and its reach. Plates and Studio's preview share it.
+function ActionIcon.Cue(choice, kind, inRange)
+    if choice == nil or choice == "off" or not ActionIcon.CUES[choice] or kind == nil or inRange ~= false then return nil end
+    return choice
+end
 
 local byLowerName = {}
 for name, kind in pairs(ActionIcon.KINDS) do byLowerName[name:lower()] = kind end
@@ -182,16 +230,22 @@ function ActionIcon.PeekCursor(unit)
 end
 
 -- The plate side. context: active (unit -> plate), RunBatch, MarkStacks, MarkValues, Styles, AnchorPart (Placement),
--- ObjectChanged(data, typeChanged) (an object's type or Can't use changed: Lifecycle lays it out again or fades it).
+-- ObjectChanged(data, typeChanged) (an object's type or Can't use changed: Lifecycle lays it out again or fades it),
+-- CueChanged(data) (its Out of reach cue changed: Lifecycle fades it or greys its name), ReachChanged(data) (its kind or
+-- reach changed: the Range part follows), KindCheck(data) (the interaction target's plate may have become a corpse or
+-- stopped being one: Lifecycle lays it out again if so).
 -- A plate's icon is made the first time it is wanted; the event and the ticker entry run only while a layout of an
 -- Objects or Friendly NPCs design shows the part or reads its facts, or every object's kind is wanted (SetWanted's
--- objects: an object type's layer, the fade, the Status text), the entry only while such a plate is up.
+-- objects: an object type's layer, the fade, the Status text), corpse plates are on, Out of reach shows a cue or an
+-- Objects layout shows the Range part, the entry only while such a plate is up.
 PS._CreatePlateActionIcon = function(context)
     local active, RunBatch, MarkStacks, MarkValues = context.active, context.RunBatch, context.MarkStacks, context.MarkValues
     local Styles, AnchorPart, ObjectChanged = context.Styles, context.AnchorPart, context.ObjectChanged
-    -- soft: the plate the interaction target was on at the last PLAYER_SOFT_INTERACT_CHANGED.
+    local CueChanged, ReachChanged, KindCheck = context.CueChanged, context.ReachChanged, context.KindCheck
+    -- soft: the plate the interaction target was on at the last PLAYER_SOFT_INTERACT_CHANGED. corpses: corpse plates
+    -- are on (ActionIcon.CorpsesOn). cue: Out of reach's choice while it shows one (dim, grey), else nil.
     local Pass = { wanted = false, objects = false, ticking = false, cursor = 0, listening = false, laying = false,
-        soft = nil }
+        soft = nil, corpses = false, cue = nil }
     -- Plates whose icon or facts are read, in a round-robin list (each keeps its index as actionIconIndex).
     local rows = {}
     Pass.rows = rows
@@ -221,15 +275,24 @@ PS._CreatePlateActionIcon = function(context)
         return reads ~= nil and (reads.rules.object == true or reads.values.object == true)
     end
 
+    -- An Objects plate's Range part, which draws this pass's in-reach answer.
+    local function RangeShown(data)
+        local position = data.object == true and data.layout and data.layout.range
+        return position ~= nil and position ~= false and not S.TurnedOff(position)
+    end
+
+    -- A corpse plate is always read (its loot or skin icon comes and goes); Out of reach reads every such plate.
     local function Wanted(data)
         return Pass.wanted and data.unit ~= nil and data.own == true
             and (data.object == true or data.profileKey == "friendlyNPC")
-            and (PartShown(data) or ReadsFacts(data) or (data.object == true and Pass.objects))
+            and (PartShown(data) or ReadsFacts(data) or (data.object == true and Pass.objects) or data.corpse == true
+                or Pass.cue ~= nil or RangeShown(data))
     end
 
     -- The Objects type for a plate about to be laid out (Lifecycle's ApplyLayout), while types are read: from the kind
-    -- this plate already read for its unit, else a read of its own. nil: All objects.
+    -- this plate already read for its unit, else a read of its own. nil: All objects. A corpse is the Corpses type.
     function Pass.TypeFor(data)
+        if data.corpse then return ActionIcon.CORPSE end
         if not (Pass.wanted and Pass.objects and data.unit) then return nil end
         local kind = data.objectKind
         if kind == nil then kind = ActionIcon.PeekKind(data.unit) end
@@ -262,12 +325,21 @@ PS._CreatePlateActionIcon = function(context)
         return icon
     end
 
+    -- The Out of reach cue for the plate's facts: on a change, Lifecycle's fade and name colour follow.
+    local function SetCue(data, cue)
+        if data.reachCue == cue then return end
+        data.reachCue = cue
+        if CueChanged then CueChanged(data) end
+    end
+
     -- Forgets the plate's facts; whatever reads them follows (a layout marks everything anyway).
     local function ClearFacts(data, mark)
         if data.objectKind ~= nil or data.objectUnable ~= nil or data.interactInRange ~= nil then
             data.objectKind, data.objectUnable, data.interactInRange = nil, nil, nil
             if mark then MarkValues(data, "object") end
+            if ReachChanged then ReachChanged(data) end
         end
+        if data.reachCue ~= nil then SetCue(data, nil) end
     end
 
     local function SetShown(data, shown)
@@ -290,10 +362,13 @@ PS._CreatePlateActionIcon = function(context)
             local unableChanged = data.objectUnable ~= unable
             data.objectKind, data.objectUnable, data.interactInRange = kind, unable, inRange
             MarkValues(data, "object")
+            if ReachChanged then ReachChanged(data) end
             -- An object whose type changed (a chest emptied) draws with that type's design: laid out again, which
-            -- reads it once more (not while it is being laid out: its type was read just before).
+            -- reads it once more (not while it is being laid out: its type was read just before). A corpse stays the
+            -- Corpses type whatever its icon says (only its death decides): its icon just shows or hides below.
             if data.object and ObjectChanged then
-                local typeChanged = Pass.objects and (kind and ActionIcon.TYPE_OF[kind] or nil) ~= data.objectType
+                local typeChanged = not data.corpse and Pass.objects
+                    and (kind and ActionIcon.TYPE_OF[kind] or nil) ~= data.objectType
                 if typeChanged and not Pass.laying then
                     ObjectChanged(data, true)
                     return
@@ -303,12 +378,15 @@ PS._CreatePlateActionIcon = function(context)
             end
         end
         local shown, grey = false, false
-        if drawn and PartShown(data) then shown, grey = ActionIcon.Look(unable, Choice(data)) end
+        -- A corpse shows the game's loot or skin icon only.
+        local included = not data.corpse or ActionIcon.CorpseIncluded(PS.GetSettings and PS.GetSettings(), kind)
+        if drawn and included and PartShown(data) then shown, grey = ActionIcon.Look(unable, Choice(data)) end
         if shown and data.actionIconGrey ~= grey then
             data.actionIconGrey = grey
             ActionIcon.Grey(icon, grey)
         end
         SetShown(data, shown)
+        SetCue(data, ActionIcon.Cue(Pass.cue, kind, inRange))
     end
     Pass.Refresh = Refresh
 
@@ -371,7 +449,7 @@ PS._CreatePlateActionIcon = function(context)
 
     function Pass.Release(data)
         if data.actionIcon then data.actionIcon:Hide() end
-        data.objectKind, data.objectUnable, data.interactInRange = nil, nil, nil
+        data.objectKind, data.objectUnable, data.interactInRange, data.reachCue = nil, nil, nil, nil
         if Pass.soft == data then Pass.soft = nil end
         ListSet(data, false)
         Sync()
@@ -423,7 +501,9 @@ PS._CreatePlateActionIcon = function(context)
     end
 
     -- The interaction target changed: the icons of the plate it left and the one it is on may have (the backstop reads
-    -- the rest). A client that cannot name the target's plate reads every plate.
+    -- the rest). A client that cannot name the target's plate reads every plate. With corpse plates on, a plate the
+    -- target is on that is not read (a dead creature whose death was unknown when laid out) may be a corpse now:
+    -- Lifecycle checks its kind, which only its death decides.
     local function RefreshSoft()
         local now = SoftPlate()
         if now == false then
@@ -433,17 +513,24 @@ PS._CreatePlateActionIcon = function(context)
         local before = Pass.soft
         Pass.soft = Listed(now) and now or nil
         if before ~= Pass.soft and Listed(before) then Refresh(before) end
-        if Listed(Pass.soft) then Refresh(Pass.soft) end
+        if Listed(Pass.soft) then
+            Refresh(Pass.soft)
+        elseif Pass.corpses and KindCheck and type(now) == "table" and now.unit and active[now.unit] == now then
+            KindCheck(now)
+        end
     end
     events:SetScript("OnEvent", function()
-        if Pass.wanted and #rows > 0 then RunBatch(false, RefreshSoft) end
+        if Pass.wanted and (#rows > 0 or Pass.corpses) then RunBatch(false, RefreshSoft) end
     end)
 
-    -- On while a layout shows the part or reads its facts, or (objects) every object's kind is wanted. Off: no event,
-    -- no ticker, every icon hidden.
-    function Pass.SetWanted(wanted, objects)
+    -- On while a layout shows the part or reads its facts, (objects) every object's kind is wanted, (corpses) corpse
+    -- plates are on, or (cue) Out of reach shows one. Off: no event, no ticker, every icon hidden. A changed cue reaches
+    -- the plates as they are laid out again (every settings change lays them out).
+    function Pass.SetWanted(wanted, objects, corpses, cue)
         wanted = wanted and true or false
         Pass.objects = wanted and objects == true
+        Pass.corpses = wanted and corpses == true
+        Pass.cue = wanted and cue ~= "off" and ActionIcon.CUES[cue] and cue or nil
         if wanted == Pass.wanted then return end
         Pass.wanted = wanted
         if not wanted then
@@ -468,14 +555,16 @@ function ActionIcon.Report()
     local Array = PS.Json and PS.Json.Array or function() return {} end
     local pass = ActionIcon._pass
     local report = { wanted = pass ~= nil and pass.wanted or false, plates = pass and #pass.rows or 0,
-        objects = pass ~= nil and pass.objects or false,
+        objects = pass ~= nil and pass.objects or false, corpses = pass ~= nil and pass.corpses or false,
+        cue = pass and pass.cue or "off",
         -- A client without the icon API is not a problem (no icon shows): unavailable, not api-missing.
         api = type(SetUnitCursorTexture) == "function" and "readable" or "unavailable", read = Array() }
     for index = 1, math.min(6, pass and #pass.rows or 0) do
         local data = pass.rows[index]
         report.read[#report.read + 1] = { kind = data.objectKind or "unknown", unable = data.objectUnable,
             inRange = data.interactInRange, shown = data.actionIcon ~= nil and data.actionIcon:IsShown() == true,
-            object = data.object == true, type = data.objectType or (data.object and "all" or nil) }
+            object = data.object == true, type = data.objectType or (data.object and "all" or nil),
+            corpse = data.corpse == true, cue = data.reachCue }
     end
     return report
 end

@@ -4,14 +4,28 @@ local _, PS = ...
 -- The row frame is one line of the layout, centred on the component's position; each icon
 -- is placed by its line and column. Right and left grow from that edge of the line,
 -- centre keeps each line centred; further lines stack above (up) or below (down).
+-- The stack count (icon.count, AuraStackFont) sits in the icon's top right corner, in the countdown's face.
+local function AuraStackFont(layout, settings)
+    local size = math.max(7, math.floor(layout.size * 0.5 + 0.5))
+    local textScale = settings and settings.textScale
+    if textScale and textScale ~= 1 then size = PS.ProfileSchema.ScaledFontSize(size, textScale) end
+    return PS.Media.FontPath(layout.timeFont or (settings and settings.font)) or "Fonts\\FRIZQT__.TTF", size
+end
 local function LayoutAuraRow(row, icons, layout, shown)
     local size, step, columns = layout.size, layout.size + layout.spacing, layout.columns
     local full = columns * size + (columns - 1) * layout.spacing
     row:SetSize(full, size)
     local lineStep = (layout.growY == "down" and -1 or 1) * step
+    local stackPath, stackSize
     for index = 1, #icons do
         local icon = icons[index]
         icon:SetSize(size, size)
+        if icon.count then
+            if not stackPath then stackPath, stackSize = AuraStackFont(layout, PS.GetSettings and PS.GetSettings()) end
+            pcall(icon.count.SetFont, icon.count, stackPath, stackSize, "OUTLINE")
+            icon.count:ClearAllPoints()
+            icon.count:SetPoint("TOPRIGHT", icon, "TOPRIGHT", 2, 2)
+        end
         icon:ClearAllPoints()
         local line, column = math.floor((index - 1) / columns), (index - 1) % columns
         local inLine = math.max(1, math.min(columns, (shown or layout.count) - line * columns))
@@ -59,7 +73,24 @@ end
 -- Shared with Blueprint Studio's preview, so it lays auras and their countdown out exactly as the
 -- plates do.
 PS.LayoutAuraRow = LayoutAuraRow
-PS.AuraCountdownFont, PS.PlaceAuraCountdown = CountdownFont, PlaceCountdown
+PS.AuraCountdownFont, PS.PlaceAuraCountdown, PS.AuraStackFont = CountdownFont, PlaceCountdown, AuraStackFont
+
+-- An aura's stack count as an icon shows it (count: the aura's applications, which may be protected): its text, or
+-- nil for none (1 or fewer). A readable count is compared here; a protected one only through the client's own
+-- display helper (C_UnitAuras.GetAuraApplicationDisplayCount, where it exists: unit and auraInstanceID), never
+-- compared or formatted by Lua. Live report 2026-11-11: Lacerate's stacks did not show.
+function PS.AuraStackText(count, unit, instanceID)
+    if PS.Secret.IsReadable(count) then
+        if type(count) == "number" and count > 1 then return count end
+        return nil
+    end
+    local api = C_UnitAuras and C_UnitAuras.GetAuraApplicationDisplayCount
+    if type(api) ~= "function" or not PS.Secret.HasValue(instanceID) then return nil end
+    local ok, text = pcall(api, unit, instanceID, 2, 999)
+    -- The text may be protected: never truth-tested (no and/or on it).
+    if ok and PS.Secret.HasValue(text) then return text end
+    return nil
+end
 
 PS._CreatePlateAuras = function(context)
     local Secret = PS.Secret
@@ -73,6 +104,7 @@ PS._CreatePlateAuras = function(context)
     local AURA_ICON_COUNT = 8
     local DEFAULT_LAYOUT = { count = 4, columns = 4, size = 18, spacing = 2, growX = "right", growY = "up" }
     local ICON_KEYS = { buffs = "buffIcons", debuffs = "debuffIcons" }
+    local ROW_KINDS = { "buffs", "debuffs" }
     local ROUTE_KEYS = { buffs = "buffsAuraRoute", debuffs = "debuffsAuraRoute" }
     local FILTERS = { buffs = { all = "HELPFUL", mine = "HELPFUL|PLAYER" },
         debuffs = { all = "HARMFUL", mine = "HARMFUL|PLAYER" } }
@@ -289,6 +321,16 @@ PS._CreatePlateAuras = function(context)
             local icon = row:CreateTexture(nil, "OVERLAY")
             icon:Hide()
             icon.plateSmithShown = false
+            -- Its stack count, on a layer above the swipes (one frame per row), font and place from LayoutAuraRow.
+            local layer = row.plateSmithStackLayer
+            if not layer then
+                layer = CreateFrame("Frame", nil, row)
+                layer:SetAllPoints(row)
+                layer:SetFrameLevel(row:GetFrameLevel() + 3)
+                row.plateSmithStackLayer = layer
+            end
+            icon.count = layer:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+            icon.count:Hide()
             local ok, swipe = pcall(CreateFrame, "Cooldown", nil, row, "CooldownFrameTemplate")
             if ok and swipe then
                 swipe:SetAllPoints(icon)
@@ -358,19 +400,45 @@ PS._CreatePlateAuras = function(context)
 
     -- A readable texture already on the icon is not set again (nor are its swipe's times, in
     -- ApplyAuraTimes), so a row refreshed with the same auras makes no texture or cooldown calls.
-    local function ShowIcon(icon, texture, duration, expiration)
+    -- stack: PS.AuraStackText's answer (nil: no count shown).
+    local function ShowStack(icon, stack)
+        local count = icon.count
+        if not count then return end
+        if not HasValue(stack) then
+            if icon.plateSmithStack ~= false then
+                count:Hide()
+                icon.plateSmithStack = false
+            end
+            return
+        end
+        local readable = IsReadable(stack)
+        if readable and icon.plateSmithStack == stack then return end
+        if pcall(count.SetText, count, stack) then
+            count:Show()
+            icon.plateSmithStack = readable and stack or nil
+        else
+            count:Hide()
+            icon.plateSmithStack = false
+        end
+    end
+
+    local function ShowIcon(icon, texture, duration, expiration, stack)
         local readable = IsReadable(texture)
         if not (readable and icon.plateSmithTexture == texture) then
             local started = timing.on and Clock()
             local set = pcall(icon.SetTexture, icon, texture)
             if started then timing.textures = timing.textures + Clock() - started end
-            if not set then return false end
+            if not set then
+                ShowStack(icon, nil)
+                return false
+            end
             if readable then icon.plateSmithTexture = texture else icon.plateSmithTexture = nil end
         end
         if not icon.plateSmithShown then
             icon:Show()
             icon.plateSmithShown = true
         end
+        ShowStack(icon, stack)
         icon.auraDuration, icon.auraExpiration = duration, expiration
         return true
     end
@@ -381,6 +449,7 @@ PS._CreatePlateAuras = function(context)
             if icon and icon.plateSmithShown ~= false then
                 icon:Hide()
                 icon.plateSmithShown = false
+                ShowStack(icon, nil)
             end
         end
     end
@@ -392,6 +461,53 @@ PS._CreatePlateAuras = function(context)
     local AURA_SCAN_LIMIT = 40
     local function Untimed(duration)
         return IsReadable(duration) and not (type(duration) == "number" and duration > 0)
+    end
+
+    -- Hidden auras (Schema's HIDDEN_AURAS, account state): for each plate type (data.profileKey) the spell IDs and
+    -- lower-case names its rows skip, made again when the list changes (each change stores a new table); nil: nothing
+    -- hidden on that plate type, and its rows read as before. A row that hides some reads past its count, as Timed
+    -- only does. A hidden aura is matched only by a readable spell ID or name: a protected one shows.
+    local HIDDEN = PS.ProfileSchema.HIDDEN_AURAS
+    local hiddenList, hiddenByWho = nil, {}
+    local lowerNames, lowerCount = {}, 0
+    local function HiddenFor(plateType)
+        local state = type(PS.GetState) == "function" and PS.GetState() or nil
+        local list = type(state) == "table" and state.hiddenAuras or nil
+        if list ~= hiddenList then
+            hiddenList = list
+            for who in pairs(hiddenByWho) do hiddenByWho[who] = nil end
+            for _, entry in ipairs(type(list) == "table" and list or {}) do
+                for _, who in ipairs(HIDDEN.WHO) do
+                    if not entry.who or entry.who[who] then
+                        local set = hiddenByWho[who] or { ids = {}, names = {} }
+                        hiddenByWho[who] = set
+                        if entry.id then set.ids[entry.id] = true else set.names[entry.name:lower()] = true end
+                    end
+                end
+            end
+        end
+        return plateType and hiddenByWho[plateType] or nil
+    end
+    -- Whether hidden (HiddenFor's set) holds the aura with spellId and name. Each is matched only when readable; names
+    -- are lowered once each (bounded).
+    local function IsHidden(hidden, spellId, name)
+        if IsReadable(spellId) and type(spellId) == "number" and hidden.ids[spellId] then return true end
+        if next(hidden.names) == nil or not IsReadable(name) or type(name) ~= "string" then return false end
+        local lower = lowerNames[name]
+        if not lower then
+            if lowerCount >= 256 then lowerNames, lowerCount = {}, 0 end
+            lower = name:lower()
+            lowerNames[name], lowerCount = lower, lowerCount + 1
+        end
+        return hidden.names[lower] == true
+    end
+    -- Whether an AuraData table's aura is hidden.
+    local function AuraHidden(hidden, aura)
+        local idOK, spellId = pcall(Field, aura, "spellId")
+        if not idOK then spellId = nil end
+        local nameOK, name = pcall(Field, aura, "name")
+        if not nameOK then name = nil end
+        return IsHidden(hidden, spellId, name)
     end
 
     -- The first aura a timed add's reserve read (ReserveRow) for the row, kept for the frame's aura round:
@@ -415,11 +531,11 @@ PS._CreatePlateAuras = function(context)
         end
     end
 
-    local function PopulateAuraIconsByIndex(api, unit, filter, icons, limit, row, timedOnly)
+    local function PopulateAuraIconsByIndex(api, unit, filter, icons, limit, row, timedOnly, hidden)
         if type(api) ~= "function" then return 0, "missing" end
         local shown = 0
         local first = FirstAura(row, unit, filter)
-        for index = 1, timedOnly and AURA_SCAN_LIMIT or limit do
+        for index = 1, (timedOnly or hidden) and AURA_SCAN_LIMIT or limit do
             if shown >= limit then break end
             local ok, aura
             if index == 1 and first then
@@ -438,11 +554,19 @@ PS._CreatePlateAuras = function(context)
             -- The times may be protected: kept without and/or, which would truth-test them.
             local durationOK, duration = pcall(Field, aura, "duration")
             if not durationOK then duration = nil end
-            if not (timedOnly and durationOK and Untimed(duration)) then
+            if not (timedOnly and durationOK and Untimed(duration)) and not (hidden and AuraHidden(hidden, aura)) then
                 local expirationOK, expiration = pcall(Field, aura, "expirationTime")
                 if not expirationOK then expiration = nil end
+                local countOK, count = pcall(Field, aura, "applications")
+                local stack
+                if countOK then
+                    -- The instance may be protected: kept without and/or.
+                    local instanceOK, instance = pcall(Field, aura, "auraInstanceID")
+                    if not instanceOK then instance = nil end
+                    stack = PS.AuraStackText(count, unit, instance)
+                end
                 if not icons[shown + 1] then BuildIcons(row, icons, shown + 1) end
-                if not ShowIcon(icons[shown + 1], icon, duration, expiration) then
+                if not ShowIcon(icons[shown + 1], icon, duration, expiration, stack) then
                     return shown, "texture-error"
                 end
                 shown = shown + 1
@@ -452,42 +576,48 @@ PS._CreatePlateAuras = function(context)
     end
 
     -- AuraUtil.ForEachAura's callback, made once: the row being filled is held here meanwhile.
-    local slotIcons, slotRow, slotLimit, slotShown, slotTimedOnly = nil, nil, 0, 0, false
-    local function SlotCallback(_, icon, _, _, duration, expiration)
+    -- Its arguments are the old UnitAura returns: name, icon, count, dispel type, duration, expiration, source,
+    -- stealable, personal, spell ID.
+    local slotIcons, slotRow, slotLimit, slotShown, slotTimedOnly, slotHidden = nil, nil, 0, 0, false, nil
+    local function SlotCallback(name, icon, count, _, duration, expiration, _, _, _, spellId)
         if slotTimedOnly and Untimed(duration) then return false end
+        if slotHidden and IsHidden(slotHidden, spellId, name) then return false end
         if HasValue(icon) and not slotIcons[slotShown + 1] then BuildIcons(slotRow, slotIcons, slotShown + 1) end
-        if HasValue(icon) and ShowIcon(slotIcons[slotShown + 1], icon, duration, expiration) then
+        if HasValue(icon) and ShowIcon(slotIcons[slotShown + 1], icon, duration, expiration, PS.AuraStackText(count)) then
             slotShown = slotShown + 1
         end
         return slotShown >= slotLimit
     end
 
-    local function PopulateAuraIconsBySlots(unit, filter, icons, limit, row, timedOnly)
+    local function PopulateAuraIconsBySlots(unit, filter, icons, limit, row, timedOnly, hidden)
         local iterate = AuraUtil and AuraUtil.ForEachAura
         if type(iterate) ~= "function" then return 0, "missing" end
         slotIcons, slotRow, slotLimit, slotShown, slotTimedOnly = icons, row, limit, 0, timedOnly == true
-        local ok = pcall(iterate, unit, filter, timedOnly and AURA_SCAN_LIMIT or limit, SlotCallback)
+        slotHidden = hidden
+        local ok = pcall(iterate, unit, filter, (timedOnly or hidden) and AURA_SCAN_LIMIT or limit, SlotCallback)
         local shown = slotShown
-        slotIcons, slotRow = nil, nil
+        slotIcons, slotRow, slotHidden = nil, nil, nil
         return shown, not ok and "error" or shown > 0 and "shown" or "none"
     end
 
-    local function PopulateAuraIconsLegacy(kind, unit, filter, icons, limit, row, timedOnly)
+    local function PopulateAuraIconsLegacy(kind, unit, filter, icons, limit, row, timedOnly, hidden)
         local api = kind == "buffs" and UnitBuff or UnitDebuff
         if type(api) ~= "function" then return 0, "missing" end
         -- UnitBuff/UnitDebuff already imply HELPFUL/HARMFUL; their optional filter
         -- only needs the source restriction.
         local legacyFilter = filter:find("|PLAYER", 1, true) and "PLAYER" or nil
         local shown = 0
-        for index = 1, timedOnly and AURA_SCAN_LIMIT or limit do
+        for index = 1, (timedOnly or hidden) and AURA_SCAN_LIMIT or limit do
             if shown >= limit then break end
-            local ok, name, icon, _, _, duration, expiration = pcall(api, unit, index, legacyFilter)
+            local ok, name, icon, count, _, duration, expiration, _, _, _, spellId = pcall(api, unit, index, legacyFilter)
             if not ok then return shown, "error" end
             if not HasValue(name) then break end
             if not HasValue(icon) then break end
-            if not (timedOnly and Untimed(duration)) then
+            if not (timedOnly and Untimed(duration)) and not (hidden and IsHidden(hidden, spellId, name)) then
                 if not icons[shown + 1] then BuildIcons(row, icons, shown + 1) end
-                if not ShowIcon(icons[shown + 1], icon, duration, expiration) then return shown, "texture-error" end
+                if not ShowIcon(icons[shown + 1], icon, duration, expiration, PS.AuraStackText(count)) then
+                    return shown, "texture-error"
+                end
                 shown = shown + 1
             end
         end
@@ -498,13 +628,14 @@ PS._CreatePlateAuras = function(context)
     -- event: until combat ends or the plate gets its next unit (data[INDEX_ERROR_KEYS[kind]]), the
     -- row goes straight to the other routes, as that read would.
     local INDEX_ERROR_KEYS = { buffs = "buffsIndexError", debuffs = "debuffsIndexError" }
-    local function PopulateAuraIcons(kind, unit, filter, icons, limit, data, timedOnly)
+    local function PopulateAuraIcons(kind, unit, filter, icons, limit, data, timedOnly, hidden)
         Counters.auraReads = Counters.auraReads + 1
         local errorKey = data and unit == data.unit and INDEX_ERROR_KEYS[kind]
         local shown, indexState = 0, "error"
         if not (errorKey and data[errorKey]) then
             local api = C_UnitAuras and C_UnitAuras.GetAuraDataByIndex
-            shown, indexState = PopulateAuraIconsByIndex(api, unit, filter, icons, limit, data[kind], timedOnly)
+            shown, indexState = PopulateAuraIconsByIndex(api, unit, filter, icons, limit, data[kind], timedOnly,
+                hidden)
             if errorKey and shown == 0 and indexState == "error" and Secret.InCombat() then data[errorKey] = true end
         end
         if shown > 0 then return shown, "indexed" end
@@ -514,10 +645,10 @@ PS._CreatePlateAuras = function(context)
             return 0, indexedRoutes[indexState]
         end
         local slotState
-        shown, slotState = PopulateAuraIconsBySlots(unit, filter, icons, limit, data[kind], timedOnly)
+        shown, slotState = PopulateAuraIconsBySlots(unit, filter, icons, limit, data[kind], timedOnly, hidden)
         if shown > 0 then return shown, "slots" end
         local legacyState
-        shown, legacyState = PopulateAuraIconsLegacy(kind, unit, filter, icons, limit, data[kind], timedOnly)
+        shown, legacyState = PopulateAuraIconsLegacy(kind, unit, filter, icons, limit, data[kind], timedOnly, hidden)
         if shown > 0 then return shown, "legacy" end
         return 0, FailedRoute(indexState, slotState, legacyState)
     end
@@ -604,6 +735,19 @@ PS._CreatePlateAuras = function(context)
                 pcall(StyleCountdown, swipe, layout)
                 FollowCountdowns(swipe, layout)
                 if button.SetDurationCooldown then button:SetDurationCooldown(swipe) end
+                -- Its stack count, which the client writes (the aura's applications stay secret in combat), on a
+                -- layer above the swipe, as on PlateSmith's own icons.
+                if button.SetApplicationCount then
+                    local layer = CreateFrame("Frame", nil, button)
+                    layer:SetAllPoints(button)
+                    layer:SetFrameLevel(swipe:GetFrameLevel() + 2)
+                    local count = layer:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+                    local path, size = AuraStackFont(layout, GetSettings and GetSettings())
+                    pcall(count.SetFont, count, path, size, "OUTLINE")
+                    count:SetPoint("TOPRIGHT", button, "TOPRIGHT", 2, 2)
+                    pcall(button.SetApplicationCount, button, count)
+                    button.plateSmithCount = count
+                end
                 -- For /ps diagnose: the first button made, to report its size and countdown.
                 if container.plateSmithButton == nil then
                     container.plateSmithButton, container.plateSmithCountdownMode = button, swipe.plateSmithCountdownMode
@@ -769,9 +913,9 @@ PS._CreatePlateAuras = function(context)
                 local now = type(GetTime) == "function" and GetTime() or 0
                 if row.nativeAuraAttempted and now < (row.nativeAuraRetryAt or 0) then return false end
                 row.nativeAuraAttempted, row.nativeAuraRetryAt = true, now + 10
-                -- Owned by UIParent and pinned to the row, never inside the nameplate: other addons
-                -- (OmniCC GODMODE) sweep every nameplate's frame tree and hide any aura container
-                -- they find there. Scale, alpha and visibility follow the row.
+                -- Owned by UIParent and pinned to the row, never inside the nameplate: other addons may
+                -- sweep nameplate frame trees and hide aura containers there. Scale, alpha and visibility
+                -- follow the row.
                 local created, result = pcall(CreateFrame, "AuraContainer", nil, UIParent, "CustomAuraContainerTemplate")
                 if not created or not result or type(result.AddAuraGroup) ~= "function" then
                     return ContainerFailed(row, "create-error", created and "AddAuraGroup unavailable" or result)
@@ -851,6 +995,13 @@ PS._CreatePlateAuras = function(context)
             row.plateSmithSpacing, row.plateSmithGrowX, row.plateSmithGrowY = layout.spacing, layout.growX, layout.growY
             row.plateSmithPlacedFor = nil
         end
+        -- The stack counts' font (LayoutAuraRow, AuraStackFont) follows the plate font, Text size and the row's font.
+        local settings = GetSettings and GetSettings()
+        local font, scale = settings and settings.font, settings and settings.textScale
+        if row.plateSmithStackFace ~= font or row.plateSmithStackScale ~= scale or row.plateSmithStackTime ~= layout.timeFont then
+            row.plateSmithStackFace, row.plateSmithStackScale, row.plateSmithStackTime = font, scale, layout.timeFont
+            row.plateSmithPlacedFor = nil
+        end
         -- Centred lines depend on how many icons the last line holds.
         local placedFor = layout.growX == "centre" and shown or -1
         if row.plateSmithPlacedFor ~= placedFor then
@@ -880,7 +1031,11 @@ PS._CreatePlateAuras = function(context)
         if not RowWanted(data, kind) then
             data[routeKey] = "disabled"
             row.plateSmithPoll, row.plateSmithExpireAt = nil, nil
-            -- Put away once; a row that stays off costs nothing on later updates.
+            -- Put away once; a row that stays off costs nothing on later updates. A container still bound to the
+            -- unit is put away whatever the row's state: it lives outside the plate (UIParent), so a hidden plate
+            -- does not hide it, and with the unit still there (Where plates show's Friendly players hides a live
+            -- player's plate) it would go on drawing that unit's auras over nothing.
+            if row.nativeAuraBound and row.nativeAuraContainer then DisableRowContainer(row, row.nativeAuraContainer) end
             if row.plateSmithActive ~= false then
                 row.plateSmithActive = false
                 if row.nativeAuraContainer then DisableRowContainer(row, row.nativeAuraContainer) end
@@ -899,15 +1054,17 @@ PS._CreatePlateAuras = function(context)
         if targeted then auraUnit = "target" end
         local previous = row.plateSmithShownCount or AURA_ICON_COUNT
         local timedOnly = layout.timedOnly == true
+        local hidden = HiddenFor(data.profileKey)
         local started = timing.on and Clock()
         local inside = started and timing.textures + timing.build
-        local shown, route = PopulateAuraIcons(kind, auraUnit, filter, icons, layout.count, data, timedOnly)
+        local shown, route = PopulateAuraIcons(kind, auraUnit, filter, icons, layout.count, data, timedOnly, hidden)
         if auraUnit == "target" then
             if not SameUnit(data.unit, "target") then
                 shown = 0
                 route = "target-changed"
             elseif shown == 0 then
-                shown, route = PopulateAuraIcons(kind, data.unit, filter, icons, layout.count, data, timedOnly)
+                shown, route = PopulateAuraIcons(kind, data.unit, filter, icons, layout.count, data, timedOnly,
+                    hidden)
             end
         end
         if started then
@@ -918,7 +1075,8 @@ PS._CreatePlateAuras = function(context)
         -- The readable lookup is tried first on every update; the native container is only a
         -- fallback while that lookup errors or is protected (combat; a shapeshift can turn an
         -- error into protected), so a row that fell back recovers by itself. It cannot skip untimed
-        -- auras, so Timed only does not apply there. Buffs use it too: each row's container holds one
+        -- auras or hidden ones, so Timed only and Hidden auras do not apply there.
+        -- Buffs use it too: each row's container holds one
         -- group, made with that row's filter and never re-filtered (LayoutSignature), and the client
         -- gives a group only auras it fetched with, or tested against, that group's filter string.
         -- (Groups in one container do not partition auras: each group tests every aura, so a
@@ -1027,8 +1185,9 @@ PS._CreatePlateAuras = function(context)
         local source = data.profile and data.profile[kind == "buffs" and "buffSource" or "debuffSource"]
         local filter = FILTERS[kind][source == "mine" and "mine" or "all"]
         local timedOnly = layout.timedOnly == true
+        local hidden = HiddenFor(data.profileKey)
         local found, native = false, false
-        for index = 1, timedOnly and AURA_SCAN_LIMIT or 1 do
+        for index = 1, (timedOnly or hidden) and AURA_SCAN_LIMIT or 1 do
             local ok, aura = pcall(api, data.unit, index, filter)
             if index == 1 then
                 KeepFirstAura(data[kind], data.unit, filter, ok and IsReadable(aura) and type(aura) == "table" and aura or nil)
@@ -1045,7 +1204,7 @@ PS._CreatePlateAuras = function(context)
             -- A protected duration is kept, as the round keeps it (Untimed).
             local durationOK, duration = true, nil
             if timedOnly then durationOK, duration = pcall(Field, aura, "duration") end
-            if not (timedOnly and durationOK and Untimed(duration)) then
+            if not (timedOnly and durationOK and Untimed(duration)) and not (hidden and AuraHidden(hidden, aura)) then
                 found = true
                 break
             end
@@ -1089,5 +1248,15 @@ PS._CreatePlateAuras = function(context)
             and true or false
     end
 
-    return AURA_ICON_COUNT, CreateAuraRow, UpdateAuras, AurasNeedPoll, AurasPolled, ReserveRows
+    -- Puts away the plate's rows' game aura containers whenever its parts are hidden (Lifecycle's HideOwnedParts): each
+    -- is owned by UIParent and pinned to its row, and the row's OnHide is not relied on to say so.
+    local function ReleaseContainers(data)
+        for _, kind in ipairs(ROW_KINDS) do
+            local row = data[kind]
+            local container = type(row) == "table" and row.nativeAuraContainer
+            if container then DisableRowContainer(row, container) end
+        end
+    end
+
+    return AURA_ICON_COUNT, CreateAuraRow, UpdateAuras, AurasNeedPoll, AurasPolled, ReserveRows, ReleaseContainers
 end

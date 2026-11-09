@@ -6,9 +6,9 @@ local Theme = assert(PS.StudioTheme, "PlateSmith StudioTheme missing")
 local Layout = assert(PS.UI and PS.UI.Layout, "PlateSmith Layout missing")
 
 -- The search box over Settings' categories: it finds a setting on any of Studio's Settings pages,
--- on PlateSmith's pages in Blizzard's Settings panel, or a part in the Studio tree. The settings
--- index is built the first time the box takes focus, a page at a time within a small time budget
--- (the rest on the ticker); parts are listed as each search runs, since plate types differ.
+-- on PlateSmith's pages in Blizzard's Settings panel, or a part in the Studio tree and its inspector's rows. The
+-- settings index (and every part's inspector rows) is built the first time the box takes focus, a page at a time within
+-- a small time budget (the rest on the ticker); parts are listed for the tab Studio shows, kept while it holds.
 -- Typing (after a short pause) shows a results page in Settings' content area, as Blizzard's own
 -- Settings search does: the matching rows themselves, lent from their pages and grouped under
 -- "Page › Section" headings, so a setting changes right there. Clearing lends them back.
@@ -20,12 +20,18 @@ local FLASH = { seconds = 1.2, alpha = 0.3 }
 local INDEX_TICKER, FLASH_TICKER = "studio.search.index", "studio.search.flash"
 local DEBOUNCE_TICKER = "studio.search.debounce"
 -- Points for a query word that starts a word of the label (more for the whole word, and for the
--- label's first word), of a checkbox's own text, of the page or section, or of the help.
+-- label's first word), of a checkbox's own text or the row's search words, of the section's title (for the
+-- section itself), or of the help. Only the start of a word matches ("surn" finds surnames, "urnames" does not).
+-- Help counts only when nothing is named with every query word (Search.Query's second pass), so "friendly" lists
+-- the settings called friendly, not every row whose help mentions friendly plates.
 local SCORE = { label = 10, whole = 2, first = 3, extra = 8, path = 5, help = 2, labelPrefix = 15 }
 Search.SCORE, Search.MAX_RESULTS = SCORE, MAX_RESULTS
 
 local index = { entries = {}, queue = nil, done = false }
 Search._index = index
+-- The Studio part entries (PartEntries), kept for a search's keystrokes while what they come from holds.
+local partCache = { stamp = {}, entries = nil }
+Search._parts = partCache
 
 local function Clock()
     return type(debugprofilestop) == "function" and debugprofilestop() or nil
@@ -37,10 +43,34 @@ local function Plain(text)
     return (text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|T.-|t", ""))
 end
 
--- Lowercase words: runs of anything but spaces and punctuation, so accented letters stay in a word.
+-- US spellings as the UI's UK ones, the query's and the index's alike: a word that starts with one has its start
+-- changed ("colors" Colours, "grayed" Greyed, "colorblind" colourblind), so a start both share ("colo") still matches.
+local SPELLINGS = { { "color", "colour" }, { "gray", "grey" }, { "behavior", "behaviour" }, { "favor", "favour" } }
+local function UK(word)
+    for _, pair in ipairs(SPELLINGS) do
+        local us = pair[1]
+        if word:sub(1, #us) == us then return pair[2] .. word:sub(#us + 1) end
+    end
+    -- center(s): centre(s); centered, centering: centred, centring.
+    if word:sub(1, 6) == "center" then
+        local rest = word:sub(7)
+        return (rest == "" or rest:sub(1, 1) == "s") and "centre" .. rest or "centr" .. rest
+    end
+    return word
+end
+Search.UK = UK
+
+-- Lowercase words (UK spellings): runs of anything but spaces and punctuation, so accented letters stay in a word.
+-- Kept per text (the Studio part entries are prepared again for each search): read only. Bounded.
+local wordsCache, wordsCount = {}, 0
 local function Words(text)
+    if type(text) ~= "string" or text == "" then return {} end
+    local cached = wordsCache[text]
+    if cached then return cached end
     local words = {}
-    for word in Plain(text):lower():gmatch("[^%s%p]+") do words[#words + 1] = word end
+    for word in Plain(text):lower():gmatch("[^%s%p]+") do words[#words + 1] = UK(word) end
+    if wordsCount >= 4000 then wordsCache, wordsCount = {}, 0 end
+    wordsCache[text], wordsCount = words, wordsCount + 1
     return words
 end
 Search.Words = Words
@@ -57,17 +87,24 @@ local function Best(words, query, points, firstBonus)
     return best
 end
 
--- An entry's score for the query's words: every word must start a word somewhere, else nil.
-function Search.Score(entry, queryWords, queryText)
+-- An entry's score for the query's words: every word must start a word of its name (label, checkbox text, search
+-- words; a section's title for the section itself), else nil. Where it sits (its page, section or part) may stand for
+-- a word only once its name holds another ("level font size": Level's Font size; "level" alone: not every Level row).
+-- withHelp: its help counts too.
+function Search.Score(entry, queryWords, queryText, withHelp)
     if #queryWords == 0 then return nil end
-    local total = 0
+    local total, named = 0, false
     for _, query in ipairs(queryWords) do
-        local score = math.max(Best(entry.labelWords, query, SCORE.label, SCORE.first),
-            Best(entry.extraWords, query, SCORE.extra, 0), Best(entry.pathWords, query, SCORE.path, 0),
-            Best(entry.helpWords, query, SCORE.help, 0))
+        local own = math.max(Best(entry.labelWords, query, SCORE.label, SCORE.first),
+            Best(entry.extraWords, query, SCORE.extra, 0), Best(entry.keywordWords, query, SCORE.extra, 0),
+            entry.pathCounts and Best(entry.pathWords, query, SCORE.path, 0) or 0)
+        local score = math.max(own, Best(entry.pathWords, query, SCORE.path, 0),
+            withHelp and Best(entry.helpWords, query, SCORE.help, 0) or 0)
         if score == 0 then return nil end
+        named = named or own > 0 or (withHelp and score > 0)
         total = total + score
     end
+    if not named then return nil end
     if queryText and queryText ~= "" and entry.lowerLabel:sub(1, #queryText) == queryText then
         total = total + SCORE.labelPrefix
     end
@@ -79,7 +116,10 @@ local function Prepare(entry)
     entry.label = Plain(entry.label)
     entry.lowerLabel = entry.label:lower()
     entry.labelWords, entry.extraWords = Words(entry.label), Words(entry.extra)
-    entry.pathWords, entry.helpWords = Words(entry.path), Words(entry.help)
+    entry.pathWords, entry.helpWords, entry.keywordWords = Words(entry.path), Words(entry.help), Words(entry.keywords)
+    -- The page and section a row sits in name the section, not each of its rows: only a section's own entry matches
+    -- on them, and brings its rows with it.
+    if entry.pathCounts == nil then entry.pathCounts = entry.section ~= nil and entry.frame == entry.section end
     entry.order = entry.order or #index.entries + 1
     return entry
 end
@@ -100,7 +140,7 @@ local function IndexPage(root, place, fields)
         local section = found.section
         local sectionTitle = section and section ~= found.frame and section.kitSearchTitle or nil
         local entry = { place = place, frame = found.frame, section = section, item = found.item, label = found.label,
-            extra = found.extra, help = found.help, sectionTitle = sectionTitle,
+            extra = found.extra, help = found.help, keywords = found.keywords, sectionTitle = sectionTitle,
             path = Path(fields.pagePath, fields.pageLabel, sectionTitle) }
         for key, value in pairs(fields) do if entry[key] == nil then entry[key] = value end end
         index.entries[#index.entries + 1] = Prepare(entry)
@@ -130,10 +170,9 @@ local function Sources()
                 module = category.module })
         end
     end
-    -- Game Options' pages with settings of their own (a module's page there only opens Studio).
+    -- Game Options' main page (its Profiles page and a module's there only open Studio, whose pages are indexed above).
     local blizzard = {
         { Options.panel, Options.category, "PlateSmith" },
-        { Options.profilesPanel, Options.moduleSettings and Options.moduleSettings.profiles, L["Profiles"] },
     }
     for _, spec in ipairs(blizzard) do
         local page, category, title = spec[1], spec[2], spec[3]
@@ -150,6 +189,21 @@ local function Sources()
             index.entries[#index.entries + 1] = Prepare({ place = "blizzard", page = legacy.page, frame = legacy.page,
                 categoryObject = legacy.category, label = legacy.title, pageLabel = legacy.title,
                 path = Path(L["Settings"], legacy.title) })
+        end
+    end
+    -- The parts' own inspector rows, built the first time a part is selected: built here too, one a step, so the
+    -- part entries (PartEntries) list each part's rows as its inspector shows them.
+    local contexts, seen = {}, {}
+    for _, context in pairs(Options.editorContextForKey or {}) do
+        if not seen[context] then contexts[#contexts + 1], seen[context] = context, true end
+    end
+    contexts[#contexts + 1] = "blizzardName"
+    table.sort(contexts)
+    for _, context in ipairs(contexts) do
+        sources[#sources + 1] = function()
+            if Options.IsEditorContextPending and Options:IsEditorContextPending(context) then
+                Options:BuildEditorContext(context)
+            end
         end
     end
     return sources
@@ -190,46 +244,159 @@ PS.Ticker.SetEnabled(INDEX_TICKER, false)
 function Search.Reset()
     Search.Close()
     index.entries, index.queue, index.done = {}, nil, false
+    partCache.entries = nil
     PS.Ticker.SetEnabled(INDEX_TICKER, false)
 end
 
--- The parts this plate type's tree lists, as entries (built for each search: plate types differ),
--- each one's Display rows (Font, Font size, Font style, Shadow; an aura row's Timed only and Text
--- position too) as "Part › Display" rows, Blizzard's name rows on Players › Dungeons & raids, and the
--- Plate row's Target highlight and Friendly plates rows.
+-- A section's title as a step of a path: DISPLAY reads Display.
+local function SectionName(title)
+    if type(title) ~= "string" or title == "" then return nil end
+    return title:sub(1, 1) .. title:sub(2):lower()
+end
+
+-- Whether a layout would show item now (its test, if any, says yes).
+local function Shown(item)
+    if item.visible == nil then return true end
+    local ok, shown = pcall(item.visible)
+    return ok and shown and true or false
+end
+
+-- The rows part key's inspector shows (its context's own sections, then Style), as Layout.SearchEntries finds them
+-- in the built rows, without those its layout would hide with key selected: the rows' tests read
+-- Options.selectedComponent and the inspector's selection, so both stand for key while they are asked, then are put
+-- back. Placement and Rules are every part's alike, so they are left out. Each row: SearchEntries' entry and its place
+-- ("partRow" or "partStyleRow"). Second result: whether the context's rows are built.
+local function InspectorRows(key, context)
+    local page, frames, rows = Options.editorComponentContent, Options.editorContextFrames or {}, {}
+    local built = frames[context] ~= nil and not Options:IsEditorContextPending(context)
+    if not page then return rows, false end
+    local roots = {}
+    for _, item in ipairs(page.flowItems or {}) do
+        if item.frame == frames[context] and built then
+            roots[#roots + 1] = { item = item, place = "partRow" }
+        elseif item.frame == Options.editorStyleBlock then
+            roots[#roots + 1] = { item = item, place = "partStyleRow" }
+        end
+    end
+    local selectedKey, selection = Options.selectedComponent, rawget(Options, "editorInspectorSelection")
+    Options.selectedComponent, Options.editorInspectorSelection = key, { key = key, context = context }
+    local ok, failure = pcall(function()
+        for _, root in ipairs(roots) do
+            for _, found in ipairs(Layout.SearchEntries({ flowItems = { root.item } }, Shown)) do
+                -- A row in a section (not the section itself, nor a sub-heading).
+                if found.section and found.frame ~= found.section and not found.heading then
+                    found.place = root.place
+                    rows[#rows + 1] = found
+                end
+            end
+        end
+    end)
+    Options.selectedComponent, Options.editorInspectorSelection = selectedKey, selection
+    if not ok then PS.Chat.ReportError("studio search " .. tostring(key), failure) end
+    return rows, built
+end
+
+-- Part key's inspector rows as entries ("Part › Section", the row's label), through add. A context not built yet gives
+-- its Display text rows' labels (EditorDisplayRows); the row is found once selecting the part has built it.
+-- EditorStyleSearchRows' words and help join the Style row of the same label (else they are a row of their own).
+local function AddPartRows(key, partLabel, add)
+    local context = Options:EditorPartContext(key) or "other"
+    local found, built = InspectorRows(key, context)
+    local rows = {}
+    if not built then
+        for _, row in ipairs(Options.EditorDisplayRows and Options:EditorDisplayRows(key) or {}) do
+            rows[#rows + 1] = { place = "partRow", label = row.label, frame = row.frame, section = row.section,
+                path = Path(partLabel, L["Display"]) }
+        end
+    end
+    for _, row in ipairs(found) do rows[#rows + 1] = row end
+    for _, extra in ipairs(Options.EditorStyleSearchRows and Options:EditorStyleSearchRows(key) or {}) do
+        local same
+        for _, row in ipairs(rows) do
+            if row.place == "partStyleRow" and row.label == extra.label then same = row end
+        end
+        if same then
+            same.keywords = same.keywords and extra.keywords and (same.keywords .. " " .. extra.keywords) or extra.keywords
+                or same.keywords
+            same.help = same.help or extra.help
+        else
+            rows[#rows + 1] = { place = "partStyleRow", label = extra.label, help = extra.help, keywords = extra.keywords }
+        end
+    end
+    for _, row in ipairs(rows) do
+        local where = row.place == "partStyleRow" and L["Style"] or SectionName(row.section and row.section.kitSearchTitle)
+        add({ place = row.place, key = key, label = row.label, extra = row.extra, help = row.help, keywords = row.keywords,
+            frame = row.frame, section = row.section, partLabel = partLabel, path = row.path or Path(partLabel, where) })
+    end
+end
+
+-- The + Add menu's category of a part (Editor's ADD_MENU), else Other (parts other addons registered).
+local function AddCategory(key)
+    for _, category in ipairs(Options.editorAddMenu or {}) do
+        for _, listed in ipairs(category.keys) do
+            if listed == key then return category.label end
+        end
+    end
+    return L["Other"]
+end
+
+-- Whether the part entries kept (partCache) still hold: nothing they come from changed (the settings, by Designs'
+-- revision; the design and layout Studio edits; the friendly view; how many contexts are built).
+local function PartsFresh()
+    local built = 0
+    for context in pairs(Options.editorContextFrames or {}) do
+        if not Options:IsEditorContextPending(context) then built = built + 1 end
+    end
+    local stamp, fresh = partCache.stamp, partCache.entries ~= nil
+    local now = { PS.Designs and PS.Designs.revision, Options:EditorTarget(), Options.editorLayout, Options.editorFriendlyView,
+        built }
+    for position = 1, 5 do
+        if stamp[position] ~= now[position] then fresh, stamp[position] = false, now[position] end
+    end
+    return fresh
+end
+
+-- The parts this plate type's tree lists, as entries, each with its inspector's rows as "Part › Section" rows
+-- (AddPartRows); a part deleted from the plate as "Add part: Range" under "+ Add › Text"; Blizzard's name rows on
+-- Players › Dungeons & raids; and the Plate row's Target highlight, Friendly plates and Totems rows.
 local function PartEntries()
+    if PartsFresh() then return partCache.entries end
     local entries, settings = {}, PS.GetSettings and PS.GetSettings()
     local order = #index.entries
+    local function Add(entry)
+        order = order + 1
+        entry.order = order
+        entries[#entries + 1] = Prepare(entry)
+    end
+    local keys = {}
     for key in pairs(Options.editorLayout or {}) do
-        if not key:match("^group%.%d+$") and Options:IsEditorComponentRelevant(key, settings) then
-            order = order + 1
-            local label = Options:EditorComponentLabel(key)
-            entries[#entries + 1] = Prepare({ place = "part", key = key, label = label,
-                path = L["Part in the Studio tree"], order = order })
-            for _, row in ipairs(Options.EditorDisplayRows and Options:EditorDisplayRows(key) or {}) do
-                order = order + 1
-                entries[#entries + 1] = Prepare({ place = "partRow", key = key, label = row.label, frame = row.frame,
-                    section = row.section, partLabel = label, path = Path(label, L["Display"]), order = order })
-            end
-            for _, row in ipairs(Options.EditorStyleSearchRows and Options:EditorStyleSearchRows(key) or {}) do
-                order = order + 1
-                entries[#entries + 1] = Prepare({ place = "partStyleRow", key = key, label = row.label, help = row.help,
-                    partLabel = label, path = Path(label, L["Style"]), order = order })
-            end
+        if not key:match("^group%.%d+$") then keys[#keys + 1] = key end
+    end
+    table.sort(keys)
+    for _, key in ipairs(keys) do
+        local label = Options:EditorComponentLabel(key)
+        if Options:IsEditorComponentRelevant(key, settings) then
+            Add({ place = "part", key = key, label = label, path = L["Part in the Studio tree"] })
+            AddPartRows(key, label, Add)
+        elseif Options:IsEditorComponentRelevant(key, settings, true) then
+            Add({ place = "addPart", key = key, partLabel = label, label = string.format(L["Add part: %s"], label),
+                path = Path(L["+ Add"], AddCategory(key)) })
         end
     end
     for _, row in ipairs(Options.EditorTargetHighlightRows and Options:EditorTargetHighlightRows() or {}) do
-        order = order + 1
-        entries[#entries + 1] = Prepare({ place = "plateRow", label = row.label, help = row.help, shown = row.shown,
-            path = Path(L["Plate settings"], L["Target highlight"]), order = order })
+        Add({ place = "plateRow", label = row.label, help = row.help, keywords = row.keywords, shown = row.shown,
+            path = Path(L["Plate settings"], L["Target highlight"]) })
     end
     -- Friendly plates (Players and Friendly NPCs › Plate settings), from any tab.
     for _, row in ipairs(Options.EditorFriendlyRows and Options:EditorFriendlyRows() or {}) do
-        order = order + 1
         local where = row.plateType and Options:EditorPlateLabel(row.plateType) or nil
-        entries[#entries + 1] = Prepare({ place = "friendlyRow", id = row.id, label = row.label, help = row.help,
-            plateType = row.plateType, path = Path(where, L["Plate settings"], row.id ~= "section" and L["Friendly plates"] or nil),
-            order = order })
+        Add({ place = "friendlyRow", id = row.id, label = row.label, help = row.help, plateType = row.plateType,
+            path = Path(where, L["Plate settings"], row.id ~= "section" and L["Friendly plates"] or nil) })
+    end
+    -- Totems' Display (Enemies and Friendly NPCs › Type › Totems › Plate settings), from any tab.
+    for _, row in ipairs(Options.EditorTotemRows and Options:EditorTotemRows() or {}) do
+        Add({ place = "totemRow", id = row.id, label = row.label, help = row.help, keywords = row.keywords,
+            path = Path(L["Type"], L["Totems"]) })
     end
     -- Blizzard's name rows on Players › Dungeons & raids (names only, class colours, its font) while another
     -- view is open. With the overlay test on, that tab shows the overlay's parts instead.
@@ -237,23 +404,24 @@ local function PartEntries()
         and Options.EditorDungeonNameRows then
         local partLabel = L["Name (drawn by Blizzard)"]
         for _, row in ipairs(Options:EditorDungeonNameRows()) do
-            order = order + 1
-            entries[#entries + 1] = Prepare({ place = "dungeonNameRow", key = "name", label = row.label, partLabel = partLabel,
-                path = Path(L["Players"], L["Dungeons & raids"], partLabel, L["Display"]), order = order })
+            Add({ place = "dungeonNameRow", key = "name", label = row.label, partLabel = partLabel,
+                path = Path(L["Players"], L["Dungeons & raids"], partLabel, L["Display"]) })
         end
     end
+    partCache.entries = entries
     return entries
 end
 
 -- Whether an entry can be shown now: its category is listed, and its row was not hidden by its
 -- page (a folded section's rows still count).
 local function Available(entry, categories)
-    if entry.place == "part" or entry.place == "partRow" or entry.place == "partStyleRow" or entry.place == "dungeonNameRow" then
+    if entry.place == "part" or entry.place == "partRow" or entry.place == "partStyleRow" or entry.place == "dungeonNameRow"
+        or entry.place == "addPart" then
         return true
     end
-    -- A Target highlight row its style hides (the glow's rows under Gold edge) is not offered.
+    -- A Target highlight row its style hides (the glow's rows under Edge) is not offered.
     if entry.place == "plateRow" then return not entry.shown or entry.shown() and true or false end
-    if entry.place == "friendlyRow" then return true end
+    if entry.place == "friendlyRow" or entry.place == "totemRow" then return true end
     if entry.place == "studio" and not categories[entry.category] then return false end
     -- A module's page that was turned off (its fifth error) offers nothing.
     if entry.module and entry.module.state == "disabled" then return false end
@@ -269,22 +437,36 @@ local function Available(entry, categories)
     return true
 end
 
--- The best matches for text, at most limit (default MAX_RESULTS), best first.
+-- Help's own pages (Help, its rule words) come after the settings that match.
+local function Tier(entry) return entry.category == "help" and 1 or 0 end
+
+-- The best matches for text, at most limit (default MAX_RESULTS), best first; and whether they were found only
+-- through their help (nothing is named with every query word: then whatever mentions them).
 function Search.Query(text, limit)
     local queryWords = Words(text)
-    if #queryWords == 0 then return {} end
+    if #queryWords == 0 then return {}, false end
     local queryText = table.concat(queryWords, " ")
     local categories = {}
     for _, category in ipairs(Options:SettingsCategoryList()) do categories[category.key] = true end
-    local found = {}
-    local function Consider(entry)
-        if not Available(entry, categories) then return end
-        local score = Search.Score(entry, queryWords, queryText)
-        if score then found[#found + 1] = { entry = entry, score = score } end
+    local candidates = {}
+    for _, entry in ipairs(index.entries) do
+        if Available(entry, categories) then candidates[#candidates + 1] = entry end
     end
-    for _, entry in ipairs(index.entries) do Consider(entry) end
-    for _, entry in ipairs(PartEntries()) do Consider(entry) end
+    for _, entry in ipairs(PartEntries()) do
+        if Available(entry, categories) then candidates[#candidates + 1] = entry end
+    end
+    local found, viaHelp = {}, false
+    for pass = 1, 2 do
+        for _, entry in ipairs(candidates) do
+            local score = Search.Score(entry, queryWords, queryText, pass == 2)
+            if score then found[#found + 1] = { entry = entry, score = score } end
+        end
+        if #found > 0 then break end
+        viaHelp = true
+    end
+    if #found == 0 then viaHelp = false end
     table.sort(found, function(a, b)
+        if Tier(a.entry) ~= Tier(b.entry) then return Tier(a.entry) < Tier(b.entry) end
         if a.score ~= b.score then return a.score > b.score end
         if #a.entry.label ~= #b.entry.label then return #a.entry.label < #b.entry.label end
         if a.entry.label ~= b.entry.label then return a.entry.label < b.entry.label end
@@ -292,7 +474,7 @@ function Search.Query(text, limit)
     end)
     local results = {}
     for position = 1, math.min(limit or MAX_RESULTS, #found) do results[position] = found[position].entry end
-    return results
+    return results, viaHelp
 end
 
 -- A frame's distance below stop, following its TOPLEFT anchors (the kit places every flow item by
@@ -424,8 +606,10 @@ local function RevealPart(entry)
     Flash(Options.editorComponentButtons and Options.editorComponentButtons[entry.key])
 end
 
--- A part's Display row: the part selected, its section unfolded, the inspector scrolled to the row.
--- A row listed before its part's rows were built is found once selecting the part has built them.
+local function IsHidden(frame) return frame.IsShown ~= nil and not frame:IsShown() end
+
+-- A part's own row: the part selected, its section unfolded, the inspector scrolled to the row (its section while the
+-- row is hidden). A row listed before its part's rows were built is found once selecting the part has built them.
 local function RevealPartRow(entry)
     RevealPart(entry)
     local frame, section = entry.frame, entry.section
@@ -437,28 +621,30 @@ local function RevealPartRow(entry)
     if not frame then return end
     Unfold(Options.inspectorKit, section)
     Options:LayoutEditorInspector()
+    if IsHidden(frame) and section then frame = section end
     local offset = OffsetIn(frame, Options.editorComponentContent)
     local bar = Options.editorComponentScrollBar
     if offset and bar and bar.ScrollToOffset then bar:ScrollToOffset(math.max(0, offset - REVEAL_MARGIN)) end
     Flash(frame)
 end
 
--- A part's Style row (EditorStyleSearchRows): the part selected, the Style section unfolded and scrolled to
--- the row with that label.
+-- A part's Style row: the part selected, the Style section unfolded and scrolled to the row (else the shown row with
+-- that label, else the section).
 local function RevealPartStyleRow(entry)
     RevealPart(entry)
     local section = Options.editorStyleBlock
     if not section then return end
     local function Find(flow)
         for _, item in ipairs(flow.flowItems or {}) do
-            if item.frame.kitSearchLabel == entry.label then return item.frame end
+            if item.frame.kitSearchLabel == entry.label and not IsHidden(item.frame) then return item.frame end
             local found = Find(item.frame)
             if found then return found end
         end
     end
     Unfold(Options.inspectorKit, section)
     Options:LayoutEditorInspector()
-    local frame = Find(section) or section
+    local frame = entry.frame
+    if not frame or IsHidden(frame) then frame = Find(section) or section end
     local offset = OffsetIn(frame, Options.editorComponentContent)
     local bar = Options.editorComponentScrollBar
     if offset and bar and bar.ScrollToOffset then bar:ScrollToOffset(math.max(0, offset - REVEAL_MARGIN)) end
@@ -523,6 +709,8 @@ end
 local PLATE_SECTIONS = {
     target = function() return Options.editorTargetHighlightSection, Options:EditorTargetHighlightRows() end,
     friendly = function() return Options.editorFriendlySection, Options:EditorFriendlyRows() end,
+    totems = function() return Options.editorTotemSection, Options:EditorTotemRows() end,
+    objectLooks = function() return Options.editorObjectLookSection, Options:EditorObjectLookRows() end,
 }
 
 -- With Studio open on the right tab and design: the Plate row selected, the section (PLATE_SECTIONS' which)
@@ -557,12 +745,48 @@ function Search.RevealFriendlyPlates(id, plateType)
     return Search.RevealPlateRow("friendly", "id", id)
 end
 
+-- Type › Totems' Plate settings: on the open Enemies or Friendly NPCs tab (at World where Blizzard draws its friendly
+-- plates), else the Enemies' World design; Type › Totems opened there.
+function Search.RevealTotems(id)
+    if not (Options.editor and Options.editor:IsShown()) and not (PS.OpenVisualEditor and PS.OpenVisualEditor()) then
+        return false
+    end
+    local open = Options.editorProfile
+    if Options.editorPlayersGated or not PS.ProfileSchema.TOTEMS.PLATES[open] then
+        Options:OpenEditorDesign("enemy", "world")
+    elseif Options:IsEditorBlizzardNames() then
+        Options:OpenEditorDesign(open, "world")
+    end
+    if not Options:IsEditorTotem() and not Options:SetEditorObjectType("totem") then return false end
+    return Search.RevealPlateRow("totems", "id", id)
+end
+
+-- A part deleted from the plate: put back as + Add does (Options:AddEditorComponent), then shown in the tree.
+local function AddPart(entry)
+    Options:SetEditorInspectorPage("components")
+    if not Options:AddEditorComponent(entry.key) then return false end
+    RevealPart(entry)
+    return true
+end
+
+-- Plate settings › Object looks (Settings › Objects & interacting's links): the Objects tab (its open design and type
+-- kept when already open), at the row id.
+function Search.RevealObjectLooks(id)
+    if not (Options.editor and Options.editor:IsShown()) and not (PS.OpenVisualEditor and PS.OpenVisualEditor()) then
+        return false
+    end
+    if not Options:IsEditorObject() and not Options:OpenEditorDesign("object", "world") then return false end
+    return Search.RevealPlateRow("objectLooks", "id", id)
+end
+
 -- Goes to a result: its category, section unfolded, scrolled to and flashed.
 function Search.Pick(entry)
     if not entry then return false end
     Search.Clear()
     if entry.place == "part" then
         RevealPart(entry)
+    elseif entry.place == "addPart" then
+        return AddPart(entry)
     elseif entry.place == "partRow" then
         RevealPartRow(entry)
     elseif entry.place == "partStyleRow" then
@@ -573,6 +797,8 @@ function Search.Pick(entry)
         return Search.RevealTargetHighlight(entry.label)
     elseif entry.place == "friendlyRow" then
         return Search.RevealFriendlyPlates(entry.id, entry.plateType)
+    elseif entry.place == "totemRow" then
+        return Search.RevealTotems(entry.id)
     elseif entry.place == "blizzard" then
         return RevealBlizzardSetting(entry)
     else
@@ -661,16 +887,11 @@ end
 
 local function LineText(entry)
     if entry.place == "part" then return string.format(L["Select part in Studio › %s"], entry.label) end
-    if entry.place == "partRow" then
-        return string.format(L["Select part in Studio › %s"], Path(entry.partLabel, L["Display"], entry.label))
-    end
-    if entry.place == "partStyleRow" then
-        return string.format(L["Select part in Studio › %s"], Path(entry.partLabel, L["Style"], entry.label))
-    end
-    if entry.place == "dungeonNameRow" then
+    if entry.place == "partRow" or entry.place == "partStyleRow" or entry.place == "dungeonNameRow" then
         return string.format(L["Select part in Studio › %s"], Path(entry.path, entry.label))
     end
-    if entry.place == "plateRow" or entry.place == "friendlyRow" then
+    if entry.place == "addPart" then return string.format(L["Add in Studio › %s"], Path(entry.path, entry.partLabel)) end
+    if entry.place == "plateRow" or entry.place == "friendlyRow" or entry.place == "totemRow" then
         return string.format(L["Open in Studio › %s"], Path(entry.path, entry.label))
     end
     return string.format(L["Open in Blizzard Settings › %s"], Path(entry.pageLabel, entry.sectionTitle, entry.label))
@@ -794,7 +1015,10 @@ end
 local function SetHeading()
     local title, summary = Options.editorSettingsTitle, Options.editorSettingsSummary
     if title then title:SetText(L["Search results"]) end
-    if summary then summary:SetText(string.format(L["Settings that match \"%s\"."], results.text or "")) end
+    if summary then
+        summary:SetText(string.format(results.viaHelp and L["No setting is called \"%s\": these mention it in their help."]
+            or L["Settings that match \"%s\"."], results.text or ""))
+    end
     if Options.editorSettingsHelp then Options.editorSettingsHelp:Hide() end
 end
 
@@ -816,7 +1040,7 @@ function Search.Update()
         results.scroll = viewport and viewport.GetVerticalScroll and viewport:GetVerticalScroll() or 0
     end
     Restore()
-    results.found = Search.Query(text, MAX_RESULTS)
+    results.found, results.viaHelp = Search.Query(text, MAX_RESULTS)
     results.active, results.text = true, text
     Place(results.found)
     if viewport and viewport.SetVerticalScroll then viewport:SetVerticalScroll(0) end
@@ -827,6 +1051,7 @@ end
 -- The rows go back to their pages, and the category shows again where it was scrolled to.
 function Search.Close()
     PS.Ticker.SetEnabled(DEBOUNCE_TICKER, false)
+    partCache.entries = nil
     if not results.active then return end
     Restore()
     results.active, results.found = false, {}

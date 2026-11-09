@@ -340,18 +340,16 @@ end
 
 -- Which pips show (the first maximum), and which of them are filled: filled true (all, a protected
 -- count fades them through curves), false (none) or a readable count.
--- fillsOnly: no edges, empty pips or segments' backing, only the fills (a protected count out of cat
--- form, whose curve may give every fill 0: then nothing shows).
-function Combo.ShowPips(row, pips, maximum, filled, fillsOnly)
+function Combo.ShowPips(row, pips, maximum, filled)
     for index, pip in ipairs(pips) do
         local used = index <= maximum
         local lit = used and (filled == true or (filled ~= false and index <= filled))
-        pip.edge:SetShown(used and not row.pipNoEdge and not fillsOnly)
-        pip.empty:SetShown(used and not fillsOnly)
+        pip.edge:SetShown(used and not row.pipNoEdge)
+        pip.empty:SetShown(used)
         pip.fill:SetShown(lit)
         if pip.glow then pip.glow:SetShown(lit and row.pipGlow == true) end
     end
-    if row.pipBacking then row.pipBacking:SetShown(row.pipSegments == true and not fillsOnly) end
+    if row.pipBacking then row.pipBacking:SetShown(row.pipSegments == true) end
 end
 
 -- Where a row sits on the health bar instead of its placed spot (style.pipAnchor): its point, the
@@ -413,14 +411,13 @@ PS._CreatePlateCombo = function(context)
         return frame
     end
 
-    local function ShowPips(data, maximum, filled, fillsOnly)
-        Combo.ShowPips(data.combo, data.comboPips, maximum, filled, fillsOnly)
+    local function ShowPips(data, maximum, filled)
+        Combo.ShowPips(data.combo, data.comboPips, maximum, filled)
     end
 
     -- A protected count: each fill's opacity is its step curve evaluated by the client ("curve"),
-    -- else the count as text in the row's place ("text"), else nothing ("hidden"). fillsOnly (out of cat
-    -- form, where a 0 must not show an empty row): the fills alone, and no text (it would show a 0).
-    local function DrawSecret(data, count, maximum, fillsOnly)
+    -- else the count as text in the row's place ("text"), else nothing ("hidden").
+    local function DrawSecret(data, count, maximum)
         local curved = true
         for index = 1, maximum do
             local curve = PipCurve(index)
@@ -436,15 +433,11 @@ PS._CreatePlateCombo = function(context)
             if pip.glow then pcall(pip.glow.SetAlpha, pip.glow, alpha) end
         end
         if curved then
-            ShowPips(data, maximum, true, fillsOnly)
+            ShowPips(data, maximum, true)
             data.comboText:Hide()
-            return fillsOnly and "curveFills" or "curve"
+            return "curve"
         end
         ShowPips(data, 0, false)
-        if fillsOnly then
-            data.comboText:Hide()
-            return "hidden"
-        end
         local shown = pcall(data.comboText.SetFormattedText, data.comboText, "%.0f", count)
         data.comboText:SetShown(shown)
         return shown and "text" or "hidden"
@@ -455,7 +448,9 @@ PS._CreatePlateCombo = function(context)
 
     -- Draws the count; false when there is nothing to show: the client says nothing, or a readable 0
     -- the style's Show row hides, or a readable 0 while you cannot build points (a druid out of cat form;
-    -- points on the target stay whatever the form, so a count above 0 shows in any form).
+    -- points on the target stay whatever the form, so a readable count above 0 shows in any form). A
+    -- protected count while you cannot build points (a druid fighting out of cat form) shows no row: it
+    -- cannot be told from 0, and a row of invisible fills would still take its room in a stack.
     local function Draw(data)
         local maximum = Combo.Maximum()
         if maximum ~= data.comboMax then
@@ -466,7 +461,12 @@ PS._CreatePlateCombo = function(context)
         local count, secret = Combo.Count()
         if secret then
             data.comboDrawn = nil
-            data.comboPath = DrawSecret(data, count, maximum, not building)
+            if not building then
+                data.comboText:Hide()
+                data.comboPath = "hidden"
+                return false
+            end
+            data.comboPath = DrawSecret(data, count, maximum)
             return data.comboPath ~= "hidden"
         end
         if secret == nil then

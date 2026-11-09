@@ -109,6 +109,49 @@ function Secret.IsGameObject(unit)
     return Secret.ReadBoolean(UnitIsGameObject, unit) == true
 end
 
+-- Creature types: a locale-safe word for what UnitCreatureType says (unit.creature), the one reader for plates and the
+-- threat service's critters. The client names the type in its own language, so the word comes from the client's
+-- creature type ID: UnitCreatureType's second result where the client gives a readable one, else the name matched
+-- against the client's own name for each ID (C_CreatureInfo.GetCreatureTypeInfo, read once the client has it), else
+-- against the English names (an English client without that API). CREATURE_TYPES[id] is the word.
+Secret.CREATURE_TYPES = { "beast", "dragonkin", "demon", "elemental", "giant", "undead", "humanoid", "critter", "mechanical",
+    "notspecified", "totem", "noncombatpet", "gascloud", "wildpet", "aberration" }
+local creatureIDs = { Beast = 1, Dragonkin = 2, Demon = 3, Elemental = 4, Giant = 5, Undead = 6, Humanoid = 7, Critter = 8,
+    Mechanical = 9, ["Not specified"] = 10, Totem = 11, ["Non-combat Pet"] = 12, ["Gas Cloud"] = 13, ["Wild Pet"] = 14,
+    Aberration = 15 }
+local creatureNamesRead = false
+local function CreatureID(name)
+    if not creatureNamesRead then
+        local api = rawget(_G, "C_CreatureInfo")
+        local getInfo = type(api) == "table" and api.GetCreatureTypeInfo
+        if type(getInfo) == "function" then
+            creatureNamesRead = true
+            for id = 1, #Secret.CREATURE_TYPES do
+                local ok, info = pcall(getInfo, id)
+                local own = ok and IsReadable(info) and type(info) == "table" and Secret.String(info.name)
+                if own then creatureIDs[own] = id end
+            end
+        end
+    end
+    return creatureIDs[name]
+end
+
+-- unit's creature type: its word (nil when unknown or not one of CREATURE_TYPES), the client's own readable name (nil
+-- unless readable), and whether the client answered readably at all (a unit with no type, such as an object, is a
+-- readable nil: answered with no word). A missing API, an error or a protected answer is not answered.
+function Secret.CreatureType(unit)
+    if type(UnitCreatureType) ~= "function" then return nil, nil, false end
+    local ok, name, id = pcall(UnitCreatureType, unit)
+    if not ok then return nil, nil, false end
+    if IsReadable(id) and type(id) == "number" and Secret.CREATURE_TYPES[id] then
+        return Secret.CREATURE_TYPES[id], Secret.String(name), true
+    end
+    if not IsReadable(name) then return nil, nil, false end
+    if type(name) ~= "string" or name == "" then return nil, nil, true end
+    local found = CreatureID(name)
+    return found and Secret.CREATURE_TYPES[found] or nil, name, true
+end
+
 function Secret.ReadGUID(unit)
     if type(UnitGUID) ~= "function" then return nil end
     local ok, guid = pcall(UnitGUID, unit)

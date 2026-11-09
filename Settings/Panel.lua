@@ -182,8 +182,8 @@ end
 -- Plate appearance lives in Blueprint Studio; this page only points there.
 local function BuildMainPage(panel)
     local kit, flow = Options:NewSettingsPage(panel, "PlateSmith",
-        L["Plate appearance, the threat settings and modules' settings are edited in Blueprint Studio (/ps), which "
-            .. "also opens in combat. The Profiles page holds the rest."])
+        L["Plate appearance, profiles, the threat settings and modules' settings are edited in Blueprint Studio (/ps), "
+            .. "which also opens in combat."])
     local row, editor = kit.ButtonRow(flow, L["Open Blueprint Studio"], 200)
     editor:SetScript("OnClick", function() PS.OpenVisualEditor() end)
     row.flowBefore = kit.SECTION_TOP
@@ -241,22 +241,28 @@ function PS.CreateOptions()
     return panel
 end
 
--- A module's page in Game Options (one home: its settings are in Studio): what it is, where its settings are, an
--- Open in Studio button, and that Studio opens in combat where this panel does not. A module's gameOptions = false
--- has none. Returns the page, or nil.
-function Options:AddModuleLauncher(entry)
-    if not entry.gameOptions or entry.launcherPage then return entry.launcherPage end
-    local page = CreatePage(entry.title)
-    local kit, flow = self:NewSettingsPage(page, entry.title, entry.launcher
-        or string.format(L["%s is a PlateSmith module. Its settings are in Blueprint Studio › Settings › Modules › %s."],
-            entry.title, entry.title))
-    local row, open = kit.ButtonRow(flow, L["Open in Studio"], 200)
-    open:SetScript("OnClick", function() Options:OpenModuleSettings(entry.id) end)
+-- A Game Options page that only opens Studio (one home: the settings are there): its title, text (what it is, where
+-- its settings are), an Open in Studio button running open, and that Studio opens in combat where this panel does
+-- not. Returns the button.
+function Options:BuildLauncherPage(page, title, text, open)
+    local kit, flow = self:NewSettingsPage(page, title, text)
+    local row, button = kit.ButtonRow(flow, L["Open in Studio"], 200)
+    button:SetScript("OnClick", open)
     row.flowBefore = kit.SECTION_TOP
     kit.Add(flow, row)
     kit.Add(flow, kit.Help(flow, L["Blueprint Studio opens in combat too; this panel does not."]))
-    page.moduleOpenButton = open
     page:Relayout()
+    return button
+end
+
+-- A module's page in Game Options (a launcher: its settings are in Studio). A module's gameOptions = false has none.
+-- Returns the page, or nil.
+function Options:AddModuleLauncher(entry)
+    if not entry.gameOptions or entry.launcherPage then return entry.launcherPage end
+    local page = CreatePage(entry.title)
+    page.moduleOpenButton = self:BuildLauncherPage(page, entry.title, entry.launcher
+        or string.format(L["%s is a PlateSmith module. Its settings are in Blueprint Studio › Settings › Modules › %s."],
+            entry.title, entry.title), function() Options:OpenModuleSettings(entry.id) end)
     entry.launcherPage = page
     AddCategory(entry.id, entry.title, page)
     return page

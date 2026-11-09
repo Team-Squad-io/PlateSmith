@@ -1,7 +1,7 @@
 -- The Loose mark: a small icon on an enemy's plate while the threat service reports the mob LOOSE (ThreatText.Facts'
 -- loose, the Tank window's LOOSE and rules' threat.loose: held by someone who is not a tank). On Enemies plates it is
 -- the part looseMark (off by default; the Tank look turns it on), and on Blizzard's own plates one of the extras
--- (Extras.lua places it there). It shows for tanks, or for everyone (the part's Show for), and pulses briefly as the
+-- (Extras.lua places it there). It shows for tanks, or for everyone (the part's For), and pulses briefly as the
 -- mob becomes loose: one AnimationGroup on its layer, made the first time, played once, no Lua per frame. Fails
 -- closed: a hold the service cannot read (UNKNOWN), a mob out of combat or a role it cannot read shows nothing.
 local _, PS = ...

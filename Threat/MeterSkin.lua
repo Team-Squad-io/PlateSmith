@@ -5,7 +5,7 @@ local _, PS = ...
 -- rows, header buttons, scroll bars and breakdown pop-outs. Optional, off by default, saved account-wide (state
 -- meterSkin; behaviour, not a Blueprint's). Studio › Settings › Modules › Threat › Threat windows switches it.
 --
--- Visual only (docs/research/blizzard-damage-meter.md). On Blizzard's frames it calls getters and CreateTexture and
+-- Visual only. On Blizzard's frames it calls getters and CreateTexture and
 -- nothing else; on their art regions only SetAlpha, SetTexture, SetAtlas, SetTexCoord, SetBlendMode, SetVertexColor,
 -- SetFont and SetTextColor, recording each original so off puts it back at once. It never anchors,
 -- sizes, scripts, reparents, shows or hides their frames (Edit Mode would be tainted), never writes a field into

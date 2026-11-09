@@ -10,17 +10,31 @@ local editorLabels = catalog.editorLabels
 local editorDefinitions = catalog.editorDefinitions
 local VALUE_SLOT_COUNT = catalog.VALUE_SLOT_COUNT
 local editorProfiles = {
-    { key = "enemy", label = L["Enemies"], sampleName = L["Training Raider"] },
+    -- With Type › Totems open (typeSampleNames): a totem, an enemy shaman's or your group's; its icon from its name as
+    -- the plates find it, else its Data/Totems.lua key's spell (sampleTotem).
+    { key = "enemy", label = L["Enemies"], sampleName = L["Training Raider"],
+        typeSampleNames = { totem = L["Searing Totem"] }, sampleTotem = "Searing" },
     { key = "friendlyPlayer", label = L["Players"], sampleName = L["Your Character"] },
-    { key = "friendlyNPC", label = L["Friendly NPCs"], sampleName = L["Innkeeper Allison"] },
+    { key = "friendlyNPC", label = L["Friendly NPCs"], sampleName = L["Innkeeper Allison"],
+        typeSampleNames = { totem = L["Mana Spring Totem"] }, sampleTotem = "Mana Spring" },
     { key = "enemyPlayer", label = L["Enemy players"], sampleName = L["Arena Challenger"] },
     -- Objects: a book on the ground; with Test values' Quest unit, a quest object (questSampleName).
     { key = "object", label = L["Objects"], sampleName = L["Arathor and the Troll Wars"],
         questSampleName = L["Shipment of Iron"],
         -- With a Type open (Designs' object types): an object of that type (quest objects: questSampleName).
         typeSampleNames = { herb = L["Peacebloom"], ore = L["Tin Vein"], loot = L["Battered Chest"],
+            corpse = L["Elder Gray Bear"],
             book = L["Arathor and the Troll Wars"], service = L["Mailbox"], other = L["Campfire"] } },
 }
+-- A totem icon part's picture in the preview (Totems.SampleIcon): the open tab's sample totem.
+PS.Totems.SampleSource = function()
+    for _, definition in ipairs(editorProfiles) do
+        if definition.key == Options.editorProfile and definition.sampleTotem then
+            return { name = definition.typeSampleNames.totem, key = definition.sampleTotem }
+        end
+    end
+    return nil
+end
 -- The inspector's controls for each part (Inspector's contexts); parts with none of their own
 -- (shown, hidden and moved from the tree and the preview) use "other".
 local editorContextForKey = {
@@ -28,7 +42,8 @@ local editorContextForKey = {
     health = "health", power = "power", cast = "cast", quest = "quest", questLoot = "questLoot",
     raidIcon = "raidIcon", relationshipIcon = "relationshipIcon", pvpIcon = "pvpIcon", classification = "classification",
     buffs = "buffs", debuffs = "debuffs", threat = "threat", combo = "combo", targetedBy = "targetedBy", tagged = "tagged",
-    actionIcon = "actionIcon", statusText = "statusText", looseMark = "looseMark", backdrop = "backdrop",
+    actionIcon = "actionIcon", statusText = "statusText", looseMark = "looseMark", backdrop = "backdrop", range = "range",
+    behindYou = "behindYou",
 }
 for index = 1, VALUE_SLOT_COUNT do editorContextForKey["value" .. index] = "value" end
 -- Settings search finds a part's Display rows through it (Search.lua).
@@ -61,6 +76,9 @@ local editorDescriptions = {
     targetedBy = L["Which group members target this enemy: a class-coloured badge each, where the game says."],
     actionIcon = L["The game's own icon for what you can do here: gather, mine, open, read, talk, train."],
     looseMark = L["Shows while the mob is loose: attacking someone who is not a tank, as the Tank window's LOOSE."],
+    range = L["Whether your spells reach the unit: a dot, the distance or both, out of range by default. Hidden while the "
+        .. "range is unknown."],
+    behindYou = L["Shows on your target's plate while the game says it is behind the camera: an arrow or the words."],
     statusText = L["What the object needs and your skill, such as Mining 65 in your skill's colour, once you have hovered one like it."],
     backdrop = L["A box behind the parts you choose, like the game's tooltip: it fits round them as they show, or has a size of "
         .. "its own."],
@@ -93,7 +111,17 @@ function Options:EditorShowAs(plateType)
 end
 
 function Options:EditorLiveFriendlyView()
+    -- A totem shown as its name or icon draws over the layer's plate layout, whatever Show as says (Lifecycle's
+    -- ApplyLayout), so its icon parts can draw.
+    local totem = self:EditorTotemChoice()
+    if totem and totem ~= "hidden" then return "full" end
     return self:EditorShowAs() == "names" and "names" or "full"
+end
+
+-- With Type › Totems open, its Display as the plates read it (Schema's TOTEMS.Choice): nil for Plate.
+function Options:EditorTotemChoice()
+    if not self:IsEditorTotem() then return nil end
+    return Schema.TOTEMS.Choice(self:EditorProfileSettings())
 end
 
 -- Plate settings › Friendly plates › Show as for the open tab: the preview's Editing switch and its
@@ -131,8 +159,9 @@ function Options:CurrentEditorVariant()
 end
 
 -- The edit target every PS.Set* and PS.Get* call in Studio passes (Core/Settings.lua): the plate
--- type for its World design, else "<type>@<design>"; on the Objects tab with a Type chosen
--- (editorObjectType, Core/Designs.lua's object types), that type's layer over the design: "/<type>" after it.
+-- type for its World design, else "<type>@<design>"; on a tab with types (Objects; Enemies and Friendly NPCs:
+-- Totems) with a Type chosen (EditorObjectType, Core/Designs.lua's types), that type's layer over the design:
+-- "/<type>" after it.
 function Options:EditorTarget()
     local design, target = self.editorDesign, self.editorProfile
     if design and design ~= "world" then target = target .. "@" .. design end
@@ -141,9 +170,15 @@ function Options:EditorTarget()
     return target
 end
 
--- The open object type (nil: All objects); only on the Objects tab.
+-- The open tab's open type (nil: its design itself, All objects or All NPCs), each tab its own (editorTypes).
 function Options:EditorObjectType()
-    return self:IsEditorObject() and self.editorObjectType or nil
+    local open = self.editorTypes and self.editorTypes[self.editorProfile]
+    return open ~= nil and PS.Designs.IsType(self.editorProfile, open) and open or nil
+end
+
+-- The open type is the open tab's Totems (Type › Totems on the Enemies and Friendly NPCs).
+function Options:IsEditorTotem()
+    return self:EditorObjectType() == "totem"
 end
 
 -- The profile the preview draws (the edited design's); the import preview's plates draw their own.
@@ -205,12 +240,12 @@ local friendlyPvpChoices = {
     { value = "both", label = L["Colour and icon"] },
 }
 
--- Selected target: Gold edge stands for both stored styles, "border" (steady) and "halo" (pulsing);
--- the Target section's Pulse slowly box picks between them (Inspector).
+-- Selected target: Edge (Gold edge until 1.4.0) stands for both stored styles, "border" (steady) and "halo"
+-- (pulsing); the Target section's Pulse slowly box picks between them (Inspector).
 local targetHighlightChoices = {
-    { value = "off", label = L["Off"], help = L["No highlight: no glow and no gold target edge."] },
-    { value = "border", label = L["Gold edge"],
-        help = L["Gold light on the selected plate's text and bar edges, steady or pulsing."] },
+    { value = "off", label = L["Off"], help = L["No highlight: no glow and no target edge."] },
+    { value = "border", label = L["Edge"],
+        help = L["Light on the selected plate's text and bar edges, gold or in its Edge colour, steady or pulsing."] },
     { value = "glow", label = L["Soft glow behind"],
         help = L["A soft cloud of light behind the selected plate, under its bars and text, in a colour you choose."] },
 }
@@ -276,6 +311,8 @@ end
 -- A component's name in Studio: a custom value's own name when it has one.
 function Options:EditorComponentLabel(key)
     if key == "name" and self:IsEditorBlizzardNames() then return L["Name (drawn by Blizzard)"] end
+    -- Friendly NPCs' guild line is their title (PlateIdentity.NpcTitle).
+    if key == "guild" and self.editorProfile == "friendlyNPC" then return L["Title"] end
     local position = type(key) == "string" and not key:match("^group%.%d+$") and self.editorLayout and self.editorLayout[key]
     if position and position.name and not key:match("^value%d+$") then return position.name end
     if type(key) == "string" and key:match("^value%d+$") then
@@ -710,7 +747,7 @@ function Options:SetEditorGroupVisibility(groupKey, visible)
     AfterPartVisibility(self)
 end
 
--- Whether this plate type can take another value, and the free slot it would use.
+-- Whether this plate type can take another value, and the free slot it would use; then how many are free.
 -- A slot free in every design of the plate type (Settings' FreeValueSlot), so a part added in one
 -- design never lands on a slot another design uses.
 function Options:EditorFreeValueSlot()
@@ -718,8 +755,8 @@ function Options:EditorFreeValueSlot()
     if not self:IsEditorEnemy() and self.editorDesign ~= "dungeon"
         and self:EditorFriendlyView() ~= "full" then return nil, "plate" end
     if type(PS.FreeValueSlot) ~= "function" then return nil, "plate" end
-    local key = PS.FreeValueSlot(self:EditorTarget())
-    if key then return key end
+    local key, count = PS.FreeValueSlot(self:EditorTarget())
+    if key then return key, count end
     return nil, "full"
 end
 
@@ -751,6 +788,9 @@ function Options:DuplicateEditorValue(key)
         "height", "icon", "colour" }) do
         if slot[field] ~= nil then fields[field] = slot[field] end
     end
+    for _, field in ipairs(Schema.IMAGE.FIELDS) do
+        if slot[field] ~= nil then fields[field] = slot[field] end
+    end
     PS.SetPlateValueSlotFields(self:EditorTarget(), copy, fields)
     -- Its style and rules come along: a duplicate looks and behaves the same.
     local style = profile.styles and profile.styles[key]
@@ -775,6 +815,17 @@ function Options:AddEditorComponent(key)
     self:ReloadEditorLayout()
     self:SelectEditorComponent(key)
     return true
+end
+
+-- Settings › Optional parts' Add, for a part off the plate everywhere: Studio on plateType's World design, the part put
+-- back there by + Add's route and selected.
+function Options:RestoreOptionalPart(key, plateType)
+    if not self:OpenEditorDesign(plateType, "world") then return false end
+    -- World itself, not a Type's layer left open on that tab (Type › Totems would take the part instead).
+    if self:EditorObjectType() and not self:SetEditorObjectType(nil) then return false end
+    self:SetEditorInspectorPage("components")
+    self.editorSelectedGroup = nil
+    return self:AddEditorComponent(key)
 end
 
 function Options:RemoveEditorComponent(key)
@@ -805,62 +856,188 @@ end
 -- The + Add menu: { text, func, disabled, children } entries. Parts by type; one that is on the
 -- plate (or not used by this plate type) is listed but off, with the reason.
 local ADD_MENU = {
-    { label = L["Text"], keys = { "name", "level", "guild", "threat", "tagged", "targetName", "statusText" } },
-    { label = L["Bars"], keys = { "health", "power", "cast" } },
+    { label = L["Text"], keys = { "name", "level", "guild", "threat", "tagged", "targetName", "statusText", "range" },
+        tip = L["Built-in text parts: the name, level, threat and the like."] },
+    { label = L["Bars"], keys = { "health", "power", "cast" }, tip = L["The health, power and cast bars."] },
     { label = L["Icons"], keys = { "quest", "questLoot", "raidIcon", "relationshipIcon", "pvpIcon", "classification", "combo",
-        "targetedBy", "actionIcon", "looseMark" } },
-    { label = L["Auras"], keys = { "buffs", "debuffs" } },
-    { label = L["Boxes"], keys = { "backdrop" } },
+        "targetedBy", "actionIcon", "looseMark", "behindYou" }, tip = L["Built-in marks and icons."] },
+    { label = L["Auras"], keys = { "buffs", "debuffs" }, tip = L["The rows of buff and debuff icons."] },
+    { label = L["Boxes"], keys = { "backdrop" }, tip = L["The box behind an object's parts."] },
 }
+-- Settings search lists a deleted part under its category here.
+Options.editorAddMenu = ADD_MENU
+-- Each entry's tooltip line: what it adds. Parts other addons register say so.
+ADD_MENU.TIPS = {
+    name = L["The unit's name."], level = L["The unit's level."],
+    guild = L["A player's guild name; on Friendly NPCs, their title (such as <Innkeeper>)."],
+    threat = L["Your threat on the unit, as text."], tagged = L["A word while another player or group has tagged the mob."],
+    targetName = L["The name of whoever the unit targets."], statusText = L["What an object needs, and your skill."],
+    range = L["Whether the unit is in your range, as a dot or the distance; on Objects, whether you can reach it."],
+    health = L["The health bar."], power = L["The power bar: mana, rage or energy."], cast = L["The cast bar."],
+    quest = L["A mark on units and objects your quests need."],
+    questLoot = L["The bag that shows in the quest mark's place while a unit drops a quest item."],
+    raidIcon = L["The raid target mark: skull, cross, star..."],
+    relationshipIcon = L["An icon over group members, guild members and friends."], pvpIcon = L["The PvP flag."],
+    classification = L["The elite or rare mark."], combo = L["Your combo points, on your target's plate."],
+    targetedBy = L["Which of your group target the unit."],
+    actionIcon = L["The game's icon for what you can do with it: loot, talk, gather..."],
+    looseMark = L["A mark while the mob is loose, for tanks."],
+    behindYou = L["Marks your target's plate while the game says it is behind you."],
+    buffs = L["The unit's buffs."], debuffs = L["The unit's debuffs."], backdrop = L["A box behind the plate's parts."],
+}
+-- New in 1.4.0: a tag after the entry's name.
+ADD_MENU.NEW = { range = true, behindYou = true }
 
 function Options:EditorAddMenuEntries()
-    local entries = { { text = L["Group"], func = function() self:AddEditorGroup() end } }
+    local newTag = L["New"]
+    local entries = { { text = L["Group"], func = function() self:AddEditorGroup() end,
+        tooltip = L["An empty group, to hold parts that move and stack together."] } }
     local listed = {}
+    -- An entry that cannot be added is greyed, its name as it is; why is the last line of its tooltip.
+    local function Off(entry, why)
+        local tip = entry.tooltip
+        local text = type(tip) == "table" and tip.text or tip
+        entry.disabled = true
+        entry.tooltip = { title = type(tip) == "table" and tip.title or entry.text,
+            text = text and (text .. "\n" .. why) or why }
+        return entry
+    end
     local function PartEntry(key)
         listed[key] = true
         local position = self.editorLayout and self.editorLayout[key]
         local label = self:EditorComponentLabel(key)
-        local entry = { text = label, func = function() self:AddEditorComponent(key) end }
+        local entry = { text = label, func = function() self:AddEditorComponent(key) end,
+            tooltip = ADD_MENU.TIPS[key] or L["A part another addon added."], tag = ADD_MENU.NEW[key] and newTag or nil }
         if not self:IsEditorComponentRelevant(key, nil, true) then
-            entry.disabled, entry.text = true, string.format(L["%s (not used here)"], label)
+            entry.notUsed = true
+            Off(entry, L["Not used here."])
         elseif not (position and position.removed) then
-            entry.disabled, entry.text = true, string.format(L["%s (on the plate)"], label)
+            Off(entry, L["Already on the plate."])
         end
         return entry
+    end
+    -- A category with nothing to add is greyed too; its tooltip says why.
+    local function Category(label, children, tooltip)
+        local used, unused, open = false, false, false
+        for _, child in ipairs(children) do
+            if child.notUsed then unused = true else used = true end
+            open = open or not child.disabled
+        end
+        local entry = { text = label, children = children, tooltip = tooltip }
+        if open then return entry end
+        return Off(entry, not used and L["Not used here."] or unused and L["Nothing here to add."]
+            or L["All of these are already on the plate."])
     end
     for _, category in ipairs(ADD_MENU) do
         local children = {}
         for _, key in ipairs(category.keys) do children[#children + 1] = PartEntry(key) end
-        entries[#entries + 1] = { text = category.label, children = children }
+        entries[#entries + 1] = Category(category.label, children, category.tip)
     end
     -- Parts other addons registered.
     local others = {}
     for _, key in ipairs(editorOrder) do
         if not listed[key] and not key:match("^value%d+$") then others[#others + 1] = PartEntry(key) end
     end
-    if #others > 0 then entries[#entries + 1] = { text = L["Other"], children = others } end
+    if #others > 0 then
+        entries[#entries + 1] = Category(L["Other"], others, L["Parts other addons added."])
+    end
     local free, reason = self:EditorFreeValueSlot()
+    -- Under Type › Totems, what a totem never fills (power, threat) is greyed.
+    local totem = self:IsEditorTotem()
+    local function TotemOff(entry, source)
+        if totem and Options.editorNeverOnTotemSource[source] then Off(entry, L["Not used here."]) end
+        return entry
+    end
     local values = {}
     for _, choice in ipairs(catalog.valueSourceChoices or {}) do
-        values[#values + 1] = { text = choice.label, disabled = not free,
-            func = function() self:AddValueSlot(choice.value) end }
+        values[#values + 1] = TotemOff({ text = choice.label, disabled = not free,
+            tooltip = choice.preview and string.format(L["A text part showing %s, such as %s."], choice.label, choice.preview)
+                or string.format(L["A text part showing %s."], choice.label),
+            func = function() self:AddValueSlot(choice.value) end }, choice.value)
     end
-    local valueText = L["Custom part"]
-    if not free then
-        valueText = reason == "full" and L["Custom part (all in use)"] or L["Custom part (not on this plate type)"]
-    end
-    entries[#entries + 1] = { text = valueText, children = values, disabled = not free }
-    -- Shapes: a bar filled by a percentage, a box, an icon (custom parts that are not text).
+    local why = reason == "full" and L["All custom parts are in use."] or L["Not on this plate type."]
+    local custom = { text = L["Custom part"], children = values,
+        tooltip = L["A text part of your own, showing the value you pick."] }
+    entries[#entries + 1] = free and custom or Off(custom, why)
+    -- Shapes: a bar filled by a percentage, a box, an image (custom parts that are not text). An image is a part of
+    -- kind icon, as it was saved when it was called Icon.
     local shapes = {
-        { text = L["Bar (health %)"], func = function() self:AddValueSlot("healthPercent", "bar") end },
-        { text = L["Bar (power %)"], func = function() self:AddValueSlot("powerPercent", "bar") end },
-        { text = L["Bar (threat %)"], func = function() self:AddValueSlot("threatPercent", "bar") end },
-        { text = L["Box"], func = function() self:AddValueSlot("static", "box") end },
-        { text = L["Icon"], func = function() self:AddValueSlot("static", "icon") end },
+        { text = L["Bar (health %)"], func = function() self:AddValueSlot("healthPercent", "bar") end,
+            tooltip = L["A bar of your own, filled by the unit's health %."] },
+        { text = L["Bar (power %)"], func = function() self:AddValueSlot("powerPercent", "bar") end,
+            tooltip = L["A bar of your own, filled by the unit's power %."] },
+        { text = L["Bar (threat %)"], func = function() self:AddValueSlot("threatPercent", "bar") end,
+            tooltip = L["A bar of your own, filled by your threat %."] },
+        { text = L["Box"], func = function() self:AddValueSlot("static", "box") end,
+            tooltip = L["A box of your own, a fill and an edge, to sit behind or around parts."] },
+        { text = L["Image"], func = function() self:AddValueSlot("static", "icon") end, tag = newTag,
+            tooltip = { title = L["Image"], text = L["A picture: one of PlateSmith's, a game atlas, shared media or your own "
+                .. "files (Settings › My media). Pin it to a bar's fill to ride the value."] } },
     }
+    -- Type › Totems open: the totem's own icon, an image pinned over the name (ProfilePresets.TOTEM_ICON).
+    if self:IsEditorTotem() then
+        shapes[#shapes + 1] = { text = L["Totem icon"], func = function() self:AddEditorDecorations(PS.ProfilePresets.TOTEM_ICON) end,
+            tag = newTag, tooltip = { title = L["Totem icon"], text = L["Each totem's own spell icon, an image you move, size "
+                .. "and pin like any part. Display › Icon shows only it."] } }
+    end
     for _, shape in ipairs(shapes) do shape.disabled = not free end
-    entries[#entries + 1] = { text = L["Shape"], children = shapes, disabled = not free }
+    TotemOff(shapes[2], "powerPercent")
+    TotemOff(shapes[3], "threatPercent")
+    local shape = { text = L["Shape"], children = shapes, tooltip = L["A bar, a box or an image of your own."] }
+    entries[#entries + 1] = free and shape or Off(shape, why)
+    -- Decoration sets (ProfilePresets.DECORATIONS): several parts in one step, applied by value.
+    local _, count = self:EditorFreeValueSlot()
+    if not free then count = 0 end
+    local sets = {}
+    for _, set in ipairs(PS.ProfilePresets.DECORATIONS) do
+        local room = count >= #set.parts
+        local id = set.id
+        local entry = { text = set.name, tooltip = { title = set.name, text = set.help or L["Several parts in one step."] },
+            func = function() self:AddEditorDecorations(id) end }
+        sets[#sets + 1] = room and entry or Off(entry, string.format(L["Needs %d free custom parts."], #set.parts))
+    end
+    local decorations = { text = L["Decoration set"], children = sets, tag = newTag,
+        tooltip = L["A ready-made group of parts in one step, as ordinary parts you can change."] }
+    entries[#entries + 1] = free and decorations or Off(decorations, why)
     return entries
+end
+
+-- + Add › Decoration set: the set's parts in free slots (Settings' AddDecorations), on the layout Studio edits; the
+-- first is selected. A refusal (too few free parts) is said in chat.
+function Options:AddEditorDecorations(id)
+    local keys, reason = PS.AddDecorations(self:EditorTarget(), self:CurrentEditorVariant(), id)
+    if not keys then
+        if reason then PS.Chat.Print(reason) end
+        return false
+    end
+    self:ReloadEditorLayout()
+    self:SelectEditorComponent(keys[1])
+    return keys
+end
+
+-- Plate settings › Totems › Display › Icon, or Icon and name, on a Totems layer without a totem icon part
+-- (Schema's TOTEMS.IconKeys): one added (ProfilePresets.TOTEM_ICON) on the plate layout a totem draws over, so the
+-- choice shows something. true with one there; false when none could be added (too few free parts: said in chat).
+function Options:EnsureEditorTotemIcon()
+    if not self:IsEditorTotem() then return false end
+    if Schema.TOTEMS.IconKeys(self:EditorProfileSettings()) then return true end
+    local keys, reason = PS.AddDecorations(self:EditorTarget(), "full", PS.ProfilePresets.TOTEM_ICON)
+    if not keys then
+        if reason then PS.Chat.Print(reason) end
+        return false
+    end
+    self:ReloadEditorLayout()
+    return true
+end
+
+-- Placement: a custom part pinned to a bar's top, bottom or right edge rides that bar's fill (Settings'
+-- SetComponentFill): mode hide or next (If not shown), nil to meet the bar's edge again.
+function Options:SetEditorFill(key, mode)
+    if not PS.SetComponentFill(key, mode, self:EditorTarget(), self:CurrentEditorVariant()) then return false end
+    self:ReloadEditorLayout()
+    self:RefreshEditorInspectorContext()
+    self:UpdateEditorSelectionHandles()
+    return true
 end
 
 -- Whether key is the first part its parent's stack lays out (it holds the stack's place).
@@ -951,6 +1128,13 @@ function Options:OpenEditorContextMenu(key, anchor)
 end
 
 -- Not while the Enemy players gate hides the inspector (DesignRow.lua): taking it down refreshes it.
+-- Whether key is an image (a custom part of kind icon) in the design Studio edits.
+function Options:IsEditorImage(key)
+    local profile = type(key) == "string" and key:match("^value%d+$") and self:EditorProfileSettings()
+    local slot = profile and profile.valueSlots and profile.valueSlots[key]
+    return slot ~= nil and slot.kind == "icon"
+end
+
 function Options:RefreshEditorInspectorContext()
     if self.editorPlayersGated then return end
     local key = self.selectedComponent
@@ -985,7 +1169,9 @@ function Options:RefreshEditorInspectorContext()
             or native and L["Blizzard draws friendly plates in dungeons and raids. It allows names only, class "
                 .. "colours and the name's font; the font changes Blizzard's shared nameplate fonts (all text on "
                 .. "Blizzard's plates)."]
-            or key and (editorDescriptions[key] or L["A part of the plate."]) or "")
+            or key and (self:IsEditorImage(key) and L["An image: one of PlateSmith's pictures, a game atlas, shared "
+                .. "media or your own file, placed on a part or riding a bar's fill."]
+                or editorDescriptions[key] or L["A part of the plate."]) or "")
     end
     local movable = key and not native and self:IsEditorComponentRelevant(key)
         and editorDefinitions[key] and editorDefinitions[key].movable ~= false and not self:IsEditorPlacedByStyle(key)
@@ -1242,7 +1428,11 @@ function Options:RefreshEditorComponentLayers()
     local into = rawget(self, "editorDrawOrderInto") or {}
     self.editorDrawOrderInto = into
     local rank, count = Schema.DrawOrder(self:EditorDrawnLayout(), into)
-    local function Level(key) return 2 + count - (rank[key] or count) end
+    -- One level kept free above the health bar for its incoming heals, as on the plates (Styles.LayerLevel).
+    local function Level(key)
+        local own = rank[key] or count
+        return 2 + count - own + ((rank.health and own < rank.health) and 1 or 0)
+    end
     -- Combo points on the health bar's edge draw in front of both bars, as on the plates (Styles.LayerLevel).
     local onEdge = self.editorComponents.health and Schema.ComboOnBarEdge(profile, self.editorLayout)
     for key, component in pairs(self.editorComponents) do
@@ -1345,6 +1535,10 @@ local HANDLE_POINTS = {
     { "RIGHT", 1, 0 }, { "BOTTOMLEFT", -1, -1 }, { "BOTTOM", 0, -1 }, { "BOTTOMRIGHT", 1, -1 },
 }
 local HANDLE_SIZE, HANDLE_HIT = 12, 22 -- drawn size, clickable size (screen pixels)
+-- A part smaller than this many screen pixels both ways (a range dot, a mark, a short level) gets a selection box this
+-- big round it, so it shows inside its handles instead of under them when the preview is zoomed out. Bars and long
+-- texts keep a box tight to them.
+local SELECT_MIN = 30
 local HANDLE_COLOURS = { normal = { 1, 0.80, 0.16 }, hover = { 1, 0.96, 0.70 }, pressed = { 1, 0.50, 0.08 } }
 local OUTLINE_WIDTH = 2 -- the selection outline, physical pixels (EditorOutlineWidth)
 -- Which profile size each bar's handles change: horizontal handles, then vertical ones, with
@@ -2087,11 +2281,24 @@ function Options:UpdateEditorSelectionHandles()
     local textWidth = not groupKey and self:EditorTextSize(key)
     local boxWidth, boxHeight, boxOffset
     if textWidth then boxWidth, boxHeight, boxOffset = select(3, self:EditorSelectionBox(key)) end
+    local least = SELECT_MIN / (self.editorPreviewZoom or 1)
     if boxWidth then
         handles:SetPoint("CENTER", target, "CENTER", boxOffset, 0)
-        handles:SetSize(boxWidth * 2, boxHeight * 2)
+        local small = boxWidth * 2 < least and boxHeight * 2 < least
+        handles:SetSize(small and least or boxWidth * 2, small and least or boxHeight * 2)
     else
-        handles:SetAllPoints(target)
+        -- The part's size in the stage's units (its own scale over the stage's).
+        local function Effective(frame)
+            return frame and type(frame.GetEffectiveScale) == "function" and frame:GetEffectiveScale() or 1
+        end
+        local scale = Effective(target) / Effective(stage)
+        local width, height = (target:GetWidth() or 0) * scale, (target:GetHeight() or 0) * scale
+        if width >= least or height >= least then
+            handles:SetAllPoints(target)
+        else
+            handles:SetPoint("CENTER", target, "CENTER", 0, 0)
+            handles:SetSize(least, least)
+        end
     end
     if groupKey then self:RefreshEditorGroupOutlines() end
     self:UpdateEditorFamilyOutline(not groupKey and key or nil)
@@ -2248,6 +2455,51 @@ function Options:PlaceEditorDragon(key, component)
         and pcall(component.SetPoint, component, "TOPLEFT", components.level, "CENTER", -D.CURL_X * dragon, D.CURL_Y * dragon)
 end
 
+-- The preview's custom part riding a bar's fill (Schema's FILL), as Placement's PlaceOnFill on the plates: anchored to
+-- the preview bar's fill texture, so it moves as Test values change the bar; while that bar is not drawn and the part
+-- rides the next (fill "next"), the next bar drawn. False when no bar takes it (it then meets the bar's edge).
+function Options:PlaceEditorOnFill(component, position, target, x, y)
+    local components = self.editorComponents or {}
+    local parent = components[target]
+    if position.fill == "next" and not (parent and parent:IsShown() and self:IsEditorPartShown(target)) then
+        parent = nil
+        for _, other in ipairs(Schema.FILL.NEXT[target] or Schema.FILL.OTHER_NEXT) do
+            local candidate = components[other]
+            if candidate and candidate:IsShown() and self:IsEditorPartShown(other) then
+                parent = candidate
+                break
+            end
+        end
+    end
+    local bar = parent and parent.previewBar
+    local ok, fill = false, nil
+    if bar and bar.GetStatusBarTexture then ok, fill = pcall(bar.GetStatusBarTexture, bar) end
+    if not (ok and fill) then return false end
+    local point, relative = Schema.FILL.Points(position.attach, false)
+    return pcall(component.SetPoint, component, point, fill, relative, x, y)
+end
+
+-- The preview's image or box sized to the part it is anchored to (its slot's fit), as Placement's PlaceFitted: the
+-- parent's drawn size and outset px more on each side, centred on it (offset by its x and y). False when not fitted.
+function Options:PlaceEditorFitted(key, component, position, scale)
+    local profile = key:match("^value%d+$") and self:EditorProfileSettings()
+    local slot = profile and profile.valueSlots and profile.valueSlots[key]
+    local parentKey = position.parent
+    if not (slot and slot.fit and (slot.kind == "icon" or slot.kind == "box") and parentKey
+        and not Schema.IsGroupKey(parentKey)) then
+        return false
+    end
+    local parent = self.editorComponents and self.editorComponents[parentKey]
+    if not parent then return false end
+    local ratio = self:EditorDrawnScale(parentKey) / scale
+    local _, _, parentScale = self:EditorPlacement(key)
+    local outset = (slot.outset or 0) * parentScale / scale
+    component:SetSize(math.max(1, (parent:GetWidth() or 0) * ratio + 2 * outset),
+        math.max(1, (parent:GetHeight() or 0) * ratio + 2 * outset))
+    return pcall(component.SetPoint, component, "CENTER", parent, "CENTER", (position.x or 0) * parentScale / scale,
+        (position.y or 0) * parentScale / scale)
+end
+
 function Options:PositionEditorComponent(key)
     local component = self.editorComponents and self.editorComponents[key]
     local position = self:EditorDrawnLayout()[key]
@@ -2267,6 +2519,7 @@ function Options:PositionEditorComponent(key)
     end
     if self:PlaceEditorDragon(key, component) then return end
     component:ClearAllPoints()
+    if self:PlaceEditorFitted(key, component, position, scale) then return end
     -- Pinned to a parent's edge: anchored to the parent's drawn text or frame, as on the plates,
     -- so it meets the name exactly however wide it renders.
     local edge = position.attach and Schema.ATTACH_EDGES[position.attach]
@@ -2274,6 +2527,11 @@ function Options:PositionEditorComponent(key)
     local parentComponent = pinTarget and self.editorComponents and self.editorComponents[pinTarget]
     if parentComponent then
         local _, _, parentScale = self:EditorPlacement(key)
+        -- A custom part riding a bar's fill meets the preview bar's fill, as Placement's does on the plates.
+        if position.fill and self:PlaceEditorOnFill(component, position, pinTarget, ((position.x or 0) * parentScale) / scale,
+            ((position.y or 0) * parentScale) / scale) then
+            return
+        end
         -- Parts meet with what they draw (a text's measured string, not its wider frame), as on
         -- the plates: both frames' insets are taken off, the parent's in its own drawn scale.
         local ownX, ownY = self:EditorContentInset(key)
@@ -3168,6 +3426,9 @@ Options.studioModel = {
     classificationIconSizeChoices = classificationIconSizeChoices,
     targetHighlightChoices = targetHighlightChoices,
     targetGlowColourChoices = targetGlowColourChoices,
+    -- The edge's colour (targetEdgeColourMode): Gold, as it always was, then the glow's own choices.
+    targetEdgeColourChoices = { { value = "gold", label = L["Gold"], help = L["The edge's own gold, as always."] },
+        targetGlowColourChoices[1], targetGlowColourChoices[2], targetGlowColourChoices[3], targetGlowColourChoices[4] },
     targetGlowWrapChoices = targetGlowWrapChoices,
     targetGlowPartChoices = targetGlowPartChoices,
     namesOnlyCastTextChoices = namesOnlyCastTextChoices,

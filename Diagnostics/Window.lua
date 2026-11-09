@@ -8,18 +8,19 @@ local Summary = assert(PS.DiagnosticSummary, "PlateSmith DiagnosticSummary missi
 local Details = assert(PS.DiagnosticDetails, "PlateSmith DiagnosticDetails missing")
 local ReportCode = assert(PS.DiagnosticCode, "PlateSmith DiagnosticCode missing")
 local Performance = assert(PS.Performance, "PlateSmith Performance missing")
+local Activity = assert(PS.ActivityLog, "PlateSmith ActivityLog missing")
 local L = PS.L
 
 -- The /platesmith diagnose window: the short Summary (what players paste, plus the one-line PS1
 -- report code), Details (the report in folding sections), Report (full JSON), the live
--- Performance view, and History tabs. It uses the panel kit's Blizzard palette and spacing, as the
+-- Performance view, History, and the Activity log. It uses the panel kit's Blizzard palette and spacing, as the
 -- Settings pages do.
 local UI = {}
 PS.DiagnosticUI = UI
 
-local TABS = { "summary", "details", "report", "performance", "history" }
+local TABS = { "summary", "details", "report", "performance", "history", "activity" }
 local TAB_LABELS = { summary = L["Summary"], details = L["Details"], report = L["Report"], performance = L["Performance"],
-    history = L["History"] }
+    history = L["History"], activity = L["Activity"] }
 -- The tabs that show a captured report; opened with none, they capture one first.
 local REPORT_TABS = { summary = true, details = true, report = true }
 local SUMMARY_TAB_CONTROLS = { "copySummary", "copyReport", "showReport", "codeCard", "codeBox", "codeLabel", "summaryHint" }
@@ -485,7 +486,10 @@ function UI.SelectTab(tab)
     window.copyHint:SetShown(tab == "report")
     window.resetPeaks:SetShown(tab == "performance")
     window.liveHint:SetShown(tab == "performance")
-    window.deleteEntry:SetShown(tab ~= "history" and tab ~= "performance" and viewing ~= nil)
+    window.clearActivity:SetShown(tab == "activity")
+    window.activityHint:SetShown(tab == "activity")
+    window.deleteEntry:SetShown(tab ~= "history" and tab ~= "performance" and tab ~= "activity" and viewing ~= nil)
+    if tab == "activity" then UI.PaintActivity() end
     if tab == "details" and window.detailsRendered ~= window.detailsModel then RenderDetails(window) end
     SetLive(tab == "performance")
     if tab == "performance" then UI.RefreshPerformance() end
@@ -809,6 +813,30 @@ local function BuildHistory(frame)
     frame.historyList, frame.historyRows, frame.historyEmpty = historyList, historyRows, historyEmpty
 end
 
+-- The activity log, newest first, in a selectable box (Ctrl+C copies), and its Clear button.
+local function BuildActivity(frame)
+    local card = Card(frame)
+    local scroll, box = Window.ScrollEditBox(frame)
+    scroll:SetParent(card)
+    Inside(scroll, card)
+    local clear = Window.Button(frame, L["Clear activity"], 120, T.BUTTON_H, function() Activity.Clear() end)
+    clear:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", T.PAD_X, FRAME.footer)
+    local hint = Ink(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"), "muted")
+    hint:SetPoint("LEFT", clear, "RIGHT", T.CONTROL_GAP + 2, 0)
+    hint:SetText(string.format(L["What changed, when, and who did it: the last %d, kept across reloads."], Activity.LIMIT))
+    frame.cards.activity, frame.panes.activity = card, scroll
+    frame.activityBox, frame.clearActivity, frame.activityHint = box, clear, hint
+end
+
+function UI.PaintActivity()
+    if not window then return end
+    local lines = Activity.Lines()
+    window.activityText = #lines > 0 and table.concat(lines, "\n") or L["Nothing recorded yet."]
+    Window.SetScrollText(window.panes.activity, window.activityText)
+    window.clearActivity:SetEnabled(#lines > 0)
+    window.clearActivity:SetAlpha(#lines > 0 and 1 or 0.45)
+end
+
 local function BuildWindow()
     local frame = Window.Create("PlateSmithDiagnosticsWindow", {
         width = FRAME.width, height = FRAME.height, title = L["PlateSmith Diagnostics"], border = PALETTE.divider,
@@ -834,6 +862,7 @@ local function BuildWindow()
     BuildReport(frame)
     BuildPerformance(frame)
     BuildHistory(frame)
+    BuildActivity(frame)
     -- Closed (Escape, the close button, the UI hidden), the live view stops refreshing.
     frame:HookScript("OnHide", function() SetLive(false) end)
     local deleteEntry = Window.Button(frame, L["Delete this capture"], 130, T.BUTTON_H, function()
@@ -851,6 +880,9 @@ function UI.EnsureWindow()
     window = BuildWindow()
     PS._diagnosticWindow = window
     History.onChange = UI.Refresh
+    Activity.onChange = function()
+        if window:IsShown() and window.tab == "activity" then UI.PaintActivity() end
+    end
     LayoutContent()
     return window
 end

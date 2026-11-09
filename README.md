@@ -7,6 +7,47 @@ every plate and lets you shape every part in
 of their own, colour plates by threat, and share your whole setup with one code or a chat link. It needs no
 other addon.
 
+## What's new in 1.4.0
+
+- **Faster plates**: Blizzard's plate is switched off under the plates PlateSmith draws, instead of only hidden
+- **Images**: add your own bits to any plate: PlateSmith's pictures, a game atlas, shared media or your own files
+  (Settings › My media), flipped, turned, tinted by class, reaction, threat or the bar's colour, or fitted to a part
+- **Ride the bar's fill**: a part that sits at the end of the health, power or cast bar's fill and moves with it
+- **Decoration sets**: **Target arrows** (shown only on your target) and a **Fill marker**, added in one step
+- **Totems, styled on their own**: the Enemies and Friendly NPCs tabs have a **Type** beside Design; with **Totems**
+  open, what you change is for totems only, and **Display** shows a totem as its plate, **just its icon**, its icon
+  and name, its name only or nothing. The icon is a **Totem icon** part you move, size and pin like any other
+- **Incoming heals and absorbs** on health bars (off until you turn them on), all heals or others' only
+- **Range**: a part (+ Add › Text) showing whether your spells reach the unit: a dot, the distance (**<5**, **<30**,
+  **30+**) or both, out of range, in range or always, in your colours; from your spellbook, on friendly plates too
+  (from your heals and buffs), finer as you learn spells, and range bands for rules and text: melee, near, far, out
+- **Behind you**: a part (+ Add › Icons), an arrow or the words on your target's (and, if you like, your focus's)
+  plate while the game says it is behind the camera
+- **Corpse plates** (off until you turn them on): a dead mob gets a small plate with its name instead of an empty enemy
+  bar, near or far, and the game's loot or skinning icon once the game gives one; clicking it loots as before. Off,
+  dead mobs get no plate, as the game's own plates show none
+- **Out of reach**: objects, corpses and NPCs you can use can dim, grey their name or show "Too far" when the game says
+  they are out of reach
+- **Friendly player plates for your group only** (or your group and guild), and **NPC titles** such as
+  <Flight Master> under their names
+- **Threat breakdown**: a threat window's title menu shows your last pulls' threat per ability, worked out from
+  Blizzard's damage meter, with rage, armor and the game's own figure
+- **Threat text: Gap only** (just **+1.2k** or **-300**), and a **target edge colour**: gold, custom, class, reaction
+  or threat
+- **Targeted by: Count only**: one small number for how many of your group or raid target an enemy
+- **Hidden auras**: hide auras such as Resurrection Sickness by spell ID or name, for the plates you pick
+- **Aura stacks** on the plates' buff and debuff icons, such as Lacerate's or Sunder Armor's
+- **Threat colours on tagged mobs**: a mob someone else tagged keeps its threat colour, darkened, instead of plain grey
+- **Your target always has a plate**, even with friendly player plates for your group only
+- **Level difficulty colours**: the level in the game's red, orange, yellow, green or grey for it against yours
+- **New rule and text words**: `targeted.count`, `unit.creature` and `{creature}`, `range.band` and `{range}`,
+  `unit.behind`, `pvp.sanctuary` and `pvp.you`
+- **Minimap button** (left-click Studio, right-click Settings; click again to close) and **a profile for this
+  character** from the Profile menu
+- **What's new**: a short window on your first login after each update (Settings › Studio turns it off)
+- **Activity log**: `/ps diagnose` › Activity shows what changed a setting, when, and which addon
+- Fixes: no empty gap under a bear's target where an invisible combo points row held its place
+
 ## What's new in 1.3.2
 
 - **Class colours for players**: a Class colour box on the Health bar and Name for Players and Enemy players, and
@@ -21,18 +62,6 @@ other addon.
   can set the class colour, a note when a rule overrides a colour, and a rule reference in Settings › Help
 - Fixes: cancelling Cultivation no longer marks the herb; a one-digit level's box is as wide as a two-digit one
 
-## What's new in 1.3.0
-
-- **Objects**: herbs, ore, chests, books and quest objects get plates of their own, with the game's icon for what you
-  can do and the skill a herb or vein needs, in the game's skill-up colours for yours
-- **Refreshed looks**: each look's plates match its card, with friendly plates and an elite mark of its own
-- **Rescue**, a third threat window mode: your group at a glance, and a click taunts an enemy off them
-- **Skin Blizzard's damage meter** (optional) to match the threat windows
-- Four new elite, rare and boss marks, and the **Loose mark** for a mob attacking someone who is not a tank
-- **Blizzard, with PlateSmith extras**: keep Blizzard's plates and add quest markers, threat and the target glow
-- **Clicking**: make friendly players, friendly NPCs or enemies click through
-- All threat settings on one page, Studio › Settings › Modules › Threat
-
 See [CHANGELOG.md](CHANGELOG.md) for everything that changed in each release.
 
 ## Features
@@ -45,6 +74,9 @@ See [CHANGELOG.md](CHANGELOG.md) for everything that changed in each release.
   `{health} / {health.max}`.
 - Rules change a part while something is true: grey when tagged, red at low health, fade non-targets.
 - Test values let you preview a tagged, casting or elite mob before you meet one.
+- Add your own images (PlateSmith's pictures, game atlases, shared media or your own files), parts that ride a bar's
+  fill, and ready-made decoration sets such as target arrows.
+- Optional parts for range (from your spellbook), Behind you, incoming heals and absorbs, and NPC titles.
 
 ### Nine looks to start from
 
@@ -58,6 +90,8 @@ you can change freely.
 - The game's icon shows what you can do with it, and the **Status text** shows the skill a herb or vein needs, such
   as **Mining 65**, coloured by how likely it is to raise your skill. Tauren see when **Cultivation** is ready.
 - Optionally fade objects you can't use yet, and show a hover cursor and tooltip on an object's plate.
+- Optional corpse plates: a dead mob's name with the game's loot or skinning icon, and a dimmed plate or "Too far"
+  for things out of reach.
 
 ### Designs for each place
 
@@ -72,12 +106,13 @@ names or their buffs shown.
 
 ### Where plates show
 
-Pick which plate types show in each kind of place, such as no enemy plates in cities. It uses Blizzard's own
-switches and puts them back when you log out.
+Pick which plate types show in each kind of place, such as no enemy plates in cities, and whether friendly players
+get plates for everyone, your group only, or your group and guild. It uses Blizzard's own switches and puts them back
+when you log out.
 
 ### Target highlight and glow
 
-Light up your target with a gold edge or a soft glow behind its plate, in your own colour, its class or
+Light up your target with an edge or a soft glow behind its plate, in gold, your own colour, its class or
 reaction colour, or your threat colour on it. Each plate type can have its own.
 
 ### Combo points
@@ -93,6 +128,8 @@ bar if you like, and shown always, in combat or only when you have points.
 - Up to five threat windows: a threat meter for your target, a tank list of every enemy in view, or **Rescue**,
   your group at a glance with a click to taunt. They can follow Blizzard's damage meter, which PlateSmith can skin
   to match.
+- **Threat breakdown** (a threat window's title menu): your last pulls' threat per ability, worked out from
+  Blizzard's damage meter, with rage, armor and the game's own figure.
 
 ### Quests
 

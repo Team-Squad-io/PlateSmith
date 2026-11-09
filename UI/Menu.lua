@@ -3,7 +3,8 @@ local _, PS = ...
 -- PlateSmith's one menu: context menus (right-click on a HUD window, Studio's menus) and every
 -- dropdown's list (Controls.Dropdown). Its own frame rather than UIDropDownMenu or a StaticPopup,
 -- so opening it never touches Blizzard's shared menu state. items: { text, func, checked,
--- disabled, title, children, childWidth, keepOpen, tooltip = { title, text } } in order; { separator = true }
+-- disabled, title, children, childWidth, keepOpen, tooltip = { title, text }, icon (a texture before the text),
+-- iconCoords, tag (a short word at the right end, such as "New") } in order; { separator = true }
 -- draws a gap. An item with children opens them in a submenu beside it (submenus nest up to MAX_LEVELS deep);
 -- with a func as well, clicking it runs the func. A keepOpen item (a multi-select's check) runs its func and
 -- leaves the menu open, its items read again (Toggle's items function) so the checks follow. A list longer
@@ -59,6 +60,33 @@ local function Render(frame)
         row:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -PADDING, -PADDING - (index - 1) * ROW_HEIGHT)
         row.label:SetText(item.separator and "" or (item.text or ""))
         row.check:SetText(item.checked and "|TInterface\\Buttons\\UI-CheckBox-Check:14:14|t" or "")
+        -- A picture before the label (a picker's thumbnail), made the first time a row shows one.
+        local icon = not item.separator and item.icon
+        if icon and not row.icon then
+            row.icon = row:CreateTexture(nil, "OVERLAY")
+            row.icon:SetSize(ROW_HEIGHT - 4, ROW_HEIGHT - 4)
+            row.icon:SetPoint("LEFT", row, "LEFT", 18, 0)
+        end
+        if row.icon then
+            row.icon:SetShown(icon and true or false)
+            if icon then
+                row.icon:SetTexture(icon)
+                -- Four coordinates (left, right, top, bottom) or eight (each corner: a turned picture).
+                local c = item.iconCoords
+                if c and #c == 8 then
+                    row.icon:SetTexCoord(c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8])
+                elseif c then
+                    row.icon:SetTexCoord(c[1], c[2], c[3], c[4])
+                else
+                    row.icon:SetTexCoord(0, 1, 0, 1)
+                end
+            end
+        end
+        row.label:SetPoint("LEFT", row, "LEFT", icon and 18 + ROW_HEIGHT or 18, 0)
+        -- A short tag before the arrow ("New"); the label stops short of it.
+        local tag = not item.separator and item.tag or nil
+        row.tag:SetText(tag or "")
+        row.label:SetPoint("RIGHT", row, "RIGHT", tag and -(18 + math.ceil(row.tag:GetStringWidth())) or -14, 0)
         row.arrow:SetText(item.children and not item.separator and ">" or "")
         if item.title then
             row.label:SetTextColor(1, 0.82, 0)
@@ -76,6 +104,16 @@ local function Render(frame)
     end
     frame.visibleRows = count
     return count
+end
+
+-- A width in anchor's units (a dropdown field's own) in the menu's: as wide as the anchor shows. Studio is scaled and
+-- the menu is not, so a field's width as it is drew the list wider than its field, past the window's edge.
+function Menu.WidthFrom(anchor, width)
+    local parent = rawget(_G, "UIParent")
+    if not (width and anchor and anchor.GetEffectiveScale and parent and parent.GetEffectiveScale) then return width end
+    local mine, theirs = parent:GetEffectiveScale(), anchor:GetEffectiveScale()
+    if not (mine and theirs and mine > 0 and theirs > 0) then return width end
+    return width * theirs / mine
 end
 
 local function OpenLevel(level, anchor, items, beside, width)
@@ -113,6 +151,9 @@ CreateRow = function(frame)
     row.check:SetPoint("LEFT", row, "LEFT", 4, 0)
     row.arrow = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     row.arrow:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+    row.tag = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    row.tag:SetPoint("RIGHT", row, "RIGHT", -14, 0)
+    row.tag:SetTextColor(0.4, 0.8, 1)
     row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     -- Anchored on both sides without wrapping, so a long label is cut short with "..." inside
     -- the menu's width instead of spilling past it.

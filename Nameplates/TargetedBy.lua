@@ -3,6 +3,10 @@
 -- do is UnitIsUnit("<member>target", plate unit), which Forever may protect: the answer goes
 -- straight to each badge region's SetAlphaFromBoolean and Lua never compares or tests it. A
 -- readable answer is used as it is; with no such sink a protected answer keeps the badge hidden.
+-- Count only (the part's style badgeShow "count") shows one number instead, and targeted.count reads it: how many of
+-- the whole group (party1..party4, or raid1..raid40 but you) target the unit, by the same UnitIsUnit question, counting
+-- readable answers only (none readable: unknown). The whole group is asked only while something counts (SetWanted's
+-- counting), each member once per plate on its UNIT_TARGET, and the backstop's budget is in questions, not plates.
 local _, PS = ...
 local Secret = assert(PS.Secret, "PlateSmith Secret missing")
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
@@ -52,6 +56,20 @@ end
 
 function TargetedBy.InitialFontSize(size) return math.max(6, math.floor(size - 2)) end
 
+-- Whether the part's style shows the count instead of badges (Count only).
+function TargetedBy.Counting(style) return type(style) == "table" and style.badgeShow == "count" end
+-- The count's font size for the badge size, and the part's size round it (two digits wide).
+function TargetedBy.CountFontSize(size) return math.max(8, math.floor(size + 1)) end
+function TargetedBy.CountSize(size)
+    local font = TargetedBy.CountFontSize(size)
+    return math.floor(font * 1.4 + 2), font + 2
+end
+-- The count as text, or nil to show nothing (no one, or unknown).
+function TargetedBy.CountText(count)
+    if type(count) == "number" and count > 0 then return tostring(math.floor(count)) end
+    return nil
+end
+
 -- Shows or hides one badge's regions by a UnitIsUnit answer: a readable boolean directly, a
 -- protected one only through SetAlphaFromBoolean (every region must have it, else all stay
 -- hidden). Returns how: "readable", "sink" or "hidden".
@@ -92,9 +110,37 @@ end
 -- The members badges are drawn for: a party's party1..party4, or a raid's tanks (up to MAX, never
 -- the player). members[i] = { unit, targetToken, classFile (readable, or opaque: classOpaque), initial }.
 local members, memberIndex = {}, {}
+-- The members counted (counting only): the party's, or every raid member but the player. countMembers[i] = { unit,
+-- targetToken }; countIndex: unit -> i.
+local countMembers, countIndex = {}, {}
 -- Bumped by every rebuild: a plate's row drawn for an older roster is styled again.
 TargetedBy.revision = 0
-local function RebuildMembers()
+local function RebuildCounted(counting, inRaid)
+    for unit in pairs(countIndex) do countIndex[unit] = nil end
+    local count = 0
+    if counting then
+        local tokens, limit = inRaid and RAID_TOKENS or PARTY_TOKENS, 0
+        local getTotal = inRaid and GetNumGroupMembers or GetNumSubgroupMembers
+        if type(getTotal) == "function" then
+            local ok, total = pcall(getTotal)
+            if ok and IsReadable(total) and type(total) == "number" then limit = math.min(#tokens, total) end
+        end
+        for index = 1, limit do
+            local unit = tokens[index]
+            if not (inRaid and Secret.SameUnit(unit, "player")) then
+                count = count + 1
+                local member = countMembers[count] or {}
+                countMembers[count] = member
+                TARGET_TOKENS[unit] = TARGET_TOKENS[unit] or Secret.TargetToken(unit)
+                member.unit, member.targetToken = unit, TARGET_TOKENS[unit]
+                countIndex[unit] = count
+            end
+        end
+    end
+    for index = count + 1, #countMembers do countMembers[index] = nil end
+    return count
+end
+local function RebuildMembers(counting)
     TargetedBy.revision = TargetedBy.revision + 1
     for unit in pairs(memberIndex) do memberIndex[unit] = nil end
     local count = 0
@@ -132,24 +178,26 @@ local function RebuildMembers()
     end
     for index = count + 1, #members do members[index] = nil end
     TargetedBy.raid = inRaid
-    return count
+    return math.max(count, RebuildCounted(counting, inRaid))
 end
 
 -- For tests: forget the roster.
 function TargetedBy._Reset()
     for index = #members, 1, -1 do members[index] = nil end
     for unit in pairs(memberIndex) do memberIndex[unit] = nil end
+    RebuildCounted(false)
 end
 
--- The plate side. context: active (unit -> plate), RunBatch, MarkStacks, Styles, AnchorPart
+-- The plate side. context: active (unit -> plate), RunBatch, MarkStacks, MarkValues, Styles, AnchorPart
 -- (Placement). A plate's row is made the first time it shows, events are
--- registered only while an enemy layout shows the part (SetWanted), and the group events and the
--- backstop run only while grouped as well.
+-- registered only while an enemy layout shows the part or reads targeted.count (SetWanted), and the group events and
+-- the backstop run only while grouped as well.
 PS._CreatePlateTargetedBy = function(context)
-    local active, RunBatch, MarkStacks = context.active, context.RunBatch, context.MarkStacks
+    local active, RunBatch, MarkStacks, MarkValues = context.active, context.RunBatch, context.MarkStacks, context.MarkValues
     local Styles, AnchorPart = context.Styles, context.AnchorPart
-    local Pass = { wanted = false, grouped = false, rosterDirty = false, ticking = false, cursor = 0 }
-    -- Plates showing a row, in a round-robin list (each keeps its index as targetedByIndex).
+    -- counting: something counts the whole group (Count only, or a rule or text reading targeted.count).
+    local Pass = { wanted = false, grouped = false, rosterDirty = false, ticking = false, cursor = 0, counting = false }
+    -- Plates showing a row or counting, in a round-robin list (each keeps its index as targetedByIndex).
     local rows = {}
     Pass.rows, Pass.active = rows, active
 
@@ -173,11 +221,31 @@ PS._CreatePlateTargetedBy = function(context)
         return styles and styles.targetedBy or EMPTY
     end
 
-    -- Sizes, places and colours every badge for the roster; the row is as long as the members.
+    -- The count's text on the part (Count only): the number, hidden at none or unknown.
+    local function ShowCount(data)
+        local text = data.targetedByCountText
+        if not text then return end
+        local value = data.targetedByCountShown and TargetedBy.CountText(data.targetedCount) or nil
+        if value then text:SetText(value) end
+        text:SetShown(value ~= nil)
+    end
+
+    -- Sizes, places and colours every badge for the roster; the row is as long as the members. Count only: the badges
+    -- hidden and the number's text sized from the badge size instead.
     local function ApplyStyle(data)
-        local size, spacing, vertical, initials = TargetedBy.StyleOf(PartStyle(data))
+        local style = PartStyle(data)
+        local size, spacing, vertical, initials = TargetedBy.StyleOf(style)
+        local counting = TargetedBy.Counting(style)
+        data.targetedByCountShown = counting
         local count = #members
-        data.targetedBy:SetSize(TargetedBy.RowSize(count, size, spacing, vertical))
+        if counting then
+            data.targetedBy:SetSize(TargetedBy.CountSize(size))
+            local text = data.targetedByCountText
+            Styles.StyledFont(data, "targetedBy", text, TargetedBy.CountFontSize(size))
+            text:SetTextColor(1, 1, 1)
+        else
+            data.targetedBy:SetSize(TargetedBy.RowSize(count, size, spacing, vertical))
+        end
         for index, badge in ipairs(data.targetedByBadges) do
             local member = members[index]
             local x, y = TargetedBy.BadgeOffset(index, size, spacing, vertical)
@@ -186,7 +254,7 @@ PS._CreatePlateTargetedBy = function(context)
             badge.edge:SetSize(size, size)
             badge.edge:SetColorTexture(0, 0, 0, 0.9)
             badge.fill:SetColorTexture(1, 1, 1, 1)
-            local used = member ~= nil
+            local used = member ~= nil and not counting
             if used then
                 -- The class colour (Player colours' own or Blizzard's, PlateColours.Class); a protected class goes
                 -- through the client's colour sink; nothing readable is grey.
@@ -204,6 +272,7 @@ PS._CreatePlateTargetedBy = function(context)
             badge.fill:SetShown(used)
             badge.text:SetShown(used and initials and member.initial ~= nil)
         end
+        ShowCount(data)
         data.targetedByRevision = TargetedBy.revision
     end
 
@@ -225,7 +294,10 @@ PS._CreatePlateTargetedBy = function(context)
             badge.regions = { badge.edge, badge.fill, badge.text }
             badges[index] = badge
         end
-        data.targetedBy, data.targetedByBadges = frame, badges
+        local countText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        countText:SetPoint("CENTER", frame, "CENTER", 0, 0)
+        countText:Hide()
+        data.targetedBy, data.targetedByBadges, data.targetedByCountText = frame, badges, countText
         ApplyStyle(data)
         AnchorPart(data, frame, "targetedBy")
         layer:SetFrameLevel(Styles.LayerLevel(data, "targetedBy"))
@@ -247,8 +319,49 @@ PS._CreatePlateTargetedBy = function(context)
         TargetedBy.ApplyVisibility(badge.regions, same)
     end
 
+    -- Whether a counted member targets the plate's unit: a readable boolean, else nil (not counted).
+    local function ReadHit(member, unit)
+        if type(UnitIsUnit) ~= "function" then return nil end
+        local ok, same = pcall(UnitIsUnit, member.targetToken, unit)
+        if ok and IsReadable(same) and type(same) == "boolean" then return same end
+        return nil
+    end
+
+    -- The plate's count from its members' answers (data.targetedHits): how many readably target it, nil while none of
+    -- them answered readably. A change marks what reads targeted.count.
+    local function SetCount(data)
+        local hits, count, known = data.targetedHits, 0, false
+        for index = 1, #countMembers do
+            local hit = hits[index]
+            if hit ~= nil then
+                known = true
+                if hit then count = count + 1 end
+            end
+        end
+        local value
+        if known then value = count end
+        if value == data.targetedCount then return end
+        data.targetedCount = value
+        MarkValues(data, "targetedCount")
+        ShowCount(data)
+    end
+
+    local function ClearCount(data)
+        if data.targetedCount == nil then return end
+        data.targetedCount = nil
+        MarkValues(data, "targetedCount")
+        ShowCount(data)
+    end
+
     local function RefreshPlate(data)
-        for index = 1, #members do RefreshBadge(data, index) end
+        if data.targetedByBadgesShown then
+            for index = 1, #members do RefreshBadge(data, index) end
+        end
+        if data.targetedCounting then
+            local hits = data.targetedHits
+            for index = 1, #countMembers do hits[index] = ReadHit(countMembers[index], data.unit) end
+            SetCount(data)
+        end
     end
 
     -- On your owned hostile plate, with the part on, while grouped.
@@ -258,9 +371,24 @@ PS._CreatePlateTargetedBy = function(context)
             and position ~= nil and not S.TurnedOff(position)
     end
 
+    -- Counted: such a plate showing the part as Count only, or whose rules or text read targeted.count.
+    local function Counts(data, shown)
+        if not (Pass.counting and Pass.grouped and Pass.wanted and data.own == true and not data.namesOnly
+            and data.friendly == false) then
+            return false
+        end
+        local reads = data.reads
+        if reads and (reads.values.targetedCount or reads.rules.targetedCount) then return true end
+        return shown and TargetedBy.Counting(PartStyle(data))
+    end
+
     -- A plate was laid out (or the roster changed): its row made, placed and re-read, or hidden.
     function Pass.Update(data)
         local shown = Wanted(data)
+        local counts = Counts(data, shown)
+        data.targetedByBadgesShown = shown and not TargetedBy.Counting(PartStyle(data))
+        data.targetedCounting = counts or nil
+        if counts and not data.targetedHits then data.targetedHits = {} end
         if shown then
             Ensure(data)
             if data.targetedByRevision ~= TargetedBy.revision then
@@ -268,9 +396,10 @@ PS._CreatePlateTargetedBy = function(context)
                 data.stackStatesFor = nil
                 MarkStacks(data)
             end
-            RefreshPlate(data)
         end
-        ListSet(data, shown)
+        if shown or counts then RefreshPlate(data) end
+        if not counts then ClearCount(data) end
+        ListSet(data, shown or counts)
         local frame = data.targetedBy
         if frame and (frame:IsShown() and true or false) ~= shown then
             frame:SetShown(shown)
@@ -285,6 +414,7 @@ PS._CreatePlateTargetedBy = function(context)
 
     function Pass.Release(data)
         if data.targetedBy then data.targetedBy:Hide() end
+        data.targetedCount, data.targetedCounting, data.targetedByBadgesShown = nil, nil, nil
         ListSet(data, false)
     end
 
@@ -328,7 +458,7 @@ PS._CreatePlateTargetedBy = function(context)
 
     function Pass.RebuildRoster()
         Pass.rosterDirty = false
-        Pass.grouped = Pass.wanted and RebuildMembers() > 0
+        Pass.grouped = Pass.wanted and RebuildMembers(Pass.counting) > 0
         Sync()
         EachActive(Pass.Update)
     end
@@ -339,13 +469,18 @@ PS._CreatePlateTargetedBy = function(context)
         Sync()
     end
 
-    -- The backstop: a missed UNIT_TARGET cannot leave a badge wrong for long.
+    -- The backstop: a missed UNIT_TARGET cannot leave a badge or a count wrong for long. Its budget is in questions
+    -- (BUDGET plates of MAX badges), so a raid's counts cost what a party's badges did, a few plates a pass.
     function Pass.Tick()
         if Pass.rosterDirty then return Pass.RebuildRoster() end
-        local count = #rows
-        for _ = 1, math.min(TargetedBy.BUDGET, count) do
+        local budget, visited = TargetedBy.BUDGET * MAX, 0
+        while budget > 0 and visited < #rows do
             Pass.cursor = Pass.cursor % #rows + 1
-            RefreshPlate(rows[Pass.cursor])
+            local data = rows[Pass.cursor]
+            RefreshPlate(data)
+            visited = visited + 1
+            budget = budget - math.max(1, (data.targetedByBadgesShown and #members or 0)
+                + (data.targetedCounting and #countMembers or 0))
         end
     end
     PS.Ticker.Register(TargetedBy.TICKER, TargetedBy.INTERVAL, function() RunBatch(false, Pass.Tick) end)
@@ -353,9 +488,16 @@ PS._CreatePlateTargetedBy = function(context)
 
     local function OnUnitTarget(unit)
         if not (IsReadable(unit) and type(unit) == "string") then return end
-        local index = memberIndex[unit]
-        if index then
-            for row = 1, #rows do RefreshBadge(rows[row], index) end
+        local index, counted = memberIndex[unit], countIndex[unit]
+        if index or counted then
+            for row = 1, #rows do
+                local data = rows[row]
+                if index and data.targetedByBadgesShown then RefreshBadge(data, index) end
+                if counted and data.targetedCounting then
+                    data.targetedHits[counted] = ReadHit(countMembers[counted], data.unit)
+                    SetCount(data)
+                end
+            end
             return
         end
         local data = active[unit]
@@ -373,10 +515,17 @@ PS._CreatePlateTargetedBy = function(context)
         end
     end)
 
-    -- On while an enemy layout shows the part. Off: no events, no ticker, every row hidden.
-    function Pass.SetWanted(wanted)
+    -- On while an enemy layout shows the part or reads targeted.count; counting: something counts the whole group
+    -- (Schema's TargetedCountNeeded). Off: no events, no ticker, every row hidden.
+    function Pass.SetWanted(wanted, counting)
         wanted = wanted and true or false
-        if wanted == Pass.wanted then return end
+        counting = wanted and counting == true
+        local countingChanged = counting ~= Pass.counting
+        Pass.counting = counting
+        if wanted == Pass.wanted then
+            if wanted and countingChanged then Pass.RebuildRoster() end
+            return
+        end
         Pass.wanted = wanted
         Listen(ROSTER_EVENTS, wanted)
         if wanted then
@@ -384,11 +533,16 @@ PS._CreatePlateTargetedBy = function(context)
         else
             Pass.grouped, Pass.rosterDirty = false, false
             Sync()
-            for index = #rows, 1, -1 do Pass.Release(rows[index]) end
+            for index = #rows, 1, -1 do
+                local data = rows[index]
+                if data.targetedCount ~= nil then ClearCount(data) end
+                Pass.Release(data)
+            end
         end
     end
 
     Pass.Members = function() return members end
+    Pass.CountMembers = function() return countMembers end
     TargetedBy._pass = Pass
     return Pass
 end
@@ -412,6 +566,8 @@ function TargetedBy.Report()
     local report = {
         wanted = pass ~= nil and pass.wanted or false, grouped = pass ~= nil and pass.grouped or false,
         raid = TargetedBy.raid == true, rows = pass and #pass.rows or 0, members = Array(), plates = Array(),
+        -- Count only or targeted.count: whether the whole group is counted, and how many members.
+        counting = pass ~= nil and pass.counting or false, counted = #countMembers,
     }
     for _, member in ipairs(members) do
         report.members[#report.members + 1] = {
@@ -429,7 +585,8 @@ function TargetedBy.Report()
         local badge = data and data.targetedByBadges and data.targetedByBadges[1]
         local sink = badge ~= nil and type(badge.edge.SetAlphaFromBoolean) == "function"
         local entry = { unit = unit, role = role, row = data ~= nil and data.targetedByIndex ~= nil, sink = sink,
-            members = Array() }
+            members = Array(), count = data ~= nil and data.targetedCounting == true
+                and (data.targetedCount ~= nil and "readable" or "unknown") or "none" }
         for _, member in ipairs(members) do
             entry.members[#entry.members + 1] = { unit = member.unit, comparison = ComparisonState(member, unit, sink) }
         end

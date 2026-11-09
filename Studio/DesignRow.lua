@@ -22,6 +22,17 @@ local FOLLOW_WORLD_HELP = L["Keep only what this design changes from World, so l
 local DOTS = { green = { 0.42, 0.80, 0.38 }, gold = GOLD, grey = { 0.58, 0.57, 0.55 } }
 local CHIP_TEXT, CHIP_HOVER = { 0.86, 0.84, 0.79 }, { 1, 0.86, 0.45 }
 local DOT_SIZE, DOT_GAP = 9, 6
+-- The Design field's width on every tab: narrow enough for Type and the chip beside it before the eye and View.
+local DESIGN_WIDTH = 136
+-- The Type field's tooltip line, per tab with types.
+local TYPE_TIPS = {
+    object = L["All objects, or one type of object (herbs, ore, chests, quest objects, books...), as the game's own icon "
+        .. "says. A type looks like All objects except what you change while it is open, in every place."],
+    enemy = L["All NPCs, or Totems: enemy shamans' totems. Totems look like All NPCs except what you change while they "
+        .. "are open (and their Display: icon, name or hidden), in every place."],
+    friendlyNPC = L["All NPCs, or Totems: your group's totems. Totems look like All NPCs except what you change while they "
+        .. "are open (and their Display: icon, name or hidden), in every place."],
+}
 
 local function Settings() return type(PS.GetSettings) == "function" and PS.GetSettings() or nil end
 
@@ -247,8 +258,8 @@ local function ChipLook(self, kind)
         -- Short: the row has Design and Type before it.
         local count = self:EditorDesignChangeCount()
         local word = count == 0 and L["No changes"] or count == 1 and L["1 change"] or string.format(L["%d changes"], count)
-        return word, DOTS.green, string.format(L["%s follow All objects (in every place: the open design) except what you "
-            .. "change here."], Designs.TYPE_LABELS[self:EditorObjectType()])
+        return word, DOTS.green, string.format(L["%s follow %s (in every place: the open design) except what you "
+            .. "change here."], Designs.TYPE_LABELS[self:EditorObjectType()], self:EditorAllTypesLabel())
     end
     return L["Blizzard draws these"], DOTS.grey, L["Blizzard draws friendly names in dungeons & raids: you can change their "
         .. "font, size and colours, not their layout."]
@@ -409,57 +420,73 @@ function Options:RefreshEditorPlayersGate(settings)
     end
 end
 
--- Studio's Objects › Type: All objects (the design itself) or one object type, whose changes sit on the open design
--- (Core/Designs.lua). The preview's sample becomes that type (Test values' Object), so its icon and Status text show.
+-- Studio's Type (Objects: All objects or one object type; Enemies and Friendly NPCs: All NPCs or Totems): the design
+-- itself or one type, whose changes sit on the open design (Core/Designs.lua), each tab its own. On the Objects the
+-- preview's sample becomes that type (Test values' Object), so its icon and Status text show; Totems preview a totem.
 function Options:SetEditorObjectType(objectType)
-    if objectType ~= nil and not Designs.TYPE_SET[objectType] then return false end
-    if not self:IsEditorObject() then return false end
-    self.editorObjectType = objectType
+    local plateType = self.editorProfile
+    if #Designs.TypesOf(plateType) == 0 then return false end
+    if objectType ~= nil and not Designs.IsType(plateType, objectType) then return false end
+    self.editorTypes = self.editorTypes or {}
+    self.editorTypes[plateType] = objectType
     local sample = objectType and PS.ActionIcon.TYPE_SAMPLES[objectType]
     if sample and self.templateSamples then self.templateSamples["object.kind"] = sample end
     if self.editorTestObjectKind then self.editorTestObjectKind:Refresh() end
-    return self:SetEditorProfile(self.editorProfile)
+    -- A totem's names-only view follows its Display, not the view chosen for the tab's other plates.
+    if Schema.TOTEMS.PLATES[plateType] then self.editorFriendlyView = nil end
+    return self:SetEditorProfile(plateType)
 end
 
--- The Type menu: All objects, then each type (one with changes says so), the open one checked; then the open type's
--- reset.
+-- The open tab's word for its design itself, with no type open: All objects, All NPCs.
+function Options:EditorAllTypesLabel()
+    return Designs.ALL_LABELS[self.editorProfile] or Designs.ALL_TYPES
+end
+
+local function ResetTypeText(self)
+    return string.format(L["Reset to %s..."], self:EditorAllTypesLabel())
+end
+local function ResetTypeHelp(self)
+    return string.format(L["Everything changed for this type goes: it looks like %s again."], self:EditorAllTypesLabel())
+end
+
+-- The Type menu: the design itself, then each type (one with changes says so), the open one checked; then the open
+-- type's reset.
 function Options:EditorObjectTypeItems()
-    local settings, open = Settings(), self:EditorObjectType()
-    local items = { { text = Designs.ALL_TYPES, checked = open == nil, func = function() self:SetEditorObjectType(nil) end } }
-    for _, objectType in ipairs(Designs.TYPES) do
+    local settings, open, plateType = Settings(), self:EditorObjectType(), self.editorProfile
+    local items = { { text = self:EditorAllTypesLabel(), checked = open == nil,
+        func = function() self:SetEditorObjectType(nil) end } }
+    for _, objectType in ipairs(Designs.TypesOf(plateType)) do
         local label = Designs.TYPE_LABELS[objectType]
-        if settings and Designs.Record(settings, Designs.TYPED, objectType) then label = string.format(L["%s · changed"], label) end
+        if settings and Designs.Record(settings, plateType, objectType) then label = string.format(L["%s · changed"], label) end
         items[#items + 1] = { text = label, checked = open == objectType,
             func = function() self:SetEditorObjectType(objectType) end }
     end
     items[#items + 1] = { separator = true }
-    local changed = open and settings and Designs.Record(settings, Designs.TYPED, open)
-    items[#items + 1] = { text = L["Reset to All objects..."], disabled = not changed,
+    local changed = open and settings and Designs.Record(settings, plateType, open)
+    items[#items + 1] = { text = ResetTypeText(self), disabled = not changed,
         func = function() self:ConfirmResetEditorObjectType() end,
-        tooltip = { title = L["Reset to All objects..."], text = open and L["Everything changed for this type goes: it looks "
-            .. "like All objects again."] or L["Choose a type first."] } }
+        tooltip = { title = ResetTypeText(self), text = open and ResetTypeHelp(self) or L["Choose a type first."] } }
     return items
 end
 
 function Options:ConfirmResetEditorObjectType()
-    local objectType = self:EditorObjectType()
+    local objectType, plateType = self:EditorObjectType(), self.editorProfile
     if not objectType then return false end
-    self:ConfirmStudioAction(string.format(L["Reset %s to All objects? Everything changed for this type goes. Revert undoes "
-        .. "it until you save."], Designs.TYPE_LABELS[objectType]), L["Reset"], function()
-        if PS.ResetDesign(Designs.TYPED, objectType) then self:Refresh(true) end
+    self:ConfirmStudioAction(string.format(L["Reset %s to %s? Everything changed for this type goes. Revert undoes "
+        .. "it until you save."], Designs.TYPE_LABELS[objectType], self:EditorAllTypesLabel()), L["Reset"], function()
+        if PS.ResetDesign(plateType, objectType) then self:Refresh(true) end
     end)
     return true
 end
 
 -- The chip's menu: a full copy can follow World where they match (the Design menu's same action); the
--- Enemy players layer can go back to the Enemies or stop; an object type can go back to All objects.
+-- Enemy players layer can go back to the Enemies or stop; a type can go back to All objects (All NPCs).
 function Options:EditorDesignChipItems()
     local kind = self.editorDesignChip and self.editorDesignChip.kind
     if kind == "type" then
-        return { { text = L["Reset to All objects..."], func = function() self:ConfirmResetEditorObjectType() end,
+        return { { text = ResetTypeText(self), func = function() self:ConfirmResetEditorObjectType() end,
             disabled = self:EditorDesignChangeCount() == 0,
-            tooltip = { title = L["Reset to All objects..."], text = L["Everything changed for this type goes: it looks "
-                .. "like All objects again."] } } }
+            tooltip = { title = ResetTypeText(self), text = ResetTypeHelp(self) } } }
     end
     if kind == "players" then
         return {
@@ -491,7 +518,8 @@ local function PaintChip(self, settings)
     chip.tip[1] = sentence
     chip.tip[2] = kind == "full" and { L["Click: follow World where they match."], 0.86, 0.86, 0.86 }
         or kind == "players" and { L["Click: reset to Enemies, or stop customising."], 0.86, 0.86, 0.86 }
-        or kind == "type" and { L["Click: reset to All objects."], 0.86, 0.86, 0.86 } or nil
+        or kind == "type" and { string.format(L["Click: reset to %s."], self:EditorAllTypesLabel()), 0.86, 0.86, 0.86 }
+        or nil
     -- The open design's name heads the tooltip.
     chip.tipTitle[1] = kind == "players" and self:EditorPlateLabel("enemyPlayer")
         or kind == "type" and string.format(L["%s › %s"], self:EditorPlateLabel(self.editorProfile),
@@ -510,19 +538,23 @@ function Options:RefreshEditorDesignRow(settings)
     row.dropdown:SetShown(not players)
     -- The field names the place only; its menu and the chip say Blizzard draws it.
     row.dropdown:SetText(Designs.LABELS[self.editorDesign] or L["World"])
-    -- Objects: Type beside it (All objects, or one type's changes over the open design).
-    local objects = self:IsEditorObject()
-    -- Narrower beside Type, so the chip still has room before the eye and View.
-    row.dropdown:SetWidth(objects and 136 or 214)
-    row.typeLabel:SetShown(objects)
-    row.typeDropdown:SetShown(objects)
+    -- A tab with types (Objects; Enemies and Friendly NPCs: Totems): Type beside it (the design itself, or one type's
+    -- changes over the open design). The field is the same width on every tab (DESIGN_WIDTH), leaving Type's room.
+    local typed = not players and #Designs.TypesOf(self.editorProfile) > 0
+    row.typeLabel:SetShown(typed)
+    row.typeDropdown:SetShown(typed)
     local objectType = self:EditorObjectType()
-    row.typeDropdown:SetText(objectType and Designs.TYPE_LABELS[objectType] or Designs.ALL_TYPES)
+    row.typeDropdown:SetText(objectType and Designs.TYPE_LABELS[objectType] or self:EditorAllTypesLabel())
+    row.typeTip[1] = TYPE_TIPS[self.editorProfile] or TYPE_TIPS.object
     PaintChip(self, settings)
     row.chip:ClearAllPoints()
     if players then row.chip:SetPoint("LEFT", row, "LEFT", 0, 0)
-    elseif objects then row.chip:SetPoint("LEFT", row.typeDropdown, "RIGHT", 10, 0)
+    elseif typed then row.chip:SetPoint("LEFT", row.typeDropdown, "RIGHT", 10, 0)
     else row.chip:SetPoint("LEFT", row.dropdown, "RIGHT", 14, 0) end
+    -- Beside Type there is no room for the word before the eye: the dot alone (its tooltip says it whole; Type's menu
+    -- says which types are changed).
+    row.chip.text:SetShown(not typed)
+    if typed then row.chip:SetWidth(DOT_SIZE + 6) end
     if self.RefreshPlateVisibilityEye then self:RefreshPlateVisibilityEye(settings) end
     self:RefreshEditorPlayersGate(settings)
 end
@@ -572,7 +604,7 @@ function Options:BuildEditorDesignRow(canvas)
     label:SetText(L["Design:"])
     label:SetPoint("LEFT", row, "LEFT", 0, 0)
     row.label = label
-    local dropdown = PS.UI.Controls.MenuField(row, { name = "PlateSmithEditorDesignDropdown", width = 214, height = 30,
+    local dropdown = PS.UI.Controls.MenuField(row, { name = "PlateSmithEditorDesignDropdown", width = DESIGN_WIDTH, height = 30,
         minMenuWidth = 240, items = function() return Options:EditorDesignMenuItems() end })
     chrome.SkinDropdown(dropdown)
     dropdown:SetPoint("LEFT", label, "RIGHT", 8, 0)
@@ -592,9 +624,9 @@ function Options:BuildEditorDesignRow(canvas)
         minMenuWidth = 200, items = function() return Options:EditorObjectTypeItems() end })
     chrome.SkinDropdown(typeDropdown)
     typeDropdown:SetPoint("LEFT", typeLabel, "RIGHT", 8, 0)
-    PS.UI.Controls.AttachTooltip(typeDropdown, L["Type"], { L["All objects, or one type of object (herbs, ore, chests, "
-        .. "quest objects, books...), as the game's own icon says. A type looks like All objects except what you change "
-        .. "while it is open, in every place."] })
+    -- Its tooltip's line is the open tab's (TYPE_TIPS), set as the row refreshes.
+    row.typeTip = { TYPE_TIPS.object }
+    PS.UI.Controls.AttachTooltip(typeDropdown, L["Type"], row.typeTip)
     typeDropdown:Hide()
     row.typeDropdown = typeDropdown
     self.editorObjectTypeDropdown = typeDropdown

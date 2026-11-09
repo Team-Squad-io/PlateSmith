@@ -23,12 +23,13 @@ local L = PS.L
 -- exists (Studio's Enemy players tab can edit it) from PS.AddDesign("enemyPlayer") until
 -- PS.RemoveDesign("enemyPlayer"), even while empty. Settings and the editing helpers address it as the
 -- Enemies' "players" design.
--- Object types (plateProfiles.object.types.<type>, the types in DESIGN.TYPES): the same sparse shape, one layer
--- per type over whichever design the Objects draw with where the player is (World or a context design), so a
--- herb follows that place's Objects design except what Herbs change. A plate picks its type from the game's
--- cursor icon (ActionIcon.TYPE_OF); none known: the place's design alone. A type has a record only while it
--- changes something (an edit makes it, Reset or an edit back to the same drops it). Settings and the editing
--- helpers address one as the Objects' "<type>" design; For's fourth argument puts it over a place.
+-- Types (plateProfiles.<plate type>.types.<type>, DESIGN.TYPES_OF): the same sparse shape, one layer per type over
+-- whichever design that plate type draws with where the player is (World or a context design), so a herb follows that
+-- place's Objects design except what Herbs change. The Objects' types (DESIGN.TYPES) come from the game's cursor icon
+-- (ActionIcon.TYPE_OF); the Enemies' and Friendly NPCs' Totems (each tab its own layer) from the creature type
+-- (Nameplates/Totems.lua); none known: the place's design alone. A type has a record only while it changes something
+-- (an edit makes it, Reset or an edit back to the same drops it). Settings and the editing helpers address one as the
+-- plate type's "<type>" design; For's fourth argument puts it over a place.
 local DESIGN = S.DESIGN
 local CLEAR = DESIGN.CLEAR
 local PLACEMENT = DESIGN.PLACEMENT
@@ -46,13 +47,20 @@ Designs.AREAS = { "options", "layouts", "styles", "rules", "valueSlots", "auraLa
 -- The Enemy players layer's design key on the Enemies (not a context: no place selects it).
 local PLAYERS = "players"
 Designs.PLAYERS = PLAYERS
--- Object types: their keys in Studio's order, as a set, and their names.
-local TYPE_SET = DESIGN.TYPE_SET
+-- Types: the Objects' keys in Studio's order and as a set; every plate type's (TypesOf, IsType); every type's name, and
+-- each typed plate type's word for its design itself (no type open).
+local ANY_TYPE, IsType = DESIGN.ANY_TYPE, DESIGN.IsType
 Designs.TYPES = DESIGN.TYPES
-Designs.TYPE_SET = TYPE_SET
-Designs.TYPE_LABELS = { herb = L["Herbs"], ore = L["Ore"], loot = L["Chests & loot"], quest = L["Quest objects"],
-    book = L["Books & lore"], service = L["Talk & services"], other = L["Other"] }
+Designs.TYPE_SET = DESIGN.TYPE_SET
+Designs.ANY_TYPE = ANY_TYPE
+Designs.IsType = IsType
+local NO_TYPES = {}
+function Designs.TypesOf(plateType) return DESIGN.TYPES_OF[plateType] or NO_TYPES end
+Designs.TYPE_LABELS = { herb = L["Herbs"], ore = L["Ore"], loot = L["Chests & loot"], corpse = L["Corpses"],
+    quest = L["Quest objects"], book = L["Books & lore"], service = L["Talk & services"], other = L["Other"],
+    totem = L["Totems"] }
 Designs.ALL_TYPES = L["All objects"]
+Designs.ALL_LABELS = { object = Designs.ALL_TYPES, enemy = L["All NPCs"], friendlyNPC = L["All NPCs"] }
 -- The plate type with object types.
 local TYPED = "object"
 Designs.TYPED = TYPED
@@ -89,8 +97,8 @@ local function RecordOf(world, plateType, context)
     if context == PLAYERS then
         return plateType == "enemy" and type(world.players) == "table" and world.players or nil
     end
-    if TYPE_SET[context] then
-        local types = plateType == TYPED and world.types
+    if ANY_TYPE[context] then
+        local types = IsType(plateType, context) and world.types
         return type(types) == "table" and type(types[context]) == "table" and types[context] or nil
     end
     local stored, contexts = DESIGN.STORED[plateType], world.contexts
@@ -257,14 +265,14 @@ local cache = {}
 
 -- The profile plateType draws with in context (nil or "world": World). No design for that context
 -- (or one this type may not store): World. A full design: its own table. A sparse design: the
--- effective profile, merged once per revision. A cache hit allocates nothing. objectType (the Objects
--- only, Designs.TYPES): that type's layer over the place's design; a context that is a type is that
+-- effective profile, merged once per revision. A cache hit allocates nothing. objectType (one of the plate
+-- type's types, TypesOf): that type's layer over the place's design; a context that is a type is that
 -- type's layer over World.
 local PlayersFor, TypeFor
 function Designs.For(db, plateType, context, objectType)
     if plateType == "enemy" and context == PLAYERS then plateType, context = "enemyPlayer", nil end
     if plateType == "enemyPlayer" then return PlayersFor(db, context) end
-    if TYPE_SET[context] then context, objectType = nil, context end
+    if ANY_TYPE[context] then context, objectType = nil, context end
     if objectType ~= nil then return TypeFor(db, plateType, context, objectType) end
     local world = WorldOf(db, plateType)
     if not world then return nil end
@@ -328,26 +336,31 @@ PlayersFor = function(db, context)
     return entry.profile
 end
 
--- An object type's record when it changes anything, else nil.
-local function TypeOf(world, objectType)
+-- plateType's type record when it changes anything (world: plateType's World), else nil.
+local function TypeOf(world, objectType, plateType)
     local types = world and world.types
-    local record = type(types) == "table" and TYPE_SET[objectType] and types[objectType]
+    local record = type(types) == "table" and IsType(plateType, objectType) and types[objectType]
     return type(record) == "table" and next(record) ~= nil and record or nil
 end
 
--- An object type's layer over the Objects' design in context, merged once per revision, place design and
--- layer; no layer (or another plate type): the place's design itself. Its cache goes with each revision
+-- A type's layer over its plate type's design in context, merged once per revision, place design and layer; no
+-- layer (or a type the plate type does not have): the place's design itself. Its cache goes with each revision
 -- (Invalidate), so a profile that has types no more (switched away, deleted) is not kept by it.
 local typeCache = {}
 TypeFor = function(db, plateType, context, objectType)
     local base = Designs.For(db, plateType, context)
-    local record = plateType == TYPED and TypeOf(WorldOf(db, TYPED), objectType) or nil
+    local record = TypeOf(WorldOf(db, plateType), objectType, plateType)
     if not base or not record then return base end
     context = context or "world"
-    local byType = typeCache[objectType]
+    local byPlate = typeCache[plateType]
+    if not byPlate then
+        byPlate = {}
+        typeCache[plateType] = byPlate
+    end
+    local byType = byPlate[objectType]
     if not byType then
         byType = {}
-        typeCache[objectType] = byType
+        byPlate[objectType] = byType
     end
     local entry = byType[context]
     if entry and entry.rev == Designs.revision and entry.world == base and entry.ctx == record then
@@ -359,24 +372,25 @@ TypeFor = function(db, plateType, context, objectType)
         byType[context] = entry
     end
     entry.rev, entry.world, entry.ctx = Designs.revision, base, record
-    entry.profile = Resolve(base, record, TYPED)
+    entry.profile = Resolve(base, record, plateType)
     return entry.profile
 end
 
--- Stores record as the Objects' layer for objectType (world: the Objects' World); nil or an empty one removes it,
--- and the types table goes with the last.
-function Designs.SetType(world, objectType, record)
-    if not TYPE_SET[objectType] then return end
+-- Stores record as plateType's (default: the Objects') layer for objectType (world: that plate type's World); nil or
+-- an empty one removes it, and the types table goes with the last.
+function Designs.SetType(world, objectType, record, plateType)
+    if not IsType(plateType or TYPED, objectType) then return end
     local types = type(world.types) == "table" and world.types or {}
     types[objectType] = type(record) == "table" and next(record) ~= nil and record or nil
     world.types = next(types) ~= nil and types or nil
 end
 
--- Whether any object type has a layer (the plates then read every object's kind).
-function Designs.HasTypes(db)
-    local world = WorldOf(db, TYPED)
-    for _, objectType in ipairs(Designs.TYPES) do
-        if TypeOf(world, objectType) then return true end
+-- Whether any of plateType's (default: the Objects') types has a layer.
+function Designs.HasTypes(db, plateType)
+    plateType = plateType or TYPED
+    local world = WorldOf(db, plateType)
+    for _, objectType in ipairs(Designs.TypesOf(plateType)) do
+        if TypeOf(world, objectType, plateType) then return true end
     end
     return false
 end
@@ -392,12 +406,12 @@ function Designs.Peek(db, plateType, context, objectType)
         if not base or not players then return base end
         return Resolve(base, players, "enemy")
     end
-    if TYPE_SET[context] then context, objectType = nil, context end
+    if ANY_TYPE[context] then context, objectType = nil, context end
     if objectType ~= nil then
         local base = Designs.Peek(db, plateType, context)
-        local record = plateType == TYPED and TypeOf(WorldOf(db, TYPED), objectType) or nil
+        local record = TypeOf(WorldOf(db, plateType), objectType, plateType)
         if not base or not record then return base end
-        return Resolve(base, record, TYPED)
+        return Resolve(base, record, plateType)
     end
     local world = WorldOf(db, plateType)
     if not world then return nil end
@@ -472,8 +486,8 @@ end
 -- Enemy players (plates.enemyPlayer, or every plate type) are visited only while their layer holds
 -- anything: on World and on each Enemies design, as "enemyPlayer" with that design's context and the
 -- layer as the record. Without one they draw with the Enemies' own tables, visited already.
--- Each object type with a layer is visited once, over World, as "object" with the type as the context and its
--- layer as the record (one record for every place, so a caller storing into it does so once).
+-- Each type with a layer is visited once, over World, as its plate type with the type as the context and its layer
+-- as the record (one record for every place, so a caller storing into it does so once).
 function Designs.EachDesign(db, plates, visit)
     local profiles = type(db) == "table" and db.plateProfiles
     if type(profiles) ~= "table" then return end
@@ -490,8 +504,8 @@ function Designs.EachDesign(db, plates, visit)
                     visit(legacy, plateType, context)
                 end
             end
-            for _, objectType in ipairs(plateType == TYPED and Designs.TYPES or {}) do
-                local record = TypeOf(world, objectType)
+            for _, objectType in ipairs(Designs.TypesOf(plateType)) do
+                local record = TypeOf(world, objectType, plateType)
                 if record then visit(Designs.For(db, plateType, nil, objectType), plateType, objectType, record) end
             end
         end
@@ -1118,19 +1132,24 @@ function Designs.Report(db)
         end
         report.designs[plateType] = table.concat(words, ", ")
     end
-    -- Object types with a layer: what each changes.
-    local types = {}
-    for _, objectType in ipairs(Designs.TYPES) do
-        if TypeOf(WorldOf(db, TYPED), objectType) then
-            types[#types + 1] = objectType
-            local areas = Designs.ChangedAreas(db, TYPED, objectType)
-            local entries = 0
-            for _, marks in pairs(areas.entries) do for _ in pairs(marks) do entries = entries + 1 end end
-            report.overrides["object." .. objectType] = { options = Count(areas.options), entries = entries,
-                styles = Count(areas.styles), rules = Count(areas.rules), slots = Count(areas.slots), auras = Count(areas.auras) }
+    -- Types with a layer (designs.objectTypes: the Objects'; enemyTypes, friendlyNPCTypes: their Totems): what each
+    -- changes, as overrides["<plate type>.<type>"].
+    for _, plateType in ipairs(S.profileOrder) do
+        local types = {}
+        for _, objectType in ipairs(Designs.TypesOf(plateType)) do
+            if TypeOf(WorldOf(db, plateType), objectType, plateType) then
+                types[#types + 1] = objectType
+                local areas = Designs.ChangedAreas(db, plateType, objectType)
+                local entries = 0
+                for _, marks in pairs(areas.entries) do for _ in pairs(marks) do entries = entries + 1 end end
+                report.overrides[plateType .. "." .. objectType] = { options = Count(areas.options), entries = entries,
+                    styles = Count(areas.styles), rules = Count(areas.rules), slots = Count(areas.slots), auras = Count(areas.auras) }
+            end
+        end
+        if DESIGN.TYPES_OF[plateType] then
+            report.designs[plateType .. "Types"] = #types > 0 and table.concat(types, ", ") or "none"
         end
     end
-    report.designs.objectTypes = #types > 0 and table.concat(types, ", ") or "none"
     -- Enemy players: the Enemies' designs, with a layer of their own or without.
     local players = PlayersOf(WorldOf(db, "enemy"))
     report.designs.enemyPlayer = players and "enemies, own changes" or "enemies"

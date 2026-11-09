@@ -196,6 +196,9 @@ PS._CreateTemplateReaders = function(context)
         end,
         ["quest.drop"] = function(data) return data.questItemDrop == true end,
         ["pvp.flagged"] = function(_, unit) return Call(UnitIsPVP, unit) end,
+        -- The unit is in a sanctuary; you are flagged for PvP yourself (unknown while the game withholds either).
+        ["pvp.sanctuary"] = function(_, unit) return Call(UnitIsPVPSanctuary, unit) end,
+        ["pvp.you"] = function() return Call(UnitIsPVP, "player") end,
         -- Free-for-all PvP, and the unit's faction as a word (PvPMark's readers, which the PvP mark reads too).
         ["pvp.ffa"] = function(_, unit) return PS.PvPMark.FreeForAll(unit) end,
         ["pvp.faction"] = function(_, unit)
@@ -222,8 +225,20 @@ PS._CreateTemplateReaders = function(context)
         ["threat.loose"] = ThreatFact("loose"),
         -- Whether you have a target at all; unknown while the client withholds it.
         ["you.hastarget"] = function() return Secret.ReadBoolean(UnitExists, "target") end,
-        -- The range service's answer (Nameplates/Range.lua): nil while unknown or not checked.
+        -- The range service's answer (Nameplates/Range.lua): nil while unknown or not checked. range.known is never
+        -- unknown, so a hide rule on it fails closed for a marker (range.known = false or unit.inrange).
         ["unit.inrange"] = function(data) return data.inRange end,
+        ["range.known"] = function(data) return data.inRange ~= nil end,
+        ["range.band"] = function(data) return data.rangeBand end,
+        ["range"] = function(data) return data.rangeText end,
+        -- The game's readable yes for the target's or focus's plate (Nameplates/Behind.lua); false otherwise.
+        ["unit.behind"] = function(data) return data.behind == true end,
+        -- Group members targeting the unit, from readable answers (Nameplates/TargetedBy.lua); nil while none reads.
+        ["targeted.count"] = function(data) return data.targetedCount end,
+        -- The creature type's locale-safe word (Secret.CreatureType), nil while unknown; and the client's own name, as
+        -- the game gives it (a protected one is only shown).
+        ["unit.creature"] = function(_, unit) return (Secret.CreatureType(unit)) end,
+        ["creature"] = function(_, unit) return Call(UnitCreatureType, unit) end,
         -- The quest objective's progress (Nameplates/QuestProgress.lua), from readable quest data only.
         ["quest.progress"] = function(data) return data.questProgressText end,
         ["quest.percent"] = function(data) return data.questProgressPercent end,
@@ -293,11 +308,18 @@ PS._CreateTemplateReaders = function(context)
         ["target"] = "target", ["unit.target"] = "targeted", ["unit.friendly"] = false,
         -- Not in READ_KINDS: a volatile set does not start the range checks or follow quest progress.
         ["you.hastarget"] = "targeted", ["unit.inrange"] = "range", ["quest.progress"] = "quest", ["quest.percent"] = "quest",
+        ["range.known"] = "range", ["range.band"] = "range", ["range"] = "range", ["unit.behind"] = "behind",
+        -- Your own flag follows UNIT_FACTION and PLAYER_FLAGS_CHANGED for the player (Lifecycle's UnitKinds).
+        ["pvp.you"] = "pvpYou",
         ["combo"] = "combo",
+        -- The Targeted by pass marks "targetedCount" when its count changes.
+        ["targeted.count"] = "targetedCount",
         -- The Action icon pass marks "object" when what it read changes; IDs are fixed for the unit (a new unit is
         -- laid out again); quest marks follow the quest log ("quest", Lifecycle's UpdateQuest).
         ["object.kind"] = "object", ["object.unable"] = "object", ["interact.inrange"] = "object",
         ["object.id"] = false, ["unit.id"] = false, ["object.quest"] = "quest",
+        -- A unit's creature type is fixed for it.
+        ["unit.creature"] = false, ["creature"] = false,
         -- A kept line, a skill change or Cultivation's marks "object" (ObjectStatus' Follow and FollowHerbs).
         ["object.skill"] = "object", ["object.cangather"] = "object", ["object.cancultivate"] = "object",
     }
@@ -311,8 +333,10 @@ PS._CreateTemplateReaders = function(context)
     local function AddToken(set, token)
         local kind = TOKEN_KINDS[token]
         if kind == nil then set.volatile = true elseif kind then set[kind] = true end
-        -- Not a kind: marks that you.hastarget itself is read (reads.hasTarget).
+        -- Not a kind: marks that you.hastarget itself is read (reads.hasTarget), and that the range's band is (the range
+        -- pass then asks every spell: Range.Measure).
         if token == "you.hastarget" then set.hastarget = true end
+        if token == "range.band" or token == "range" then set.rangeBand = true end
     end
     local function AddCondition(set, node)
         if type(node) ~= "table" then return end
@@ -361,6 +385,9 @@ PS._CreateTemplateReaders = function(context)
                     AddToken(set, moduleToken)
                 elseif slot.kind == "bar" then
                     if BAR_KINDS[slot.source] then set[BAR_KINDS[slot.source]] = true end
+                elseif slot.kind == "icon" and slot.tint == "threat" then
+                    -- An image tinted by threat (Values.lua's PaintTint).
+                    set.threat = true
                 elseif not slot.kind and slot.source == "template" and slot.template then
                     -- A template that does not compile shows nothing, whatever changes.
                     AddNodes(set, (PS.Template.Compile(slot.template)))

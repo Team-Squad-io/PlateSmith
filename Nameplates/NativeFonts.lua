@@ -128,7 +128,7 @@ end
 
 -- force: Blizzard gives each name its own text height on every plate add and options pass, over
 -- the object's size; only a real change of the object makes the client lay its names out again, so
--- a forced write sets a different size first, then the target (what Plater and EUI do).
+-- a forced write sets a different size first, then the target.
 local function Write(name, object, path, size, flags, force)
     local last = written[name]
     if not force and last and last[1] == path and last[2] == size and last[3] == flags then return end
@@ -159,7 +159,7 @@ local ScheduleReapply
 local hooked = {}
 -- Blizzard sets these objects again when its plate options change (the nameplate size, a scale
 -- CVar, the screen size), and sometimes a moment later; each re-application runs next frame and
--- 0.1 s later (what Threat Plates does). The hooks run after Blizzard's function and only schedule.
+-- 0.1 s later. The hooks run after Blizzard's function and only schedule.
 local function HookDriver()
     local driver = _G.NamePlateDriverFrame
     if type(hooksecurefunc) ~= "function" or type(driver) ~= "table" then return end

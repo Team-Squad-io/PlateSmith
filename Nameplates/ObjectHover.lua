@@ -213,9 +213,11 @@ PS._CreatePlateObjectHover = function(context)
         frame.plateSmithData = nil
     end
 
+    -- Never on a corpse plate: clicking the corpse's marker loots it, and nothing PlateSmith makes sits in that path.
     local function Wanted(data)
         local layout = data.layout
-        return Pass.wanted and data.object == true and data.own == true and data.unit ~= nil and layout ~= nil
+        return Pass.wanted and data.object == true and data.corpse ~= true and data.own == true and data.unit ~= nil
+            and layout ~= nil
             and layout.name ~= nil and layout.name.visible ~= false
     end
 

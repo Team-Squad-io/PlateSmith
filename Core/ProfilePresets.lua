@@ -27,6 +27,15 @@ ProfilePresets.RULES = {
     { id = "execute", name = L["Execute range"], kind = "colour", rules = {
         { when = "health.percent < 20", set = "colour", colour = { r = 1, g = 0.4, b = 0 } },
     } },
+    -- 1.4.0's words (plates: the tabs that have the word and the units it is for). No built-in option does either: the
+    -- Range part shows in or out of range and Fading fades what is out, neither marks melee reach; nothing fades critters.
+    { id = "meleeRange", name = L["Melee range colour"], kind = "colour", plates = { enemy = true, enemyPlayer = true },
+        rules = {
+        { when = "range.band = melee", set = "colour", colour = { r = 0.25, g = 0.8, b = 0.95 } },
+    } },
+    { id = "fadeCritters", name = L["Fade critters"], kind = "alpha", plates = { enemy = true, friendlyNPC = true }, rules = {
+        { when = "unit.creature = critter", set = "alpha", alpha = 0.4 },
+    } },
     -- Retired for the health bar's Grey when tagged by others (greyWhenTagged), on for new profiles.
     { id = "tagged", name = L["Grey when tagged"], kind = "colour", retired = true, builtIn = "tagged", rules = {
         { when = "unit.tagged", set = "colour", colour = { r = 0.5, g = 0.5, b = 0.5 } },
@@ -87,6 +96,65 @@ ProfilePresets.STYLES = {
     { id = "framedBar", name = L["Framed bar"], kind = "bar", style = { border = 2, borderColour = { r = 0, g = 0, b = 0, a = 1 },
         background = { r = 0.05, g = 0.05, b = 0.05, a = 0.9 } } },
 }
+
+-- Decoration sets (Studio's + Add › Decoration set; Settings' AddDecorations): ready-made groups of custom parts added
+-- in one step and applied by value, like the style presets, so a saved design never depends on a set: its parts are
+-- ordinary parts the player edits from then on. A part: name, slot (its custom part's fields: kind, source, image,
+-- size, tint...), parent (a part, or an earlier part of the set by its index), attach and fill (where it is pinned:
+-- Placement), x and y, rules and style. Modules add sets with PS.RegisterDecorationSet (docs/MODULES.md).
+local ON_TARGET_ONLY = { { when = "unit.target = false", set = "hide" } }
+ProfilePresets.DECORATIONS = {
+    { id = "targetArrows", name = L["Target arrows"],
+        help = L["An arrow either side of the health bar pointing in, shown only on your target (a rule hides them on the rest)."],
+        parts = {
+            -- Clear of a raid mark or elite icon beside the bar (each about 20 px).
+            { name = L["Arrow (left)"], parent = "health", attach = "left", x = -24, y = 0, rules = ON_TARGET_ONLY,
+                slot = { kind = "icon", source = "static", image = "kit:arrow", width = 16, height = 16 } },
+            { name = L["Arrow (right)"], parent = "health", attach = "right", x = 24, y = 0, rules = ON_TARGET_ONLY,
+                slot = { kind = "icon", source = "static", image = "kit:arrow", flipX = true, width = 16, height = 16 } },
+        } },
+    { id = "fillMarker", name = L["Fill marker"],
+        help = L["A spark riding the end of the health bar's fill: the client moves it with the health."],
+        parts = {
+            { name = L["Fill marker"], parent = "health", attach = "right", fill = "hide", x = 0, y = 0,
+                slot = { kind = "icon", source = "static", image = "kit:spark", width = 10, height = 20 } },
+        } },
+}
+
+-- Type › Totems' totem icon (Studio's + Add › Shape › Totem icon, and Display › Icon on a layer without one): an image
+-- of the totem's own icon (Schema's TOTEMS.PICTURE) just above the name, so with the name turned off it sits in its
+-- place. Added as a set is, so not listed with them.
+ProfilePresets.TOTEM_ICON = { id = "totemIcon", name = L["Totem icon"],
+    parts = { { name = L["Totem icon"], parent = "name", attach = "top", x = 0, y = 2,
+        slot = { kind = "icon", source = "static", image = S.TOTEMS.PICTURE, width = S.TOTEMS.ICON_SIZE,
+            height = S.TOTEMS.ICON_SIZE } } } }
+
+-- A decoration set by id (read only), or nil.
+function ProfilePresets.Decoration(id)
+    for _, set in ipairs(ProfilePresets.DECORATIONS) do
+        if set.id == id then return set end
+    end
+    return nil
+end
+
+-- A module's own decoration set: id in the module ID grammar ("<module>.<name>"), set { name, help, parts } as the
+-- built-in ones (each part's fields are checked when it is added, as a Blueprint's are). Listed after PlateSmith's.
+function PS.RegisterDecorationSet(...)
+    local id, set = PS._Args(...)
+    if not PS.IsModuleId(id, 2) then return false, PS._IdReason("decoration set", 2) end
+    if ProfilePresets.Decoration(id) then return false, "decoration set is already registered" end
+    if type(set) ~= "table" or type(set.name) ~= "string" or type(set.parts) ~= "table" or #set.parts == 0
+        or #set.parts > S.VALUE_SLOT_COUNT then
+        return false, "decoration set requires a name and 1 to 24 parts"
+    end
+    for _, part in ipairs(set.parts) do
+        if type(part) ~= "table" or type(part.slot) ~= "table" then return false, "each part requires a slot table" end
+    end
+    local copy = Table.DeepCopy(set)
+    copy.id = id
+    ProfilePresets.DECORATIONS[#ProfilePresets.DECORATIONS + 1] = copy
+    return true
+end
 
 -- Colours the presets' own styles and rules use.
 local BLACK, DARK = { r = 0, g = 0, b = 0, a = 1 }, { r = 0.06, g = 0.06, b = 0.07, a = 0.92 }

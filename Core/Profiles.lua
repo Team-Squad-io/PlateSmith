@@ -263,6 +263,41 @@ function Profiles.Changes(limit)
     return Table.Differences(working, store.profiles[Profiles.Active()], limit)
 end
 
+-- For the activity log on Save: how many values differ from the saved profile (counting stops past countLimit) and the
+-- dotted paths of the first limit of them, in pairs order. One walk with a stack of keys that builds a path only where
+-- a value differs, so it allocates next to nothing (Changes builds and sorts every path it passes).
+local function CountDifferences(left, right, keys, depth, found)
+    if type(left) ~= "table" or type(right) ~= "table" then
+        if left == right then return end
+        found.count = found.count + 1
+        if #found.paths < found.limit then
+            local parts = {}
+            for index = 1, depth - 1 do parts[index] = tostring(keys[index]) end
+            found.paths[#found.paths + 1] = table.concat(parts, ".")
+        end
+        return
+    end
+    for key, child in pairs(left) do
+        keys[depth] = key
+        CountDifferences(child, right[key], keys, depth + 1, found)
+        if found.count > found.countLimit then return end
+    end
+    for key, child in pairs(right) do
+        if left[key] == nil then
+            keys[depth] = key
+            CountDifferences(nil, child, keys, depth + 1, found)
+            if found.count > found.countLimit then return end
+        end
+    end
+end
+
+-- Returns the paths (at most limit) and the count (at most countLimit + 1).
+function Profiles.CountChanges(limit, countLimit)
+    local found = { count = 0, paths = {}, limit = limit or 3, countLimit = countLimit or 20 }
+    if working then CountDifferences(working, store.profiles[Profiles.Active()], {}, 1, found) end
+    return found.paths, found.count
+end
+
 -- Replaces the working copy in place (the runtime holds a reference to it) and reapplies it.
 local function Load(settings)
     loads = loads + 1
@@ -285,10 +320,26 @@ local function Save()
     Profiles.Notify()
     return true
 end
-function Profiles.Save() return Measured("save", Save) end
+-- Every action below is noted in the activity log (Diagnostics/Activity.lua) once it succeeded; Save with the settings
+-- it saved (CountChanges taken first, outside the action's measurement).
+local function Note(action, a, b)
+    if PS.ActivityLog then PS.ActivityLog.Profile(action, a, b) end
+end
+
+function Profiles.Save()
+    local Activity = PS.ActivityLog
+    local paths, count
+    if Activity then paths, count = Profiles.CountChanges(Activity.SAVED_PATHS, Activity.PATH_LIMIT) end
+    local ok = Measured("save", Save)
+    if ok and Activity then Activity.Saved(Profiles.Active(), paths, count) end
+    return ok
+end
 
 local function Revert() Load(store.profiles[Profiles.Active()]) end
-function Profiles.Revert() Measured("revert", Revert) end
+function Profiles.Revert()
+    Measured("revert", Revert)
+    Note("revert", Profiles.Active())
+end
 
 -- Another profile's settings into the working copy; Save keeps them.
 local function CopyFrom(name)
@@ -296,11 +347,18 @@ local function CopyFrom(name)
     Load(store.profiles[name])
     return true
 end
-function Profiles.CopyFrom(name) return Measured("copy", CopyFrom, name) end
+function Profiles.CopyFrom(name)
+    local ok, reason = Measured("copy", CopyFrom, name)
+    if ok then Note("copy", name, Profiles.Active()) end
+    return ok, reason
+end
 
 -- Defaults into the working copy; like any edit it needs Save to keep.
 local function Reset() Load(Defaults()) end
-function Profiles.Reset() Measured("reset", Reset) end
+function Profiles.Reset()
+    Measured("reset", Reset)
+    Note("reset", Profiles.Active())
+end
 
 local function Switch(name)
     if Profiles.IsDirty() then return false, "save or revert changes first" end
@@ -309,7 +367,12 @@ local function Switch(name)
     Load(store.profiles[name])
     return true
 end
-function Profiles.Switch(name) return Measured("switch", Switch, name) end
+function Profiles.Switch(name)
+    local from = Profiles.Active()
+    local ok, reason = Measured("switch", Switch, name)
+    if ok then Note("switch", from, Profiles.Active()) end
+    return ok, reason
+end
 
 -- A new profile starts from defaults, or from a copy of an existing profile, and becomes active.
 local function Create(name, copyFrom)
@@ -321,7 +384,11 @@ local function Create(name, copyFrom)
     store.profiles[clean] = copyFrom and Table.DeepCopy(store.profiles[copyFrom]) or Defaults()
     return Switch(clean)
 end
-function Profiles.Create(name, copyFrom) return Measured("new", Create, name, copyFrom) end
+function Profiles.Create(name, copyFrom)
+    local ok, reason = Measured("new", Create, name, copyFrom)
+    if ok then Note("create", Profiles.Active()) end
+    return ok, reason
+end
 
 -- base, or base 2, base 3... : the first name no profile has (compared as Find does).
 function Profiles.UniqueName(base)
@@ -333,6 +400,15 @@ function Profiles.UniqueName(base)
         if not Find(name) then return name end
     end
     return nil
+end
+
+-- This character's name (nil when the client keeps it from Lua) and the first free profile name for it (UniqueName:
+-- "Shiftard", else "Shiftard 2"...), for Studio's Profile › New profile for <name>, which copies the active profile
+-- under that name with Create (so it becomes this character's).
+function Profiles.CharacterProfileName()
+    local name = Secret.ReadName("player", nil)
+    if not name or name == "" then return nil end
+    return name, Profiles.UniqueName(name)
 end
 
 -- A new profile from a built-in preset (Core/ProfilePresets.lua), named after it: it starts from
@@ -374,7 +450,11 @@ local function CreateFromPreset(id)
     Save()
     return true, name
 end
-function Profiles.CreateFromPreset(id) return Measured("new", CreateFromPreset, id) end
+function Profiles.CreateFromPreset(id)
+    local ok, result = Measured("new", CreateFromPreset, id)
+    if ok then Note("preset", result) end
+    return ok, result
+end
 
 -- The look the working copy now follows (Studio's look update): id at the current LOOK_VERSION, kept by Save like any
 -- change (Revert puts back what it had).
@@ -414,7 +494,12 @@ local function Rename(name)
     Profiles.Notify()
     return true
 end
-function Profiles.Rename(name) return Measured("rename", Rename, name) end
+function Profiles.Rename(name)
+    local old = Profiles.Active()
+    local ok, reason = Measured("rename", Rename, name)
+    if ok and Profiles.Active() ~= old then Note("rename", old, Profiles.Active()) end
+    return ok, reason
+end
 
 -- Characters that used a deleted profile fall back to Default at their next login.
 local function Delete(name)
@@ -428,7 +513,11 @@ local function Delete(name)
     Profiles.Notify()
     return true
 end
-function Profiles.Delete(name) return Measured("delete", Delete, name) end
+function Profiles.Delete(name)
+    local ok, reason = Measured("delete", Delete, name)
+    if ok then Note("delete", name) end
+    return ok, reason
+end
 
 PS.Ticker.Register("profiles.changes", 0.2, function()
     if changed then Profiles.Notify() end

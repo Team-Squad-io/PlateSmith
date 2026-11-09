@@ -19,10 +19,10 @@ local restrictedFriendlyNameCVars = {
     "nameplateShowOnlyNames",
 }
 local CLASS_COLOUR_CVAR = "nameplateShowFriendlyClassColor"
-local pendingNames, pendingValues = {}, {}
+local pendingNames, pendingValues, pendingGroups = {}, {}, {}
 -- Hide unstyled names is kept, not set once: another addon or the game's own Names options can turn a
--- friendly name CVar back on at any time (live: Hyperframe's city preset turns players' names on as the
--- player starts resting, after PlateSmith's login and zone writes), and the game then writes its large
+-- friendly name CVar back on at any time (live: another addon turned players' names on as the player started
+-- resting, after PlateSmith's login and zone writes), and the game then writes its large
 -- names over every friendly player without a nameplate. While it hides, the five are watched (CVAR_UPDATE,
 -- and a WATCH_INTERVAL backstop for a client that names the CVar differently or sends nothing for an
 -- addon's write): one turned on elsewhere takes that value as its original to put back and is hidden
@@ -309,15 +309,22 @@ end
 
 -- A CVar write blocked in combat raises ADDON_ACTION_BLOCKED instead of an
 -- error, so it cannot be detected afterwards. Defer it until combat ends.
-function NamePolicy.Write(name, value, immediate)
+-- group: the owner's record it writes for (WriteCaptured's), named in the activity log (Diagnostics/Activity.lua),
+-- which logs every write that changes a value, when it lands.
+function NamePolicy.Write(name, value, immediate, group)
     local field, accessor = bits[name], accessors[name]
     local callback = C_CVar and C_CVar.SetCVar or SetCVar
     if not field and not accessor and type(callback) ~= "function" then return false end
     if not immediate and Secret.InCombat() then
         if pendingValues[name] == nil then pendingNames[#pendingNames + 1] = name end
-        pendingValues[name] = value
+        pendingValues[name], pendingGroups[name] = value, group
         return true
     end
+    local Activity = PS.ActivityLog
+    local before = Activity and NamePolicy.Read(name)
+    local cvar = field and field[1] or (not accessor and name or nil)
+    local changes = Activity and not (before ~= nil and SameText(before, value))
+    if changes then Activity.Expect(cvar, not field and value or nil) end
     local ok
     if field then
         ok = WriteBit(field, value)
@@ -328,7 +335,10 @@ function NamePolicy.Write(name, value, immediate)
     else
         ok = pcall(callback, name, value)
     end
-    if ok then NoteLanded(name) end
+    if ok then
+        NoteLanded(name)
+        if changes then Activity.Wrote(name, cvar, before, NamePolicy.Read(name) or tostring(value), group) end
+    end
     return ok
 end
 
@@ -340,8 +350,8 @@ end
 function NamePolicy.FlushPending()
     for index = 1, #pendingNames do
         local name = pendingNames[index]
-        NamePolicy.Write(name, pendingValues[name], true)
-        pendingNames[index], pendingValues[name] = nil, nil
+        NamePolicy.Write(name, pendingValues[name], true, pendingGroups[name])
+        pendingNames[index], pendingValues[name], pendingGroups[name] = nil, nil, nil
     end
 end
 
@@ -365,7 +375,7 @@ function NamePolicy.WriteCaptured(group, name, value, immediate)
     end
     Changed(group, name)
     SetWritten(group, name, tostring(value))
-    return NamePolicy.Write(name, value, immediate)
+    return NamePolicy.Write(name, value, immediate, group)
 end
 
 -- The value name holds when it was changed outside PlateSmith since PlateSmith last wrote it under group
@@ -465,7 +475,7 @@ function NamePolicy.RestoreGroup(group, name, immediate, keep)
                 if value == nil then value = Fallback(group, key) end
                 -- Already back (a write queued in combat has landed: Release): not written again.
                 local back = value ~= nil and pendingValues[key] == nil and SameText(NamePolicy.Read(key), value)
-                if value ~= nil and not back then NamePolicy.Write(key, value, immediate) end
+                if value ~= nil and not back then NamePolicy.Write(key, value, immediate, group) end
             end
             SetWritten(group, key, nil)
             if not keep then
@@ -500,7 +510,7 @@ function NamePolicy.Release(group, name, immediate, keep)
             else
                 local now = pendingValues[key]
                 if now == nil then now = NamePolicy.Read(key) end
-                if now == nil or not SameText(now, original) then NamePolicy.Write(key, original) end
+                if now == nil or not SameText(now, original) then NamePolicy.Write(key, original, nil, group) end
             end
         end
     end
@@ -650,7 +660,7 @@ local function ApplyClassColour(settings, restricted, keep)
     local restore = Captured(CLASS_COLOUR)
     if not restricted or not settings.restrictedFriendlyClassColour then
         if restore == nil then restore = Fallback(CLASS_COLOUR, CLASS_COLOUR_CVAR) end
-        if restore ~= nil then NamePolicy.Write(CLASS_COLOUR_CVAR, restore) end
+        if restore ~= nil then NamePolicy.Write(CLASS_COLOUR_CVAR, restore, nil, CLASS_COLOUR) end
         if keep then return end
         ClearRestore(CLASS_COLOUR)
         Forget(CLASS_COLOUR)
@@ -662,7 +672,7 @@ local function ApplyClassColour(settings, restricted, keep)
         restores.restrictedFriendlyClassColour = OriginalFor(CLASS_COLOUR, CLASS_COLOUR_CVAR)
     end
     Changed(CLASS_COLOUR, CLASS_COLOUR_CVAR)
-    NamePolicy.Write(CLASS_COLOUR_CVAR, "1")
+    NamePolicy.Write(CLASS_COLOUR_CVAR, "1", nil, CLASS_COLOUR)
 end
 
 local function RestoreFriendlyNames(clear)
@@ -671,7 +681,7 @@ local function RestoreFriendlyNames(clear)
     for _, name in ipairs(friendlyNameCVars) do
         local value = restore[name]
         if value == nil then value = Fallback(FRIENDLY_NAMES, name) end
-        if value ~= nil then NamePolicy.Write(name, value) end
+        if value ~= nil then NamePolicy.Write(name, value, nil, FRIENDLY_NAMES) end
     end
     if clear then
         ClearRestore(FRIENDLY_NAMES)
@@ -726,7 +736,7 @@ function NamePolicy.Apply()
     for _, name in ipairs(friendlyNameCVars) do
         if restore[name] == nil then restore[name] = OriginalFor(FRIENDLY_NAMES, name) end
         Changed(FRIENDLY_NAMES, name)
-        NamePolicy.Write(name, "0")
+        NamePolicy.Write(name, "0", nil, FRIENDLY_NAMES)
     end
     SetWatching(true)
 end
@@ -745,16 +755,17 @@ function NamePolicy.Watch()
             restore[name] = value
             Forget(FRIENDLY_NAMES, name)
             Changed(FRIENDLY_NAMES, name)
-            NamePolicy.Write(name, "0")
+            NamePolicy.Write(name, "0", nil, FRIENDLY_NAMES)
             watch.reasserts, watch.last = watch.reasserts + 1, name
             watch.wroteAt = type(GetTime) == "function" and GetTime() or nil
         end
     end
 end
 
--- A CVar changed: the watch runs on the next frame, unless it hid one within WATCH_INTERVAL (its own
--- writes, or an addon writing back at once, wait for the backstop).
-function NamePolicy.CVarChanged()
+-- A CVar changed (CVAR_UPDATE, name its first argument): the activity log hears it first. The watch runs on the next
+-- frame, unless it hid one within WATCH_INTERVAL (its own writes, or an addon writing back at once, wait for the backstop).
+function NamePolicy.CVarChanged(_, _, name)
+    if PS.ActivityLog then PS.ActivityLog.CVarUpdated(name) end
     if not watch.hiding or not PS.Ticker then return end
     local now = type(GetTime) == "function" and GetTime() or nil
     if now and watch.wroteAt and now - watch.wroteAt < WATCH_INTERVAL then return end
@@ -792,7 +803,7 @@ function NamePolicy.RestoreDefaults()
         if default == nil then
             left[#left + 1] = name
         else
-            NamePolicy.Write(name, default)
+            NamePolicy.Write(name, default, nil, "restoreDefaults")
         end
         return default
     end

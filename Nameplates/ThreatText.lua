@@ -238,17 +238,23 @@ end
 -- Settings › Experimental (Solo hover gap): the threat service's curve gap (raw x 1.1 evaluated by a
 -- client curve, possibly protected) beside the percent, straight into the sink. False when there is
 -- none or the client refuses it, and the caller shows what it would have.
-local function ApplyCurveGap(fontString, info)
+-- gapOnly: the curve gap alone (Gap only), no percent needed.
+local function ApplyCurveGap(fontString, info, gapOnly)
     if info.hasCurveLead ~= true or type(fontString.SetFormattedText) ~= "function" then return false end
-    local percent
-    if info.hasOpaquePercent then
-        percent = info.percentOpaque
-    elseif IsReadableNumber(info.percent) then
-        percent = info.percent
+    local shown
+    if gapOnly then
+        shown = pcall(fontString.SetFormattedText, fontString, "%+.0f", info.curveLeadOpaque)
     else
-        return false
+        local percent
+        if info.hasOpaquePercent then
+            percent = info.percentOpaque
+        elseif IsReadableNumber(info.percent) then
+            percent = info.percent
+        else
+            return false
+        end
+        shown = pcall(fontString.SetFormattedText, fontString, "%.0f%%  %+.0f", percent, info.curveLeadOpaque)
     end
-    local shown = pcall(fontString.SetFormattedText, fontString, "%.0f%%  %+.0f", percent, info.curveLeadOpaque)
     -- For /ps diagnose's experimental section (readable words and counts only).
     info.curveState = shown and "shown" or "display-refused"
     local stats = type(PS.ThreatService) == "table" and PS.ThreatService.curveStats
@@ -256,12 +262,18 @@ local function ApplyCurveGap(fontString, info)
     return shown
 end
 
-local function ApplyPercentGap(fontString, info, gap, withGap)
+-- gapOnly ("Gap only"): the signed gap alone (+1.2k, -300); where the gap is unknown (the game keeps it private) it
+-- shows what "% and gap" shows then: the percent, or YOU, or nothing.
+local function ApplyPercentGap(fontString, info, gap, withGap, gapOnly)
     local lead
     if withGap then
         if IsReadableNumber(gap) then lead = gap elseif IsReadableNumber(info.lead) then lead = info.lead end
     end
-    if withGap and (lead == nil or Kept(info)) and ApplyCurveGap(fontString, info) then return "curve-sink" end
+    if withGap and (lead == nil or Kept(info)) and ApplyCurveGap(fontString, info, gapOnly) then return "curve-sink" end
+    if gapOnly and lead ~= nil then
+        fontString:SetText(MarkKept(info, Format.SignedLead(lead)))
+        return "readable"
+    end
     if type(info.percent) == "number" or (lead ~= nil and not info.hasOpaquePercent) then
         local text = Format.Threat(info.percent, lead) or ""
         fontString:SetText(lead ~= nil and MarkKept(info, text) or text)
@@ -282,7 +294,7 @@ local function ApplyPercentGap(fontString, info, gap, withGap)
     return info.selfHolds and "hold" or "empty"
 end
 
-ThreatText.FORMATS = { gap = true, percent = true, detailed = true }
+ThreatText.FORMATS = { gap = true, gapOnly = true, percent = true, detailed = true }
 
 -- The threat text format the profile chose (Schema's threatTextFormat), "gap" by default.
 function ThreatText.Format()
@@ -323,7 +335,7 @@ function ThreatText.Apply(fontString, info, gap, format)
     format = ThreatText.FORMATS[format] and format or ThreatText.Format()
     Watch(fontString, info, gap)
     if format == "detailed" then return ApplyDetailed(fontString, info, gap) end
-    return ApplyPercentGap(fontString, info, gap, format == "gap")
+    return ApplyPercentGap(fontString, info, gap, format == "gap" or format == "gapOnly", format == "gapOnly")
 end
 
 local function RefreshPlateKept(fontString, info, gap)
