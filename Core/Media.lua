@@ -119,6 +119,276 @@ function Media.SetStatusBar(target, value)
     if bar then target:SetStatusBarTexture(path) else target:SetTexture(path) end
 end
 
+-- Pictures: what a custom part of kind icon (Studio's Image) draws. A picture is a reference, never a file path in a
+-- profile or a Blueprint (STANDARDS 13):
+--   kit:<id>           PlateSmith's own pieces (KIT; a module adds its own with PS.RegisterPicture, as "<module>.<name>")
+--   atlas:<name>       a game atlas, looked up when drawn (C_Texture.GetAtlasInfo)
+--   lsm:<type>:<name>  LibSharedMedia's background or statusbar media, while it is installed
+--   media:<name>       the player's own files ("My media": account state, PS.GetState().media, name -> path)
+--   unit:<name>        a picture the plate's unit gives (UNIT_PICTURES: unit:totem, the totem's spell icon), found
+--                      when the plate is laid out; Studio's preview, which has no unit, draws the entry's sample
+-- A part without a picture of its own (slot.image) draws its icon, one of the twelve kit pieces it had before 1.4.0, so
+-- a saved part looks as it did. Media.Picture answers nil for one this install does not have: the plates draw nothing.
+local PICTURE_LENGTH = 100
+Media.PICTURE_SOURCES = { "kit", "atlas", "lsm", "media", "unit" }
+-- Unit pictures by name: { label, read = function(unit) -> texture or nil, sample = function() -> texture or nil,
+-- size = { width, height } (a new part's), coords (as a kit piece's), only = the Type it is offered under ("totem") }.
+-- Drawn as a kit piece is, its entry in the piece's place. PlateSmith's own (Media.
+-- RegisterUnitPicture: Nameplates/Totems.lua), not a module extension point.
+Media.UNIT_PICTURES = {}
+function Media.RegisterUnitPicture(name, definition)
+    assert(type(name) == "string" and name:match("^%l+$") and type(definition.read) == "function", "unit picture")
+    Media.UNIT_PICTURES[name] = definition
+end
+Media.LSM_PICTURE_TYPES = { background = true, statusbar = true }
+-- My media: at most MEDIA_MAX names of at most MEDIA_NAME_LENGTH characters, each a path of at most MEDIA_PATH_LENGTH.
+Media.MEDIA_MAX, Media.MEDIA_NAME_LENGTH, Media.MEDIA_PATH_LENGTH = 64, 32, 200
+-- Kit pieces: id, label, file, coords ({ left, right, top, bottom }; the whole file without), turn (clockwise quarter
+-- turns the file is drawn at: an arrow file pointing down drawn pointing right), blend (ADD for light), size (a new
+-- part's width and height), slice ({ left, top, right, bottom } px: nine-slice margins, kept for Fit to part where the
+-- client has SetTextureSliceMargins) and hidden (kept for saved parts, not offered). The first twelve are the icons
+-- custom parts had before 1.4.0 (their ids are the slot's icon values).
+local KIT = {
+    { id = "raid8", label = L["Skull"], file = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_8" },
+    { id = "raid7", label = L["Cross"], file = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_7" },
+    { id = "raid6", label = L["Square"], file = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_6" },
+    { id = "raid5", label = L["Moon"], file = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_5" },
+    { id = "raid4", label = L["Triangle"], file = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_4" },
+    { id = "raid3", label = L["Diamond"], file = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_3" },
+    { id = "raid2", label = L["Circle"], file = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_2" },
+    { id = "raid1", label = L["Star"], file = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_1" },
+    { id = "skull", label = L["Skull"], file = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_8", hidden = true },
+    { id = "quest", label = L["Quest mark"], file = "Interface\\GossipFrame\\AvailableQuestIcon" },
+    { id = "sword", label = L["Sword"], file = "Interface\\Icons\\INV_Sword_04" },
+    { id = "shield", label = L["Shield"], file = "Interface\\Icons\\INV_Shield_06" },
+    -- 1.4.0's decoration pieces, game art every client has: the tutorial's gold arrow (a down arrow, drawn pointing
+    -- right), the cast bar's spark and a soft round glow.
+    { id = "arrow", label = L["Arrow"], file = "Interface\\Buttons\\UI-MicroStream-Yellow", turn = 3, size = { 18, 18 } },
+    { id = "spark", label = L["Spark"], file = "Interface\\CastingBar\\UI-CastingBar-Spark", blend = "ADD",
+        size = { 12, 26 } },
+    { id = "glow", label = L["Soft glow"], file = "Interface\\GLUES\\Models\\UI_Draenei\\GenericGlow64", blend = "ADD",
+        size = { 32, 32 } },
+    -- A plain white disc to tint (the combo points' round mask): the Range part's dot.
+    { id = "dot", label = L["Dot"], file = "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask", size = { 10, 10 } },
+}
+local kitById = {}
+for _, entry in ipairs(KIT) do kitById[entry.id] = entry end
+Media.KIT = KIT
+-- "kit:<icon>" for each icon a slot may hold, made once.
+local ICON_PICTURES = {}
+for _, entry in ipairs(KIT) do ICON_PICTURES[entry.id] = "kit:" .. entry.id end
+
+-- My media's name: letters, digits, spaces and _ - . (trimmed), at most MEDIA_NAME_LENGTH characters.
+function Media.IsMediaName(name)
+    return type(name) == "string" and #name >= 1 and #name <= Media.MEDIA_NAME_LENGTH and name:match("^[%w_%-%.][%w _%-%.]*$")
+        ~= nil and name:sub(-1) ~= " "
+end
+
+-- A My media path made valid: inside Interface\AddOns\ (any case, / or \), a .tga, .blp or .png file, no "..", at
+-- most MEDIA_PATH_LENGTH characters, with \ separators; nil for anything else. The client cannot tell Lua whether the
+-- file exists: a path to nothing draws nothing, and Studio's preview is the player's check.
+function Media.MediaPath(path)
+    if type(path) ~= "string" then return nil end
+    path = path:gsub("/", "\\"):match("^%s*(.-)%s*$")
+    if #path > Media.MEDIA_PATH_LENGTH or path:find("[%c|]") or path:find("..", 1, true) then return nil end
+    local lower = path:lower()
+    local prefix = "interface\\addons\\"
+    if lower:sub(1, #prefix) ~= prefix or not lower:sub(#prefix + 1):match("^[^\\]+\\.") then return nil end
+    local extension = lower:match("%.(%a+)$")
+    if extension ~= "tga" and extension ~= "blp" and extension ~= "png" then return nil end
+    return path
+end
+
+-- A My media list made valid (name -> path), at most MEDIA_MAX of them in name order; a new table.
+function Media.NormalizeMediaList(list)
+    local result, names = {}, {}
+    for name in pairs(type(list) == "table" and list or {}) do
+        if Media.IsMediaName(name) and Media.MediaPath(list[name]) then names[#names + 1] = name end
+    end
+    table.sort(names)
+    for index = 1, math.min(#names, Media.MEDIA_MAX) do result[names[index]] = Media.MediaPath(list[names[index]]) end
+    return result
+end
+
+local NO_MEDIA = {}
+-- The account's My media list (read only).
+function Media.MyMedia()
+    local state = type(PS.GetState) == "function" and PS.GetState() or nil
+    return state and type(state.media) == "table" and state.media or NO_MEDIA
+end
+
+-- What ref names: its source ("kit", "atlas", "lsm", "media", "unit"), the name, and for lsm its media type; nil for
+-- anything that is not a well-formed reference (a known source with a bad name, or an unknown source).
+function Media.PictureSource(ref)
+    if type(ref) ~= "string" or #ref > PICTURE_LENGTH or ref:find("[%c|]") then return nil end
+    local source, name = ref:match("^(%l+):(.+)$")
+    if source == "kit" then
+        if #name <= 64 and name:match("^%a[%w_%.%-]*$") then return "kit", name end
+    elseif source == "atlas" then
+        if #name <= 64 and name:match("^[%w_%-%.]+$") then return "atlas", name end
+    elseif source == "lsm" then
+        local kind, media = name:match("^(%l+):(.+)$")
+        if kind and Media.LSM_PICTURE_TYPES[kind] and #media <= 64 then return "lsm", media, kind end
+    elseif source == "media" then
+        if Media.IsMediaName(name) then return "media", name end
+    elseif source == "unit" then
+        if #name <= 32 and name:match("^%l+$") then return "unit", name end
+    end
+    return nil
+end
+-- The unit picture's name ref names ("totem" for unit:totem), or nil.
+function Media.UnitPicture(ref)
+    local source, name = Media.PictureSource(ref)
+    return source == "unit" and name or nil
+end
+-- The prefix ref starts with ("kit" from "kit:arrow"), well formed or not: a Blueprint skips a picture from a source
+-- this version does not know and refuses a bad one from a source it does.
+function Media.PicturePrefix(ref)
+    return type(ref) == "string" and ref:match("^(%l+):") or nil
+end
+function Media.IsPicture(ref) return Media.PictureSource(ref) ~= nil end
+
+local function AtlasExists(name)
+    local api = type(C_Texture) == "table" and C_Texture.GetAtlasInfo
+    if type(api) ~= "function" then return false end
+    local ok, info = pcall(api, name)
+    return ok and type(info) == "table"
+end
+
+-- How to draw ref on this install: "file" and its path (and a kit piece's entry), or "atlas" and its name; nil while
+-- the picture is missing (an unknown kit piece or atlas, LibSharedMedia or its media absent, a My media name not in
+-- the list). A unit picture is unit's (nil: the entry's sample), missing while it has none (read under pcall).
+function Media.Picture(ref, unit)
+    local source, name, kind = Media.PictureSource(ref)
+    if source == "kit" then
+        local entry = kitById[name]
+        if entry then return "file", entry.file, entry end
+    elseif source == "atlas" then
+        if AtlasExists(name) then return "atlas", name end
+    elseif source == "lsm" then
+        local path = Fetch(kind, LSM_PREFIX .. name)
+        if path then return "file", path end
+    elseif source == "media" then
+        local path = Media.MyMedia()[name]
+        if path then return "file", path end
+    elseif source == "unit" then
+        local entry = Media.UNIT_PICTURES[name]
+        local read = entry and (unit and entry.read or entry.sample)
+        local ok, texture = false, nil
+        if read then ok, texture = pcall(read, unit) end
+        if ok and (type(texture) == "number" or (type(texture) == "string" and texture ~= "")) then
+            return "file", texture, entry
+        end
+    end
+    return nil
+end
+-- Whether this install lacks ref's picture (a unit picture: only one it does not know; each unit may have its own).
+function Media.PictureMissing(ref)
+    local name = Media.UnitPicture(ref)
+    if name then return Media.UNIT_PICTURES[name] == nil end
+    return Media.Picture(ref) == nil
+end
+
+-- The picture a custom part draws: its own (slot.image), else its icon's kit piece (raid8, the skull, without one).
+function Media.SlotPicture(slot)
+    if type(slot) ~= "table" then return ICON_PICTURES.raid8 end
+    return slot.image or ICON_PICTURES[slot.icon] or ICON_PICTURES.raid8
+end
+
+-- A kit piece's entry by id (read only), or nil.
+function Media.KitPiece(id) return kitById[id] end
+
+-- The eight texture coordinates (upper left, lower left, upper right, lower right, as SetTexCoord takes them) of
+-- coords ({ left, right, top, bottom }; the whole file without) turned clockwise by turns quarter turns, then the
+-- picture as drawn mirrored across (flipX) and up and down (flipY). Studio's preview and the plates draw through it.
+function Media.PictureCoords(coords, flipX, flipY, turns)
+    local left, right, top, bottom = 0, 1, 0, 1
+    if coords then left, right, top, bottom = coords[1], coords[2], coords[3], coords[4] end
+    local ulx, uly, llx, lly, urx, ury, lrx, lry = left, top, left, bottom, right, top, right, bottom
+    for _ = 1, (tonumber(turns) or 0) % 4 do
+        ulx, uly, llx, lly, urx, ury, lrx, lry = llx, lly, lrx, lry, ulx, uly, urx, ury
+    end
+    if flipX then ulx, uly, llx, lly, urx, ury, lrx, lry = urx, ury, lrx, lry, ulx, uly, llx, lly end
+    if flipY then ulx, uly, llx, lly, urx, ury, lrx, lry = llx, lly, ulx, uly, lrx, lry, urx, ury end
+    return ulx, uly, llx, lly, urx, ury, lrx, lry
+end
+
+-- The pictures a source offers in Studio's picker ({ value, label, icon }), in order: kit (PlateSmith's pieces and the
+-- modules'), lsm (LibSharedMedia's backgrounds and status bars, while installed) or media (My media). Read only.
+local kitChoices
+function Media.PictureChoices(source)
+    -- The kit's list is kept while no piece is added (PS.RegisterPicture).
+    if source == "kit" and kitChoices and kitChoices.count == #KIT then return kitChoices end
+    local choices = {}
+    if source == "kit" then
+        choices.count = #KIT
+        kitChoices = choices
+        for _, entry in ipairs(KIT) do
+            if not entry.hidden then
+                choices[#choices + 1] = { value = ICON_PICTURES[entry.id] or ("kit:" .. entry.id), label = entry.label,
+                    icon = entry.file, iconCoords = { Media.PictureCoords(entry.coords, false, false, entry.turn) } }
+            end
+        end
+    elseif source == "lsm" then
+        local library = SharedMedia()
+        for _, kind in ipairs({ "background", "statusbar" }) do
+            local ok, list = false, nil
+            if library and type(library.List) == "function" then ok, list = pcall(library.List, library, kind) end
+            for _, name in ipairs(ok and type(list) == "table" and list or {}) do
+                local value = "lsm:" .. kind .. ":" .. tostring(name)
+                if Media.IsPicture(value) then
+                    choices[#choices + 1] = { value = value, label = string.format(L["%s (%s)"], name, kind) }
+                end
+            end
+        end
+    elseif source == "media" then
+        local names = {}
+        for name in pairs(Media.MyMedia()) do names[#names + 1] = name end
+        table.sort(names)
+        for _, name in ipairs(names) do
+            choices[#choices + 1] = { value = "media:" .. name, label = name, icon = Media.MyMedia()[name] }
+        end
+    elseif source == "unit" then
+        local names = {}
+        for name in pairs(Media.UNIT_PICTURES) do names[#names + 1] = name end
+        table.sort(names)
+        for _, name in ipairs(names) do
+            local _, sample = Media.Picture("unit:" .. name)
+            choices[#choices + 1] = { value = "unit:" .. name, label = Media.UNIT_PICTURES[name].label, icon = sample }
+        end
+    end
+    return choices
+end
+function Media.HasSharedMedia() return SharedMedia() ~= nil end
+
+-- A module's own picture (docs/MODULES.md), offered with the kit as "kit:<id>": id in the module ID grammar
+-- ("<module>.<name>"), definition { label, file (inside Interface\AddOns\), coords, turn, blend, size, slice }.
+-- A Blueprint names it; where the module is not installed the part's picture is missing.
+local function Coords(value, count)
+    if value == nil then return true end
+    if type(value) ~= "table" or #value ~= count then return false end
+    for index = 1, count do if type(value[index]) ~= "number" then return false end end
+    return true
+end
+function PS.RegisterPicture(...)
+    local id, definition = PS._Args(...)
+    if not PS.IsModuleId(id, 2) then return false, PS._IdReason("picture", 2) end
+    if kitById[id] then return false, "picture is already registered" end
+    if type(definition) ~= "table" or type(definition.label) ~= "string" or not Media.MediaPath(definition.file) then
+        return false, "picture definition requires a label and a file inside Interface\\AddOns"
+    end
+    if not Coords(definition.coords, 4) or not Coords(definition.slice, 4) or not Coords(definition.size, 2) then
+        return false, "picture coords, slice and size must be lists of numbers"
+    end
+    local entry = { id = id, label = definition.label, file = Media.MediaPath(definition.file), coords = definition.coords,
+        turn = tonumber(definition.turn) and math.floor(definition.turn) % 4 or nil,
+        blend = definition.blend == "ADD" and "ADD" or nil, size = definition.size, slice = definition.slice }
+    KIT[#KIT + 1] = entry
+    kitById[id] = entry
+    ICON_PICTURES[id] = "kit:" .. id
+    return true
+end
+
 -- nil means "use Blizzard's multilingual nameplate font object".
 function Media.FontPath(value)
     local entry = fontByKey[value]

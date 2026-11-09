@@ -60,8 +60,11 @@ local function Scalar(value)
     return nil
 end
 
--- One line per table that holds scalar values; nested tables get their own lines.
-local function Flatten(value, path, lines, issues, depth)
+-- Report sections of free text that are never flagged (the activity log's lines quote names and values).
+Summary.unflagged = { activity = true }
+
+-- One line per table that holds scalar values; nested tables get their own lines. quiet: inside an unflagged section.
+local function Flatten(value, path, lines, issues, depth, quiet)
     if depth > 8 then return end
     local parts = {}
     local keys = SortedKeys(value, depth == 0 and Summary.sectionOrder or nil)
@@ -70,7 +73,7 @@ local function Flatten(value, path, lines, issues, depth)
         local childPath = path == "" and tostring(key) or (path .. "." .. tostring(key))
         local text = Scalar(child)
         if text then
-            local severity = Severity(child)
+            local severity = not quiet and Severity(child) or nil
             if severity then issues[#issues + 1] = { severity = severity, path = childPath, value = text } end
             parts[#parts + 1] = tostring(key) .. " " .. (severity and Colour(severity, text) or text)
         elseif type(child) == "table" and next(child) == nil then
@@ -83,7 +86,8 @@ local function Flatten(value, path, lines, issues, depth)
     for _, key in ipairs(keys) do
         local child = value[key]
         if type(child) == "table" and next(child) ~= nil then
-            Flatten(child, path == "" and tostring(key) or (path .. "." .. tostring(key)), lines, issues, depth + 1)
+            Flatten(child, path == "" and tostring(key) or (path .. "." .. tostring(key)), lines, issues, depth + 1,
+                quiet or (depth == 0 and Summary.unflagged[key] == true))
         end
     end
 end
@@ -380,6 +384,21 @@ function Summary.Problems(report, extras)
     if conflictCount >= 2 then
         Add(string.format(L["%d other nameplate addons are loaded (%s); they overlap each other. Keep only one."],
             conflictCount, conflictNames))
+    end
+    -- Another addon changing the game's nameplate settings this session (the activity log's setter hooks), most first.
+    local writers = Field(report, "activity", "outside")
+    for index = 1, math.min(type(writers) == "table" and #writers or 0, 2) do
+        local writer = writers[index]
+        if type(writer) == "table" and type(writer.count) == "number" then
+            local by, cvar, old, new, at = Text(writer.by), Text(writer.cvar), Text(writer.old), Text(writer.new),
+                Text(writer.at)
+            if writer.count == 1 then
+                Add(string.format(L["%s changed %s once this session (%s -> %s at %s)."], by, cvar, old, new, at))
+            else
+                Add(string.format(L["%s changed %s %d times this session (last: %s -> %s at %s)."], by, cvar,
+                    writer.count, old, new, at))
+            end
+        end
     end
     local blocked = Field(report, "protectedAction", "last")
     if blocked then Add(string.format(L["The client blocked a PlateSmith action (taint): %s"], OneLine(blocked, 120))) end

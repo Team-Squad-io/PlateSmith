@@ -407,11 +407,24 @@ end
 
 -- Grey when tagged by others (a design's greyWhenTagged; profile: the plate's): the health bar's colour on an enemy
 -- plate while another player or group has tagged the mob (tapped: UnitIsTapDenied read readable and true; protected or unknown is
--- false, so the bar keeps its colour). It wins over threat colours, as Blizzard's tapped grey wins over its
--- in-combat red (CompactUnitFrame_UpdateHealthColor): a tagged mob gives you no credit, whoever holds it. A colour
--- rule on the health bar still wins (Lifecycle's ApplyPartRules). nil when the bar keeps its own colour. The plates
--- and Studio's preview (GreyForSample) both ask here.
+-- false, so the bar keeps its colour). A tagged mob gives you no credit, so it reads as tagged first; where threat
+-- colours colour the bar, it keeps its threat colour darkened (TaggedChannels), else it is grey. A colour rule on the
+-- health bar still wins (Lifecycle's ApplyPartRules). nil when the bar keeps its own colour. The plates and Studio's
+-- preview (GreyForSample) both ask here.
 ThreatColours.TAGGED_GREY = { r = 0.5, g = 0.5, b = 0.5 }
+ThreatColours.TAGGED_SHADE = 0.5
+-- A tagged mob's bar: threat (a readable threat colour, or nil) darkened by TAGGED_SHADE, else the grey. A threat colour
+-- folded from protected answers never reaches here (the caller passes nil): Lua cannot darken it, so the bar is grey.
+function ThreatColours.TaggedChannels(threat)
+    local shade = ThreatColours.TAGGED_SHADE
+    local readable = PS.Secret.IsReadable
+    if type(threat) == "table" and readable(threat.r) and readable(threat.g) and readable(threat.b)
+        and type(threat.r) == "number" and type(threat.g) == "number" and type(threat.b) == "number" then
+        return threat.r * shade, threat.g * shade, threat.b * shade
+    end
+    local grey = ThreatColours.TAGGED_GREY
+    return grey.r, grey.g, grey.b
+end
 function ThreatColours.GreyWhenTagged(profile, enemy, tapped)
     if enemy == true and tapped == true and type(profile) == "table" and profile.greyWhenTagged == true then
         return ThreatColours.TAGGED_GREY

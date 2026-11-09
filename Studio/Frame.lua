@@ -12,6 +12,10 @@ local SetStudioButtonState = chrome.SetStudioButtonState
 local CreateStudioButton = chrome.CreateStudioButton
 
 local LABEL_FONT, LABEL, GOLD = chrome.FONT, chrome.LABEL, chrome.GOLD
+-- Studio's pointer area inside its frame (Chrome's LayoutEditorShell: the rails' outer edges, the corners' and close
+-- box's tops, the bottom moulding's foot), and the plaque's part above that top.
+local FRAME_HIT = { left = 9, right = 9, top = 47, bottom = 24 }
+local PLAQUE_GRAB = { width = 232, top = 1 }
 
 -- Asked when Studio closes with unsaved changes. PlateSmith's own window, not a Blizzard
 -- StaticPopup: Studio closes from Escape inside Blizzard's secure game-menu handling, and
@@ -157,9 +161,11 @@ local function CreatePlateRow(content)
     row:SetScript("OnLeave", function(instance) Paint(instance, "normal") end)
     row:SetScript("OnClick", function() Options:SelectEditorPlate() end)
     PS.UI.Controls.AttachTooltip(row, L["Plate settings"], { L["The whole plate's scale, for this plate type."],
-        L["Target highlight: how your target's plate of this type is lit (Gold edge or Soft glow)."],
+        L["Target highlight: how your target's plate of this type is lit (Edge or Soft glow)."],
         L["Quick layout: place parts by position (top, bottom, left, right, centre)."],
-        L["Players and Friendly NPCs: Friendly plates, how and where they show."] })
+        L["Players and Friendly NPCs: Friendly plates, how and where they show."],
+        L["Enemies and Friendly NPCs, with Type › Totems: how a totem's plate draws."],
+        L["Objects: copy a look's Objects style, and the way to the object settings."] })
     Paint(row, "normal")
     return row
 end
@@ -170,7 +176,9 @@ end
 local function BuildTestPanel(canvas)
     -- It takes the pointer only over its own rectangle; drags elsewhere reach the preview.
     local testPanel = CreateFrame("Frame", nil, canvas)
-    testPanel:SetSize(300, 384)
+    -- Tall enough for four choices and twelve rows of boxes above Reset (Behind you and Loose share the last).
+    local HEIGHT = 456
+    testPanel:SetSize(300, HEIGHT)
     testPanel:SetFrameLevel(canvas:GetFrameLevel() + 30)
     testPanel:EnableMouse(true)
     local testArt = chrome.CreatePanelArt(testPanel, "dark")
@@ -184,9 +192,9 @@ local function BuildTestPanel(canvas)
     local function Changed()
         Options:RefreshEditorAppearance(PS.GetSettings())
     end
-    -- Health % and the combo points, side by side.
+    -- Health %, the combo points and how many of your group target the unit, side by side.
     local healthText = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    healthText:SetPoint("TOPRIGHT", testPanel, "TOPLEFT", 140, -14)
+    healthText:SetPoint("TOPRIGHT", testPanel, "TOPLEFT", 98, -14)
     local healthLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     healthLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 16, -14)
     healthLabel:SetText(L["Health %"])
@@ -196,7 +204,7 @@ local function BuildTestPanel(canvas)
     end
     -- While dragged only the preview follows, once a frame; letting go refreshes the rest.
     local healthSlider = PS.UI.Controls.Slider(testPanel, {
-        min = 0, max = 100, step = 1, x = 14, y = -32, width = 126, valueText = healthText,
+        min = 0, max = 100, step = 1, x = 14, y = -32, width = 84, valueText = healthText,
         format = PS.Format.Percent,
         get = function() return samples["health.percent"] or 72 end,
         drag = function(value)
@@ -210,12 +218,12 @@ local function BuildTestPanel(canvas)
     })
     testControls[#testControls + 1] = healthSlider
     local comboText = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    comboText:SetPoint("TOPRIGHT", testPanel, "TOPRIGHT", -16, -14)
+    comboText:SetPoint("TOPRIGHT", testPanel, "TOPLEFT", 192, -14)
     local comboLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    comboLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 160, -14)
+    comboLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 110, -14)
     comboLabel:SetText(L["Combo points"])
     local comboSlider = PS.UI.Controls.Slider(testPanel, {
-        min = 0, max = 5, step = 1, x = 158, y = -32, width = 126, valueText = comboText,
+        min = 0, max = 5, step = 1, x = 108, y = -32, width = 84, valueText = comboText,
         get = function() return tonumber(samples.combo) or 3 end,
         drag = function(value)
             samples.combo = value
@@ -228,6 +236,28 @@ local function BuildTestPanel(canvas)
     })
     Options.editorTestComboSlider = comboSlider
     testControls[#testControls + 1] = comboSlider
+    -- targeted.count: Targeted by's Count only and what rules and custom text read.
+    local targetedText = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    targetedText:SetPoint("TOPRIGHT", testPanel, "TOPRIGHT", -14, -14)
+    local targetedLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    targetedLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 204, -14)
+    targetedLabel:SetText(L["Targeted by"])
+    local targetedSlider = PS.UI.Controls.Slider(testPanel, {
+        min = 0, max = 40, step = 1, x = 202, y = -32, width = 84, valueText = targetedText,
+        get = function() return tonumber(samples["targeted.count"]) or 2 end,
+        drag = function(value)
+            samples["targeted.count"] = value
+            Options:QueueRefresh()
+        end,
+        set = function(value)
+            samples["targeted.count"] = value
+            Changed()
+        end,
+    })
+    PS.UI.Controls.AttachTooltip(targetedSlider, L["Targeted by"], { L["How many of your group target the unit: "
+        .. "Targeted by's Count only shows it, and rules and custom text read it as targeted.count."] })
+    Options.editorTestTargetedSlider = targetedSlider
+    testControls[#testControls + 1] = targetedSlider
     -- The unit's classification as one choice (normal, elite, rare, rare elite, boss): it sets the elite, rare and
     -- boss flags, which rules and custom text read and the mark draws (Options.SampleClassification).
     local classLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -273,6 +303,52 @@ local function BuildTestPanel(canvas)
         .. "rules and custom text read this as object.kind (herb, ore, inspect, loot, quest, talk, trainer)."] })
     Options.editorTestObjectKind = objectKind
     testControls[#testControls + 1] = objectKind
+    -- How far the unit is (range.band, with the {range} and unit.inrange it gives: Options.SetSampleRangeBand), for the
+    -- Range part and rules; In range (a box below) follows it, and it follows the box.
+    local inRangeBox
+    local rangeLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    rangeLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 16, -124)
+    rangeLabel:SetText(L["Range"])
+    local rangeBand = PS.UI.Controls.Dropdown(testPanel, {
+        x = 84, y = -114, width = 160,
+        choices = { { value = "melee", label = L["Melee (5 yards)"] }, { value = "near", label = L["Near (20 yards)"] },
+            { value = "far", label = L["Far (your longest spell)"] }, { value = "out", label = L["Out of range"] } },
+        get = function() return samples["range.band"] or "near" end,
+        set = function(value)
+            Options.SetSampleRangeBand(samples, value)
+            if inRangeBox then inRangeBox:Refresh() end
+            Changed()
+        end,
+    })
+    PS.UI.Controls.AttachTooltip(rangeBand, L["Range"], { L["How far the unit is, from the spells you know: the Range "
+        .. "part's distance, and what rules and custom text read as range.band, {range} and unit.inrange."] })
+    Options.editorTestRangeBand = rangeBand
+    testControls[#testControls + 1] = rangeBand
+    -- The unit's creature type (unit.creature, and {creature} as the game names it), a few of the game's.
+    local creatureLabel = testPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    creatureLabel:SetPoint("TOPLEFT", testPanel, "TOPLEFT", 16, -150)
+    creatureLabel:SetText(L["Creature"])
+    local creatureChoices = {
+        { value = "humanoid", label = L["Humanoid"] }, { value = "beast", label = L["Beast"] },
+        { value = "undead", label = L["Undead"] }, { value = "demon", label = L["Demon"] },
+        { value = "elemental", label = L["Elemental"] }, { value = "dragonkin", label = L["Dragonkin"] },
+        { value = "giant", label = L["Giant"] }, { value = "mechanical", label = L["Mechanical"] },
+        { value = "critter", label = L["Critter"] }, { value = "totem", label = L["Totem"] },
+    }
+    local creature = PS.UI.Controls.Dropdown(testPanel, {
+        x = 84, y = -140, width = 160, choices = creatureChoices,
+        get = function() return samples["unit.creature"] or "humanoid" end,
+        set = function(value)
+            for _, choice in ipairs(creatureChoices) do
+                if choice.value == value then samples["unit.creature"], samples["creature"] = value, choice.label end
+            end
+            Changed()
+        end,
+    })
+    PS.UI.Controls.AttachTooltip(creature, L["Creature"], { L["The unit's creature type: rules read it as "
+        .. "unit.creature (beast, critter, totem...), custom text as {creature}."] })
+    Options.editorTestCreature = creature
+    testControls[#testControls + 1] = creature
     -- Each flag shows in the preview (and in rules and custom text): unit.tagged the indicator (elite,
     -- rare and boss are the Elite / rare choice above), cast.active and cast.interruptible the cast bar, you.combat and
     -- threat.holding the threat text, unit.target the glow, quest.needed the marker, unit.friendly, unit.hostile and
@@ -290,22 +366,31 @@ local function BuildTestPanel(canvas)
         { "threat.pulling", L["Pulling threat"] }, { "threat.other", L["Someone else has it"] },
         { "threat.offtank", L["Other tank has it"] }, { "you.hastarget", L["Has a target"] }, { "unit.inrange", L["In range"] },
         -- object.unable: the Action icon's Unable look (its Can't use choice) and the Objects preset's fade.
-        -- object.cancultivate: a herb's Status text adds Cultivate ready, and it does not fade.
+        -- object.cancultivate: a herb's Status text adds Cultivate ready, and it does not fade. interact.inrange: Out of
+        -- reach's cue while unticked (beside it, in the left column).
         { "object.unable", L["Can't use yet"] }, { "object.cancultivate", L["Cultivation ready"], slot = 22 },
-        -- threat.loose: the Loose mark (with You tank, or its Show for: Everyone) and rules. In the right column
-        -- beside Reset (slot; rows 20 px apart), so the panel keeps its height.
+        { "interact.inrange", L["Within reach"], slot = 21 },
+        -- threat.loose: the Loose mark (with You tank, or its For: Everyone) and rules, in the last row's right
+        -- column (slot; rows 20 px apart). unit.behind: the Behind you part and rules, beside it; Reset is under them.
         { "threat.loose", L["Loose"], slot = 24 },
+        { "unit.behind", L["Behind you"], slot = 23 },
     }
     -- slot: where the box goes, two to a row 20 px apart (a built-in flag may name its own).
     local function FlagBox(slot, flag, label, module)
         local column, row = (slot - 1) % 2, math.floor((slot - 1) / 2)
         local checkbox = PS.UI.Controls.Checkbox(testPanel, {
-            label = label, x = 12 + column * 144, y = -122 - row * 20, labelTemplate = "GameFontHighlightSmall",
+            label = label, x = 12 + column * 144, y = -174 - row * 20, labelTemplate = "GameFontHighlightSmall",
             tooltip = { title = label, lines = { string.format(L["Rules and custom text read this as %s."], flag),
                 module and L["From another addon."] or nil } },
             get = function() return samples[flag] == true end,
             set = function(on)
                 samples[flag] = on and true or false
+                -- In range and the Range choice say the same: out of range is the out band, back in range is near.
+                if flag == "unit.inrange" then
+                    local band = samples["range.band"]
+                    Options.SetSampleRangeBand(samples, not on and "out" or (band ~= "out" and band) or "near")
+                    rangeBand:Refresh()
+                end
                 Changed()
             end,
         })
@@ -316,7 +401,8 @@ local function BuildTestPanel(canvas)
     local lastSlot = 0
     for index, entry in ipairs(flags) do
         local slot = entry.slot or index
-        FlagBox(slot, entry[1], entry[2])
+        local box = FlagBox(slot, entry[1], entry[2])
+        if entry[1] == "unit.inrange" then inRangeBox = box end
         lastSlot = math.max(lastSlot, slot)
     end
     -- Then other addons' boolean facts (PlateSmith:RegisterFact), a few at most, each added the first time the panel
@@ -332,9 +418,9 @@ local function BuildTestPanel(canvas)
                 FlagBox(lastSlot + #flags - builtIn, token.id, token.label or token.id, true):Refresh()
             end
         end
-        -- Below the last built-in row (beside Reset), so Reset moves down under them.
+        -- Below the last built-in row (in Reset's), so Reset moves down under them.
         local rows = math.ceil((#flags - builtIn) / 2)
-        testPanel:SetHeight(384 + (rows > 0 and rows * 20 + 24 or 0))
+        testPanel:SetHeight(HEIGHT + (rows > 0 and rows * 20 + 24 or 0))
         Options.editorTestModuleFlags = #flags - builtIn
     end
     AddModuleFlags()
@@ -377,7 +463,7 @@ function Options:EditorSettingsCategories()
         self.editorSettingsCategoryList, self.editorSettingsCategoryContent = list, content
         self.editorSettingsCategoryScrollBar = chrome.CreateStudioScrollBar(list, categories)
         local header = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        header:SetFont(LABEL_FONT, 15)
+        header:SetFont(LABEL_FONT, 13)
         header:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
         header:SetText(L["Modules"])
         header:Hide()
@@ -392,7 +478,19 @@ end
 function Options:EditorSettingsCategoryRow(index)
     local rows = self.editorSettingsCategoryRows
     if rows[index] then return rows[index] end
-    local row = CreateStudioButton(self.editorSettingsCategoryContent, "", 282, 44, "category")
+    local metrics = self.editorSettingsCategoryMetrics
+    local row = CreateStudioButton(self.editorSettingsCategoryContent, "", 282, metrics.rowH, "category")
+    -- Drawn as a list row (Chrome's SetStudioButtonState: studioNav), not the category button art.
+    row.studioNav = true
+    row.navFill = row:CreateTexture(nil, "BACKGROUND")
+    row.navFill:SetAllPoints(row)
+    row.navBar = row:CreateTexture(nil, "ARTWORK")
+    row.navBar:SetColorTexture(0.89, 0.75, 0.13, 1)
+    row.navBar:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+    row.navBar:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+    row.navBar:SetWidth(3)
+    row.studioFontSize = metrics.font
+    row.label:SetFont(LABEL_FONT, metrics.font)
     row:SetScript("OnClick", function(instance)
         if instance.categoryKey then self:SetSettingsCategory(instance.categoryKey) end
     end)
@@ -427,6 +525,10 @@ function PS.CreateVisualEditor()
         if editor.SetMaxResize then editor:SetMaxResize(1600, 1000) end
     end
     editor:EnableMouse(true)
+    -- Only the painted frame takes the pointer: the clear margin round it (the rails start 9 px in, the corners and
+    -- close box 47 px down, the bottom moulding ends 24 px up) lets clicks through to what is behind. The plaque
+    -- reaches above that line; its own grab (below) keeps it a handle.
+    if editor.SetHitRectInsets then editor:SetHitRectInsets(FRAME_HIT.left, FRAME_HIT.right, FRAME_HIT.top, FRAME_HIT.bottom) end
     editor:RegisterForDrag("LeftButton")
     editor:SetClampedToScreen(true)
     editor:SetScript("OnDragStart", function(instance) instance:StartMoving() end)
@@ -475,6 +577,16 @@ function PS.CreateVisualEditor()
     -- The painted frame (Chrome's LayoutEditorShell places it).
     Options.editorShell = chrome.CreateEditorShell(editor)
     local base = editor:GetFrameLevel()
+    -- The plaque above the pointer area moves Studio like the rest of the frame (centred, as LayoutEditorShell
+    -- places it).
+    local grab = CreateFrame("Frame", nil, editor)
+    grab:SetPoint("TOP", editor, "TOP", 0, -PLAQUE_GRAB.top)
+    grab:SetSize(PLAQUE_GRAB.width, FRAME_HIT.top - PLAQUE_GRAB.top)
+    grab:EnableMouse(true)
+    grab:RegisterForDrag("LeftButton")
+    grab:SetScript("OnDragStart", function() editor:StartMoving() end)
+    grab:SetScript("OnDragStop", function() editor:StopMovingOrSizing() end)
+    Options.editorPlaqueGrab = grab
 
     -- The close button, seated in the close corner's recess over its solid backing.
     local close = chrome.CreateCloseButton(editor)
@@ -536,7 +648,7 @@ function PS.CreateVisualEditor()
     studioToggle:SetScript("OnClick", function() Options:SetEditorInspectorPage("components") end)
     Options.editorStudioToggle = studioToggle
     local settingsToggle = CreateStudioButton(header, L["Settings"], 94, 32, "toggle")
-    settingsToggle:SetScript("OnClick", function() Options:SetEditorInspectorPage(Options.editorSettingsCategory or "plate") end)
+    settingsToggle:SetScript("OnClick", function() Options:ShowStudioSettings() end)
     Options.editorSettingsButton = settingsToggle
 
     Options.editorProfileLabel = HeaderLabel(header, L["Profile:"])
@@ -609,6 +721,17 @@ function PS.CreateVisualEditor()
                 Options:PromptStudioName(L["Name for the copy:"], string.format(L["%s copy"], active),
                     function(text) return ProfileAction(Profiles.Create(text, active)) end)
             end }
+        -- A copy named after this character (or "<name> 2" when that is taken), which becomes this character's.
+        local character, suggested = Profiles.CharacterProfileName()
+        if character then
+            items[#items + 1] = { text = string.format(L["New profile for %s..."], character), disabled = dirty,
+                tooltip = dirty and switchTip or L["A copy of this profile named after this character, used by this "
+                    .. "character from now on. Your other characters keep theirs."],
+                func = function()
+                    Options:PromptStudioName(L["Name for this character's profile:"], suggested or character,
+                        function(text) return ProfileAction(Profiles.Create(text, active)) end)
+                end }
+        end
         items[#items + 1] = { text = L["Rename this profile..."], func = function()
             Options:PromptStudioName(L["New name for this profile:"], active,
                 function(text) return ProfileAction(Profiles.Rename(text)) end)
@@ -626,12 +749,10 @@ function PS.CreateVisualEditor()
         -- The active profile cannot be deleted, so with only one there is nothing to delete.
         items[#items + 1] = { text = L["Delete a profile"], children = deletable, disabled = #deletable == 0,
             tooltip = #deletable == 0 and L["There is no other profile to delete. The one in use cannot be deleted."] or nil }
-        -- Settings › Profiles › Automatic switching (Blizzard's Settings panel, closed to addons in combat).
-        local inCombat = PS.Secret.InCombat()
+        -- Studio › Settings › Profiles › Automatic switching (Studio's own page, so in combat too).
         items[#items + 1] = { separator = true }
-        items[#items + 1] = { text = L["Switch automatically..."], disabled = inCombat,
-            tooltip = inCombat and L["Blizzard's Settings panel opens only out of combat."]
-                or L["Choose a profile this character switches to by itself, by content or specialization."],
+        items[#items + 1] = { text = L["Switch automatically..."],
+            tooltip = L["Choose a profile this character switches to by itself, by content or specialization."],
             func = function() Options:OpenAutoProfileSettings() end }
         return items
     end
@@ -990,4 +1111,12 @@ function PS.OpenVisualEditor()
     local Performance = PS.Performance
     if Performance and Performance.RunAction then return Performance.RunAction(Performance.ACTIONS.open, OpenVisualEditor) end
     return OpenVisualEditor()
+end
+
+-- Studio's Settings, at the page it showed last (the header's Settings toggle): the minimap button's right-click.
+function Options:ShowStudioSettings() self:SetEditorInspectorPage(self.editorSettingsCategory or "plate") end
+function PS.OpenStudioSettings()
+    if not PS.OpenVisualEditor() then return false end
+    Options:ShowStudioSettings()
+    return true
 end

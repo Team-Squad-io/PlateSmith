@@ -149,13 +149,14 @@ end
 
 -- The kit's builders mark what a settings search can find: a section's title (kitSearchTitle), a
 -- row's or sub-heading's label (kitSearchLabel, a check's own text after its label in
--- kitSearchExtra) and help (kitSearchHelp). SearchEntries walks a built flow (a page) in flow order
+-- kitSearchExtra), other names for it (kitSearchKeywords) and help (kitSearchHelp). SearchEntries walks a built flow (a page) in flow order
 -- and returns { frame, label, extra, help, section, item } for each section and labelled row (item:
 -- its entry in the flow that holds it); help joins the row or section above it, and help with
 -- neither above it is left out. A row's tooltip help
 -- (kitSearchHelpText, config.helpAsTooltip) is its help too. Text is read as it is now, so help set
--- after building is found too.
-function Layout.SearchEntries(root)
+-- after building is found too. A sub-heading's entry says heading. keep(item), when given, leaves out each item
+-- it refuses and all under it (the rows a layout would hide).
+function Layout.SearchEntries(root, keep)
     local entries = {}
     local function HelpText(frame)
         local text = frame.text and frame.text.GetText and frame.text:GetText()
@@ -165,8 +166,12 @@ function Layout.SearchEntries(root)
         local last = owner
         for _, item in ipairs(flow.flowItems or {}) do
             local frame = item.frame
-            if frame.kitSearchTitle then
-                local entry = { frame = frame, label = frame.kitSearchTitle, section = frame, item = item }
+            if keep and not keep(item) then
+                -- Help after a row left out is that row's, not the one before it.
+                if frame.kitSearchTitle or frame.kitSearchLabel then last = nil end
+            elseif frame.kitSearchTitle then
+                local entry = { frame = frame, label = frame.kitSearchTitle, section = frame, item = item,
+                    keywords = frame.kitSearchKeywords }
                 entries[#entries + 1] = entry
                 Walk(frame, frame, entry)
                 last = entry
@@ -175,7 +180,8 @@ function Layout.SearchEntries(root)
                 if text then last.help = last.help and (last.help .. " " .. text) or text end
             elseif frame.kitSearchLabel then
                 last = { frame = frame, label = frame.kitSearchLabel, extra = frame.kitSearchExtra, section = section,
-                    help = frame.kitSearchHelpText, item = item }
+                    help = frame.kitSearchHelpText, keywords = frame.kitSearchKeywords, item = item,
+                    heading = frame.kitSearchHeading }
                 entries[#entries + 1] = last
             elseif frame.flowItems then
                 last = Walk(frame, section, last)
@@ -705,7 +711,7 @@ function Layout.New(config)
         frame.flowBefore, frame.flowAfter = K.SUB_TOP, K.SUB_GAP
         frame.text = K.Text(frame, text, "sub")
         frame.text:SetPoint("LEFT", frame, "LEFT", 0, 0)
-        frame.kitSearchLabel = text
+        frame.kitSearchLabel, frame.kitSearchHeading = text, true
         return frame
     end
 
@@ -1064,8 +1070,8 @@ function Layout.New(config)
     -- A row of mutually exclusive choices, equal widths from the control column. spec: choices
     -- ({ value, label, icon, tooltip }; icon "left", "right", "top" or "bottom" draws that arrow
     -- through config.segmentIcon), get, set, enabled(value) (a segment it refuses keeps its fill
-    -- with its word or arrow dimmed, and its tooltip adds spec.disabledTip, text or a function
-    -- returning it), name, x, width
+    -- with its word or arrow dimmed, and its tooltip adds spec.disabledTip, text or a function of
+    -- the segment's value returning it), name, x, width
     -- (default: to the row's end, following it).
     function K.Segmented(parent, spec)
         local control = CreateFrame("Frame", spec.name, parent)
@@ -1099,7 +1105,7 @@ function Layout.New(config)
                 GameTooltip:SetOwner(instance, "ANCHOR_RIGHT")
                 GameTooltip:SetText(choice.tooltip or choice.label)
                 local tip = spec.disabledTip
-                if type(tip) == "function" then tip = tip() end
+                if type(tip) == "function" then tip = tip(choice.value) end
                 if not instance:IsEnabled() and tip then GameTooltip:AddLine(tip, 1, 0.82, 0.45, true) end
                 GameTooltip:Show()
             end)
@@ -1252,17 +1258,29 @@ function Layout.New(config)
 
     -- Buttons side by side, CONTROL_GAP apart, from the control column (from the row's start when
     -- the row has no label). buttons: { { text, width, onClick }, ... }; returns the row and them.
+    -- label "" lines the buttons up under the controls (no label of their own); where they would not fit after it
+    -- (a narrow column), they start at the row's left edge instead of running off it.
     function K.ButtonsRow(parent, label, buttons)
         local row = K.Row(parent, label)
-        local x, made, words = label and K.CONTROL_X or 0, {}, {}
+        local total, made, words = -K.CONTROL_GAP, {}, {}
         for index, spec in ipairs(buttons) do
             local button = MakeButton(row, spec[1], spec[2])
-            button:SetPoint("LEFT", row, "LEFT", x, 0)
             if spec[3] then button:SetScript("OnClick", spec[3]) end
-            x = x + spec[2] + K.CONTROL_GAP
+            total = total + spec[2] + K.CONTROL_GAP
             made[index] = button
             words[index] = spec[1]
         end
+        local function Place(width)
+            local x = label and K.CONTROL_X or 0
+            if label == "" and x + total > width then x = 0 end
+            for index, spec in ipairs(buttons) do
+                made[index]:ClearAllPoints()
+                made[index]:SetPoint("LEFT", row, "LEFT", x, 0)
+                x = x + spec[2] + K.CONTROL_GAP
+            end
+        end
+        Place(K.WIDTH)
+        if label == "" then K.OnWidth(row, function(width) Place(width - (row.inset or 0)) end) end
         row.buttons = made
         if not row.kitSearchLabel and #words > 0 then row.kitSearchLabel = table.concat(words, " / ") end
         return row, made

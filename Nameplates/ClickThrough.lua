@@ -160,7 +160,7 @@ local function Release(name, immediate, keep)
     if ChangedElsewhere(name) then
         NamePolicy.ForgetCaptured(GROUP, name)
     elseif not immediate and original ~= nil and Secret.InCombat() then
-        if NamePolicy.Pending(name) ~= original then NamePolicy.Write(name, original) end
+        if NamePolicy.Pending(name) ~= original then NamePolicy.Write(name, original, nil, GROUP) end
     else
         NamePolicy.RestoreGroup(GROUP, name, immediate, keep)
     end

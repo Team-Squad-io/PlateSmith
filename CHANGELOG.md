@@ -2,6 +2,231 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.4.0
+
+### New
+
+- **Threat breakdown.** A threat window's title menu › **Threat breakdown...**: your own threat for your last pull,
+  worked out from Blizzard's damage meter (your damage per ability, once combat ends) and your casts, with each
+  ability's modifier (Bear Form x2.15, Maul and Swipe x1.75, Primal Bite x3, Faerie Fire, Demoralizing Roar), threat per
+  second, rage from damage taken, and the game's own threat where it can be read. Also your armor reduction against
+  the mob, what attack power adds, and your last ten pulls.
+- **Incoming heals and absorbs on health bars.** Studio › Health bar › **Incoming heals**: **All heals** draws the
+  heals on their way to the unit as a soft green bar after its health, the way the game's unit frames do; **Others'
+  heals only** leaves out your own. **Absorbs** adds shields (pale blue, after the health and heals) and heal absorbs
+  (dark red, over the end of the health). Each has its own colour, and each design (World, Dungeons & raids, PvP,
+  City, Enemy players) has its own setting, with Reset to World. Both are off until you turn them on, so your plates
+  look as they did. The game keeps the amounts hidden from addons, so the game itself draws them; where it gives
+  nothing (or, for Others' heals only, cannot tell yours apart), nothing shows. Blueprints carry them. PlateSmith's own
+  plates only: Blizzard's (friendly plates in dungeons) are left as they are. **Copy to all plate types** gives the
+  same design of every other plate type the open one's heals, absorbs and colours in one step.
+- **Totems, styled on their own.** The Enemies and Friendly NPCs tabs have a **Type** beside Design, as Objects do:
+  **All NPCs** or **Totems**. With Totems open, everything you change (parts, sizes, colours, rules) is for totems
+  only, in every place, and the rest of the tab's plates stay as they are; enemy shamans' totems (Enemies) and your
+  group's (Friendly NPCs) each have their own. Plate settings there has **Display**: **Plate** (the default: the
+  Totems plate you designed), **Icon** (just the totem's icon), **Icon and name**, **Name only** (no health bar or
+  level) or **Hidden** (no plate), so a party shaman's Mana Spring Totem can be just its icon. The icon is a part of
+  its own, **Totem icon** (+ Add › Shape, or added for you when you pick Icon): move it, size it, pin it, give it
+  rules like any image; any image's **From › Totem** shows it too. + Add greys out what a totem never has (cast
+  bar, auras, power and threat parts), so what you can add reads at a glance. The preview shows a totem. **Reset to All NPCs**
+  takes Totems back, and Blueprints carry them. The icon is the totem spell's; a totem whose icon isn't known (a
+  creature's own totem, or another language's name for one you don't have yourself) shows a plain totem icon. In dungeons & raids
+  Blizzard draws friendly plates, which PlateSmith never hides: there it changes only PlateSmith's own optional text.
+- **Colour the target edge.** Studio › Plate settings › Target highlight has an **Edge colour**: **Gold** (the edge's
+  own gold, as always and the default), **Custom**, **Class**, **Reaction** or **Threat**, the same choices as the soft
+  glow's colour and picked the same way. It colours the bars' edges and the text's glow, and the health bar's outline
+  on your target (with **Soft glow behind** too). **Threat** is your threat colour on the target while you're in combat
+  with it, and the custom colour otherwise. Like the rest of the highlight it can differ per plate type and design.
+  **Gold edge** is now called **Edge**. Your plates keep their gold until you pick another colour, and a Blueprint
+  carries the colour only when it isn't Gold.
+- **Threat text: Gap only.** Studio › Threat › Display › **Threat text** has **Gap only**: just your margin, such as
+  **+1.2k** or **-300**, without the %. Where the game keeps the gap private it shows what **% and gap** shows then: your
+  threat %, or YOU. It is also the Tank window's threat column and the threat text on Blizzard's plates when you use
+  that.
+- **Minimap button.** PlateSmith has a button on the minimap's edge, for minimaps without the addon menu: left-click
+  opens Blueprint Studio, right-click Studio's Settings, and drag it to move it round the edge (it remembers where, for
+  all your characters). Turn it off in Studio › Settings › Studio › **Show minimap button**. Round and square minimaps
+  both work.
+- **A profile for this character.** Studio's **Profile** menu has **New profile for <your character>...**: a copy of
+  the profile you're using, named after your character (or "Name 2" when that is taken), which this character then
+  uses. Your other characters keep theirs. Like New and Duplicate it waits until your changes are saved or reverted.
+- **Images: add your own bits to any plate.** Studio's **+ Add › Shape › Icon** is now **Image**, and an image's
+  **Picture** comes **From** PlateSmith's pictures (the old twelve icons, plus an arrow, a spark and a soft glow), a
+  game **Atlas** (type its name), **Shared** media from other addons (LibSharedMedia, when installed) or **Mine**, your
+  own files. An image can be sized by its own Width and Height or **Fit to part** (as big as the part it is anchored
+  to, with an Outset), **Flip**ped, **Turn**ed by quarter turns, **Tint**ed by its own colour, the bar it sits on,
+  class, reaction or threat, and given its own **Opacity** (rules still go on top). Boxes can Fit to part and have an
+  Opacity too. Your saved icon parts look exactly as they did.
+- **Ride the bar's fill.** A custom part pinned to a bar's top, bottom or right edge can tick **Ride the bar's fill**:
+  it then sits at the end of the bar's fill and the game moves it as the health, power or cast changes. **If not
+  shown** says what it does while that bar is hidden (a mob with no mana): **Hide it**, or ride the **Next bar**.
+- **Decoration sets.** **+ Add › Decoration set** adds a ready-made group of parts in one step, as ordinary parts you can
+  change: **Target arrows** (an arrow either side of the health bar pointing in, shown only on your target by a rule)
+  and **Fill marker** (a spark riding the end of the health bar's fill).
+- **My media.** Studio › Settings › **My media**: name your own .tga, .blp or .png files from a folder inside
+  Interface\AddOns\ and pick them in an image's Picture; each one in the list has its own **Remove**. They are yours
+  (saved at once, never in a profile). A
+  Blueprint carries only a picture's name, never a file, and the import review lists any picture you don't have; such a
+  part draws nothing on the plates and shows a dashed red box in Studio.
+- Blueprints with images or parts riding a fill need PlateSmith 1.4.0 to show them in full; 1.2.0 to 1.3.2 import
+  them and draw the part's icon (a skull, unless it was one of the twelve icons) on the bar's edge instead.
+- **Corpse plates.** Studio › Settings › Objects & interacting › **Corpses** › **Corpse plates** (off until you turn
+  it on): a dead mob gets a small plate in your Objects style instead of an empty enemy bar, near or far: its name, no
+  health bar or level. The game's own loot or skinning icon joins it once the game gives one, which it does for the
+  corpse your interact key would use, so Corpse plates turn on Interact key › **Interact key target** and **Plate on
+  it** while they are on (those rows read On, greyed; your own choices come back when they are off). A mob with nothing
+  left to loot keeps its plain corpse plate, and holding Shift or walking away never turns it back into an enemy plate:
+  only its death decides. If another addon turns one of those settings off, the section says so with a **Turn them
+  back on** button. Clicking it loots as before:
+  PlateSmith adds nothing that catches the mouse. Studio › Objects › Type has **Corpses**, so they can look different
+  from chests; while Corpse plates are off, its Plate settings say so, with a **Turn on** button. Your own choice: not
+  shared in Blueprints.
+- **Out of reach.** Studio › Objects › Plate settings › **Object looks** › **When out of reach**: an object, corpse
+  or Friendly NPC with an action icon that the game says is out of reach can **Dim the plate** or **Grey the name**,
+  as well as the game's greyed icon. Where the game can't say, nothing changes. Off (**Game's icon only**) until you
+  pick one; Studio's preview shows it with Test values' new **Within reach** box, and Blueprints carry it.
+- **"Too far" you can place and style.** Studio › Objects › **+ Add › Text › Range** (off the plate until you add it): the
+  game's in-reach answer as **Words** ("Too far"), a **Dot** or both, shown out of reach, in reach or always, with your
+  own words, colours, font and size, anywhere on the plate.
+- **Range.** Studio's **+ Add › Text › Range** puts a range part on Enemies, Enemy players, Players or Friendly NPCs
+  (on Objects it shows whether you can reach the object instead). **Display**: a **Dot**, the **Distance** (such as **<30**, or **30+** past
+  your longest spell) or **Dot and distance**; **Show**: **Out of range** (the default), **In range** or **Always**; an
+  **In range** colour (green) and an **Out of range** colour (red), and the font, size and place of any text part. It
+  hides while the range is unknown (not checked yet, or the game keeps it), so it never guesses. Off on every plate
+  until you add it; Test values' **In range** previews it, and Blueprints carry it.
+- **Range from your spellbook.** Whether a unit is in range now comes from every spell you know with a range of its
+  own: harmful spells on enemies, helpful ones (heals, buffs) on Players and Friendly NPCs, one for each distinct range.
+  So the bands get finer as you learn spells, and talents that lengthen a range count. Learning a spell, a new level and
+  a talent or spec change update it. A spell with a minimum range (Charge, Auto Shot) that says no may mean too close,
+  so PlateSmith never reads that as out of range. Classes with no helpful spell for others (hunters, rogues, warriors)
+  get the game's follow distance for friends out of combat. Where the game keeps the answer in combat, it is unknown
+  and nothing changes. Fade out of range still fades enemy plates only.
+- **Range bands.** New rule and custom text words: `range.band` is **melee** (within 5 yards), **near** (20), **far**
+  (within your longest spell) or **out**, and `{range}` writes it as text: the nearest reach the unit is within, such as
+  **<5**, **<20** or **<30**, or **30+** past your longest. They come from the ranges of the spells you know (and, out of
+  combat, the game's duel and follow distances), so they are as close as your spells can tell, not exact yards.
+  `range.known` says whether there is an answer at all, and `unit.inrange` works on Players and Friendly NPCs too.
+  Range checks still run only while the Range part shows or something reads them, a few plates at a time.
+- **Behind you.** Studio's **+ Add › Icons › Behind you** marks your target's plate while the game says it is behind
+  the camera (it shows that plate at the screen's edge: Studio › Settings › Stacking & distance › Target behind you:
+  range). **Display**: an **Icon** (an arrow pointing at the name) or **Text** ("Behind you"); **For**: **Target only**
+  (the default) or **Target and focus**; and its **Colour** and size. Only the game's own yes shows it. The rule word
+  `unit.behind` is true for your target's and your focus's plates. Off until you add it; Test values' **Behind you**
+  (with **Your target**) previews it.
+- **PvP words.** `pvp.sanctuary` (the unit is in a sanctuary) and `pvp.you` (you are flagged for PvP yourself) for
+  rules and custom text. Your own flag follows as it changes.
+- **Targeted by: Count only.** Studio › Targeted by › Display › **Display** › **Count only** puts one small number on the
+  enemy's plate, such as **34**, instead of a badge per member: how many of your whole group or raid (not you) target
+  it. Only the answers the game gives are counted; nothing shows while no one does. Badges stay the default. Rules and
+  custom text read it as `targeted.count` (`{targeted.count}`), and Test values' **Targeted by** previews it.
+- **Creature type words.** `unit.creature` for rules (beast, humanoid, undead, demon, elemental, dragonkin, giant,
+  mechanical, critter, totem, notspecified and the rest: the same word whatever your game's language) and
+  `{creature}` for custom text (the game's own name for it, in your language). They show nothing unless you use them.
+- **+ Word for rules.** Beside each rule's condition, **+ Word** lists the words a condition can use on that plate type,
+  by topic as Settings › Help's rule words do, with what each means on hover. Pick one and it is added as a condition
+  that works, ready to edit (`range.band = melee`, `unit.creature = beast`, `pvp.you`): where the cursor was, if a
+  condition can start there, else after **and**. Rules › **Presets** has two new sets: **Melee range colour** (Enemies,
+  Enemy players: a colour while the unit is in melee range) and **Fade critters** (Enemies, Friendly NPCs). Test values
+  has **Range** (melee, near, far or out, which **In range** follows) and **Creature** to preview rules on them.
+- **Level difficulty colours.** Studio › Level › Display › **Colour** › **Difficulty** colours the level the way the
+  game does: red, orange, yellow, green or grey for its level against yours, and red for ??. Each design has its own
+  choice; Normal stays the default, so your plates look as they did. The looks colour the level gold with a rule, and a
+  rule wins: the row says so, and a rule's **Then** now has **Set difficulty colour** too. Where the game hides the
+  level, it keeps its normal colour.
+- **Hidden auras.** Studio › Settings › Aura defaults › **Hidden auras**: type a spell ID or an aura's name (any
+  case), tick the plates it is hidden on (**Hide on:** Enemies, Enemy players, Players, Friendly NPCs; all by default)
+  and **Add**; each one in the list has its own **Remove**.
+  No plate shows it, and the row fills with the next aura instead. Good for Resurrection Sickness or Boosted
+  Experience. It is yours on every profile, kept at once (nothing to Save) and never in a Blueprint. In dungeons &
+  raids, and wherever the game keeps an aura's ID and name from addons, the game draws the aura icons itself and every
+  aura still shows.
+- **Friendly player plates for your group only.** Studio › Settings › Behaviour & display › Where plates show ›
+  **Friendly players**: **Everyone** (as before, the default), **Your group only** or **Your group & guild**. Other players get no plate, and someone who
+  joins your group gets one at once. It works on the plates PlateSmith draws; Blizzard's own (Show as Blizzard's
+  plates, and friendly plates in dungeons & raids) are left as they are. Studio › Players › Plate settings › Friendly
+  plates has the same **Friendly players** row. Not shared in Blueprints.
+- **NPC titles under their names.** Studio › Friendly NPCs › **Title** shows an NPC's title, such as
+  **<Flight Master>** or **<Innkeeper>**, under its name, read from the game's tooltip. It is off until you turn its
+  eye on, so your plates look as they did. Outside dungeons & raids, where Blizzard draws friendly NPCs.
+
+- **Activity log.** `/ps diagnose` › **Activity**: what changed, when, and who did it, for the "it turned itself off"
+  moments. Game settings PlateSmith changes, nameplate settings another addon or the game changes (with the addon's
+  name when the game shows it), profile saves and switches, Hidden auras, My media and the minimap button, logins and
+  changes of place; the last 200, kept across reloads. The report carries the newest lines.
+- **What's new, once per release.** On your first login after PlateSmith updates to a new release, a small window lists
+  the release's highlights, with **Open Studio** and **Close** (never in combat: it waits until the fight ends). Tick
+  **Don't show on startup** and it stops; Studio › Settings › Studio › Notices › **Show what's new when PlateSmith
+  updates** turns it back on, and Settings › Help › **What's new...** shows it any time. A new install doesn't get it.
+
+### Changed
+
+- **Minimap button toggles.** Clicked again, it closes what it opened (left: Studio, right: Settings); the addon
+  menu's entry does the same.
+- **Clicks pass round Studio.** The clear margin around Blueprint Studio's painted frame no longer blocks what is
+  behind it; the frame and its plaque still move the window.
+- **Optional parts.** Settings › Behaviour & display › **Show on plates** is now **Optional parts** and names each part
+  as the tree does: Quest marker, Tagged indicator, Threat, Elite / rare mark, and the parts that start off: Title,
+  Range, Behind you, Targeted by and Loose mark. Each box shows or hides that part on every plate type, as before; a
+  part on no plate has **+ Add** instead, which opens Studio and adds it there. Your saved eyes stay as they are.
+- **+ Add explains itself.** Every entry in Studio's **+ Add** menu has a line saying what it adds, and 1.4.0's new
+  parts (Image, Range, Behind you, Decoration set) are tagged **New**. Objects' **Range** now starts off the plate like
+  everyone else's, so **+ Add** puts it on; a profile that already has it keeps it where it is.
+- **Object looks in Studio.** **Fade objects you can't use yet** and **When out of reach** are set in Studio › Objects
+  › Plate settings › **Object looks**, beside the preview; Settings › Objects & interacting has a line for each that
+  shows its value and opens it there. They are the same settings as before.
+- **A tidier Settings list.** Studio's Settings pages are grouped under Plates, Yours (Profiles, Hidden auras, My
+  media, Studio) and Modules, each with an icon, the open page marked with a gold bar; Experimental and Help sit at the
+  foot. A page's row shows how many of its settings you've changed from a new profile's.
+- **Where plates show has its own page**, under Plates after Behaviour & display. Behaviour & display no longer has
+  the Target and Threat colours sections that only pointed elsewhere: search finds the target highlight in Plate
+  settings and Threat colours in Modules › Threat. Your settings stay as they were.
+- **Profiles in Studio.** Studio › Settings › **Profiles** switches, creates, copies, renames and deletes profiles and
+  sets automatic switching, in combat too; the Profile menu's **Switch automatically...** opens it. Game Options'
+  Profiles page now opens it, as Threat's does.
+- **Hidden auras** moved from Aura defaults to its own page under Yours. Buffs and Debuffs › Display › **Hidden
+  auras...** opens it. Your list stays as it was.
+- **Threat breakdown from Settings.** Settings › Modules › Threat › Threat windows has a **Threat breakdown...** button,
+  the same window as the title menu's.
+- **The minimap's addon menu opens Studio.** Clicking PlateSmith there opens Blueprint Studio (right-click: its
+  Settings), as the minimap button does, instead of Blizzard's Settings panel.
+- **Search finds what you name.** Studio's Settings search lists the settings whose own name (or a section's title)
+  holds every word you type, so "friendly" no longer brings every row whose help mentions friendly plates. Where
+  nothing is named that, it shows what mentions it in its help, and says so. Help's rule words come after the settings.
+  It now finds every row of a part's inspector, such as Health bar › Incoming heals › Absorbs or Level › Display ›
+  Colour, and a part not on the plate (Add part: Range, Add part: Behind you), which picking adds. US spellings
+  find the UK words ("color", "gray", "center"), and more settings answer to the words players use: "opacity",
+  "click through", "con colour", "absorb", "minimap", "colorblind", "scale" and others.
+- **Faster plates.** Under PlateSmith's own plates, Blizzard's plate no longer runs as well: it was only made
+  invisible, so the game kept updating its health, auras and cast bar for every plate. It is now switched off
+  while PlateSmith draws that plate and switched back on when PlateSmith stops (Blizzard's plates with PlateSmith's
+  extras, or a type you turn off). Nothing changes on plates Blizzard draws.
+- **Clearer labels and help.** A part's rows say **Display** for what it draws, **Show** for when and **For** for
+  whom, so the Loose mark's **Show for** is now **For**. Long help on Totems, Corpse plates, Class colour, Hide
+  unstyled names, the Level's Colour and the dungeon names test starts with one short line, then the detail. Studio's
+  **Design** field is the same width on every tab. Custom text's **?** lists every word it can write ({range}, {creature},
+  {targeted.count} and the rest), and paths in help name the real Settings page.
+- **Dead mobs lose their plate.** With Corpse plates off (the default), a dead mob no longer keeps an enemy plate with
+  an empty health bar and its level: PlateSmith draws no plate for it, as the game's own classic plates show none. If
+  you used those plates to find corpses to loot, turn on Studio › Settings › Objects & interacting › Corpses › **Corpse
+  plates**. A player's body keeps its plate, and so does a unit the game doesn't say is dead. On Blizzard's plates
+  with PlateSmith's extras nothing changes.
+- **Threat colours on tagged mobs.** With Grey when tagged by others and threat colours on the health bar, a mob
+  someone else tagged keeps its threat colour, darkened, instead of plain grey, so you still see who holds it.
+  Without threat colours it is grey as before.
+- **Your target always has a plate.** With Friendly players set to your group only (or group & guild), a player you
+  target gets a plate too, so you can see who they are, and loses it when you target someone else.
+- **Dropdown lists match their field.** A dropdown's list in Studio is as wide as its field, no longer wider and past
+  the window's edge.
+- **Aura stacks show.** Buff and debuff icons on the plates show their stack count in the top right corner, such as
+  Lacerate's or Sunder Armor's, in and out of combat (where the game lets addons show it).
+- **No empty gap under a bear's target.** A druid fighting out of Cat Form no longer gets an invisible combo points
+  row on the target's plate: the game hides the count in combat, so the row only held its place, and Threat (or
+  whatever sits under it) stayed pushed down. Combo points left from Cat Form show again in Cat Form, and out of
+  combat in any form.
+- **Threat text closes up in a stack.** A threat text whose number the game keeps hidden (in a dungeon, say) could not
+  be measured, so it left its stack and sat at its old spot with a gap above it, even with the cast bar gone. It now
+  takes its place under the part above it.
+
 ## 1.3.2
 
 ### New

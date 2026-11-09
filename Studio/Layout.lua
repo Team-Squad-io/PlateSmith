@@ -15,6 +15,8 @@ local function FillPart(entry, position, fallback)
     entry.visible = visible ~= false
     entry.scale = tonumber(position.scale) or 1
     entry.attach = type(position.attach) == "string" and position.attach or nil
+    -- (A custom part riding a bar's fill: Schema's FILL.)
+    entry.fill = type(position.fill) == "string" and position.fill or nil
     entry.parent = type(position.parent) == "string" and position.parent or nil
     entry.order = tonumber(position.order)
     entry.removed = position.removed == true or nil
@@ -30,10 +32,11 @@ local function FillGroup(entry, position)
     entry.parent = type(position.parent) == "string" and position.parent or nil
     entry.name, entry.order, entry.stack, entry.gap = position.name, position.order, position.stack, position.gap
     entry.layer = tonumber(position.layer)
-    entry.attach, entry.removed, entry.free = nil, nil, nil
+    entry.attach, entry.removed, entry.free, entry.fill = nil, nil, nil, nil
     return entry
 end
-local FIELDS = { "x", "y", "visible", "scale", "attach", "parent", "order", "removed", "free", "layer", "name", "stack", "gap" }
+local FIELDS = { "x", "y", "visible", "scale", "attach", "parent", "order", "removed", "free", "layer", "name", "stack", "gap",
+    "fill" }
 
 local function IsGroupKey(key) return type(key) == "string" and key:match("^group%.%d+$") ~= nil end
 

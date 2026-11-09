@@ -56,8 +56,12 @@ for _, key in ipairs(S.CLICK.KEYS) do IGNORED_SETTINGS[key] = true end
 for _, key in ipairs(S.INTERACT.KEYS) do IGNORED_SETTINGS[key] = true end
 -- And the Objects' hover cursor and tooltip: the player's own behaviour, changing no look (Nameplates/ObjectHover.lua).
 for _, key in ipairs(S.HOVER.KEYS) do IGNORED_SETTINGS[key] = true end
+-- And corpse plates (Settings › Objects & interacting › Corpses): whether dead creatures get a plate is the player's own.
+for _, key in ipairs(S.CORPSE.KEYS) do IGNORED_SETTINGS[key] = true end
+-- And which friendly players get a plate (Where plates show's Friendly players): the player's own.
+for _, key in ipairs(S.WHO.KEYS) do IGNORED_SETTINGS[key] = true end
 -- Exported and checked as before, but an import keeps yours: who draws the plates depends on the other
--- nameplate addons on your computer, not on a look (an imported "own" beside Plater drew two sets).
+-- nameplate addons on your computer, not on a look (an imported "own" beside another one drew two sets).
 local KEPT_ON_IMPORT = Set("mode")
 local booleanSettings, enumSettings = {}, {}
 for _, key in ipairs(S.booleanSettings) do
@@ -83,6 +87,12 @@ for _, key in ipairs(CLASS_COLOUR.KEYS) do styleFields[#styleFields + 1] = key e
 -- A design's own Name colour (Schema's NAME_COLOUR, 1.3.2), likewise: version 4 while any design has one.
 local NAME_COLOUR = S.NAME_COLOUR
 styleFields[#styleFields + 1] = NAME_COLOUR.KEY
+-- A design's Incoming heals and Absorbs on the Health bar (Schema's HEALS, 1.4.0), likewise: version 4 while any design
+-- has one; absent, they are off.
+local HEALS = S.HEALS
+for _, key in ipairs(HEALS.KEYS) do styleFields[#styleFields + 1] = key end
+-- Totems' Display (Schema's TOTEMS, 1.4.0): the Totems layers' own option, so it travels in npcTypes only.
+local TOTEMS = S.TOTEMS
 -- The options that were general settings until 1.3.2 (Schema's DESIGN.FROM_GENERAL: the aura rows' Source, each
 -- part's Colour by threat, Grey when tagged by others): a design's own now, imported with Styles. The document's
 -- settings.<key> is the Enemies' World value, which every World (and the full dungeon design) without its own takes,
@@ -107,10 +117,10 @@ local LEGACY_SECTIONS = { dungeon = "contexts", dungeonFriendly = "contexts" }
 -- (threatColours) likewise, and parts' own threat colours (threatPartColours) whenever there are any.
 local NEW_SETTINGS = {}
 for _, key in ipairs({ "namesOnlyCastText", "colourByThreat", "threatColourRole", "threatColourSafeKeep",
-    "targetGlowColourMode", "targetGlowColour",
+    "targetGlowColourMode", "targetGlowColour", "targetEdgeColourMode", "targetEdgeColour",
     "targetGlowSpread", "targetGlowOpacity", "targetGlowPulse", "targetGlowOffsetX", "targetGlowOffsetY",
     "targetGlowWrap", "targetGlowParts", "targetGlowEven", "targetGlowSpreadY", "targetGlowWidth", "targetGlowHeight",
-    "classificationIconSize", "objectPlates", "objectFadeUnable", "friendlyPvpColourOn" }) do
+    "classificationIconSize", "objectPlates", "objectFadeUnable", "friendlyPvpColourOn", "interactRangeCue" }) do
     NEW_SETTINGS[key] = S.defaults[key]
 end
 NEW_SETTINGS.colourByThreat = false
@@ -130,11 +140,14 @@ local NEW_OPTIONAL_SETTINGS = Set("friendlyPlayers", "friendlyNPCs")
 -- export using one (in a design or a saved style) is version 4. NEW_TEXTURES: bar textures new since
 -- 1.1.1, as a design's texture (healthTexture) or a part's (style texture).
 local NEW_SETTING_VALUES = { targetHighlightStyle = Set("glow"), targetGlowColourMode = Set("threat"),
+    threatTextFormat = Set("gapOnly"),
     classificationStyle = Set("dragon", "beforeName", "suffix", "frame") }
 -- Likewise a design's own (a World design, or the Enemies' dungeonEnemy): the cast icon inside the bar.
 local NEW_PROFILE_VALUES = { castIcon = Set("inside") }
 local NEW_STYLE_FIELDS = Set("pipShape", "pipAnchor", "pipClassColour", "pipGlow", "pipFit", "pipShowRow", "boxShape", "boxHeight",
-    "iconUnable", "looseFor", "looseIcon", "loosePulse", "backdropWrap", "backdropParts", "backdropWidth", "backdropHeight")
+    "iconUnable", "looseFor", "looseIcon", "loosePulse", "backdropWrap", "backdropParts", "backdropWidth", "backdropHeight",
+    "badgeShow", "levelColour", "rangeDisplay", "rangeShow", "rangeInColour", "rangeOutColour", "rangeOutText", "rangeInText",
+    "behindDisplay", "behindFor", "behindColour")
 -- The largest pip sizes 1.1.1 accepts (it refuses a larger one): a style past them is version 4.
 local PIP_LIMITS_111 = { pipWidth = 24, pipHeight = 12, pipSpacing = 8 }
 local NEW_TEXTURES = Set("modern")
@@ -142,12 +155,14 @@ local NEW_TEXTURES = Set("modern")
 -- (worked out on first use, in place of true), and then the export is version 4.
 local NEW_PLATE_TYPES = Set("object")
 -- Layout entries new since 1.1.1 in its plate types' layouts (the Action icon on Friendly NPCs, the Loose mark on
--- Enemies, the Objects' Backdrop, which Studio's copy of any layout holds): one as the default has it (off) is left
--- out, as 1.1.1 wrote that layout, and an import gives it the default; one changed, or one another entry is pinned
--- to, is kept and the export is version 4. NEW_LAYOUT_PLATES: the plate types each is drawn on. NEW_LAYOUT_DEFAULTS:
--- each type's exported defaults.
-local NEW_LAYOUT_ENTRIES, NEW_LAYOUT_DEFAULTS = { "actionIcon", "looseMark", "backdrop" }, {}
-local NEW_LAYOUT_PLATES = { actionIcon = S.ACTION_PLATES, looseMark = { enemy = true }, backdrop = { object = true } }
+-- Enemies, the Objects' Backdrop, which Studio's copy of any layout holds, and 1.4.0's Range and Behind you parts): one
+-- as the default has it (off) is left out, as 1.1.1 wrote that layout, and an import gives it the default; one changed,
+-- or one another entry is pinned to, is kept and the export is version 4. NEW_LAYOUT_PLATES: the plate types each is
+-- drawn on. NEW_LAYOUT_DEFAULTS: each type's exported defaults.
+local NEW_LAYOUT_ENTRIES, NEW_LAYOUT_DEFAULTS = { "actionIcon", "looseMark", "backdrop", "range", "behindYou" }, {}
+local NEW_LAYOUT_PLATES = { actionIcon = S.ACTION_PLATES, looseMark = { enemy = true }, backdrop = { object = true },
+    range = { enemy = true, friendlyPlayer = true, friendlyNPC = true, object = true },
+    behindYou = { enemy = true, friendlyPlayer = true, friendlyNPC = true } }
 -- The Objects' Action icon as 1.3.1's defaults placed it (beside the name, inside the box), for its older Blueprints.
 local OBJECT_ICON_131 = { x = 4, y = 0, visible = true, scale = 1, parent = "name", attach = "right" }
 -- The general settings that are part of a plate type's look, imported with an import limited to it (selection.plates:
@@ -234,7 +249,7 @@ end
 -- parent: the hierarchy (layoutVersion 2); attach: pinned to a parent's edge (3). anchor, group
 -- and Level's followName: older Blueprints, converted on import.
 local componentFields = Set("x", "y", "visible", "scale", "followName", "parent", "anchor", "group", "name", "order",
-    "removed", "stack", "gap", "free", "layer", "attach")
+    "removed", "stack", "gap", "free", "layer", "attach", "fill")
 
 -- A layout entry's placement (x and y needed; scale, order, stack and gap, free, layer, attach and
 -- parent when given), checked into entry. A whole layout's entries and a context design's
@@ -256,6 +271,12 @@ local function CheckPlacement(position, componentPath, key, entry)
             Reject(componentPath .. ".attach", "must be left, right, top or bottom")
         end
         entry.attach = position.attach
+    end
+    -- A custom part riding its bar's fill (1.4.0, S.FILL): version 4 only. One that cannot ride (another part, an
+    -- edge the fill has not) is dropped when the layout is normalized.
+    if position.fill ~= nil then
+        if not S.FILL.MODES[position.fill] then Reject(componentPath .. ".fill", "must be hide or next") end
+        entry.fill = position.fill
     end
     if position.parent ~= nil then
         if type(position.parent) ~= "string" or position.parent == key then
@@ -319,6 +340,37 @@ end
 
 local slotFields = Set("source", "anchor", "layer", "whenMissing", "fontSize", "colour", "name", "template", "kind",
     "width", "height", "icon")
+-- An image's own fields (1.4.0, S.IMAGE): version 4 only, each exported only while it is set.
+local IMAGE = S.IMAGE
+for _, field in ipairs(IMAGE.FIELDS) do slotFields[field] = true end
+-- The picture sources this version knows (Media.PictureSource): a picture from another is skipped, a bad one refused.
+local PICTURE_SOURCES = SetOf(PS.Media.PICTURE_SOURCES)
+
+-- An image's fields from a document's slot into checked (a picture never holds a file path: STANDARDS 13).
+local function CheckImage(slot, slotPath, checked)
+    local image = slot.image
+    if image ~= nil then
+        if type(image) ~= "string" then Reject(slotPath .. ".image", "must be a picture name") end
+        if not PICTURE_SOURCES[PS.Media.PicturePrefix(image)] then
+            Skip(slotPath .. ".image", "is a picture from a source this version does not know")
+        elseif not PS.Media.IsPicture(image) then
+            Reject(slotPath .. ".image", "is not a picture name")
+        else
+            checked.image = image
+        end
+    end
+    if slot.fit ~= nil then checked.fit = CheckEnum(slot.fit, slotPath .. ".fit", IMAGE.FITS) end
+    if slot.outset ~= nil then checked.outset = CheckRange(slot.outset, slotPath .. ".outset", IMAGE.OUTSET) end
+    if slot.flipX ~= nil then checked.flipX = CheckBoolean(slot.flipX, slotPath .. ".flipX") or nil end
+    if slot.flipY ~= nil then checked.flipY = CheckBoolean(slot.flipY, slotPath .. ".flipY") or nil end
+    if slot.rotation ~= nil then
+        if not IMAGE.ROTATIONS[slot.rotation] then Reject(slotPath .. ".rotation", "must be 90, 180 or 270") end
+        checked.rotation = slot.rotation
+    end
+    if slot.tint ~= nil then checked.tint = CheckEnum(slot.tint, slotPath .. ".tint", IMAGE.TINTS) end
+    if slot.alpha ~= nil then checked.alpha = CheckRange(slot.alpha, slotPath .. ".alpha", IMAGE.ALPHA) end
+    return checked
+end
 
 local function CheckValueName(value, path)
     if value == nil then return nil end
@@ -338,7 +390,7 @@ local function CheckValueSlots(value, path)
     for key, slot in pairs(value) do
         local slotPath = path .. "." .. key
         CheckObject(slot, slotPath, slotFields)
-        slots[key] = {
+        slots[key] = CheckImage(slot, slotPath, {
             source = CheckEnum(slot.source, slotPath .. ".source", S.valueSources),
             anchor = CheckEnum(slot.anchor, slotPath .. ".anchor", S.valueAnchors),
             layer = slot.layer == nil and "front" or CheckEnum(slot.layer, slotPath .. ".layer", S.valueLayers),
@@ -352,7 +404,7 @@ local function CheckValueSlots(value, path)
             height = slot.height ~= nil and CheckRange(slot.height, slotPath .. ".height", S.VALUE_HEIGHT) or nil,
             icon = slot.icon ~= nil and CheckEnum(slot.icon, slotPath .. ".icon", S.valueIcons) or nil,
             template = CheckTemplate(slot.template, slotPath .. ".template"),
-        }
+        })
     end
     return slots
 end
@@ -366,6 +418,7 @@ local profileFields = Set("scale", "width", "healthHeight", "powerHeight", "powe
 for _, key in ipairs(HIGHLIGHT.KEYS) do profileFields[key] = true end
 for _, key in ipairs(CLASS_COLOUR.KEYS) do profileFields[key] = true end
 profileFields[NAME_COLOUR.KEY] = true
+for _, key in ipairs(HEALS.KEYS) do profileFields[key] = true end
 for _, key in ipairs(FROM_GENERAL) do profileFields[key] = true end
 local castColourFields = Set("ready", "cooldown", "locked")
 
@@ -376,6 +429,20 @@ local function CheckHighlight(key, raw, keyPath)
     if S.enumSettings[key] then return CheckEnum(raw, keyPath, S.enumSettings[key]) end
     if settingRanges[key] then return CheckRange(raw, keyPath, settingRanges[key]) end
     return CheckColour(raw, keyPath)
+end
+-- One Incoming heals value of a design (Schema's HEALS), checked; off ("off", false) comes back nil (absent).
+local function CheckHeal(key, raw, keyPath)
+    if key == "healPrediction" then
+        if raw == "off" then return nil end
+        return CheckEnum(raw, keyPath, HEALS.MODES)
+    end
+    if key == "absorbs" then return CheckBoolean(raw, keyPath) or nil end
+    return CheckColour(raw, keyPath)
+end
+-- A Totems layer's Display (Schema's TOTEMS), checked; Plate ("plate") comes back nil (absent).
+local function CheckTotems(raw, keyPath)
+    if raw == "plate" then return nil end
+    return CheckEnum(raw, keyPath, TOTEMS.CHOICES)
 end
 local auraLayoutFields = Set("count", "columns", "size", "spacing", "growX", "growY", "showDuration", "timeSize", "timeFont",
     "timeOutline", "timeShadow", "timePosition", "timeFontSize", "timedOnly")
@@ -487,15 +554,18 @@ end
 -- Styles: part -> { font, fontSize, outline, shadow, box, boxShape, boxHeight, boxColour, boxBorder, padding, texture,
 -- background, border, borderColour, pipFill, pipEmpty, pipWidth, pipHeight, pipSpacing, pipShape,
 -- pipAnchor, pipClassColour, pipGlow, pipFit, pipShowRow, badgeSize, badgeSpacing, badgeOrientation, badgeInitial,
--- iconUnable, looseFor, looseIcon, loosePulse, backdropWrap, backdropParts, backdropWidth, backdropHeight }; colours are
--- { r, g, b, a } from 0 to 1. An older Blueprint's gradient (low, mid, high) becomes the part's leading blend rule
--- (profiles only). A context design's (sparse) style may list the fields it clears ("-") and has no gradient.
+-- badgeShow, levelColour, iconUnable, looseFor, looseIcon, loosePulse, backdropWrap, backdropParts, backdropWidth,
+-- backdropHeight, rangeDisplay, rangeShow, rangeInColour, rangeOutColour, rangeOutText, rangeInText, behindDisplay,
+-- behindFor, behindColour };
+-- colours are { r, g, b, a } from 0 to 1. An older Blueprint's gradient (low, mid, high) becomes the
+-- part's leading blend rule (profiles only). A context design's (sparse) style may list the fields it clears ("-") and has no gradient.
 local styleFieldList = { "font", "fontSize", "outline", "shadow", "box", "boxShape", "boxColour", "boxBorder", "padding",
     "boxHeight", "texture",
     "background", "border", "borderColour", "pipFill", "pipEmpty", "pipWidth", "pipHeight", "pipSpacing",
     "pipShape", "pipAnchor", "pipClassColour", "pipGlow", "pipFit", "pipShowRow",
-    "badgeSize", "badgeSpacing", "badgeOrientation", "badgeInitial", "iconUnable", "looseFor", "looseIcon", "loosePulse",
-    "backdropWrap", "backdropParts", "backdropWidth", "backdropHeight" }
+    "badgeSize", "badgeSpacing", "badgeOrientation", "badgeInitial", "badgeShow", "levelColour", "iconUnable", "looseFor",
+    "looseIcon", "loosePulse", "backdropWrap", "backdropParts", "backdropWidth", "backdropHeight", "rangeDisplay", "rangeShow",
+    "rangeInColour", "rangeOutColour", "rangeOutText", "rangeInText", "behindDisplay", "behindFor", "behindColour" }
 local profileStyleFields, sparseStyleFields = SetOf(styleFieldList), SetOf(styleFieldList)
 profileStyleFields.gradient, sparseStyleFields[CLEAR] = true, true
 local sparseStyleClear = SetOf(styleFieldList)
@@ -514,7 +584,8 @@ local function CheckStyles(value, path, sparse)
         if not S.PartKey(key) then Reject(stylePath, "is not a part name") end
         CheckObject(style, stylePath, sparse and sparseStyleFields or profileStyleFields)
         if style[CLEAR] ~= nil then style[CLEAR] = CheckClear(style[CLEAR], stylePath .. "." .. CLEAR, sparseStyleClear) end
-        for _, field in ipairs({ "boxColour", "boxBorder", "background", "borderColour", "pipFill", "pipEmpty" }) do
+        for _, field in ipairs({ "boxColour", "boxBorder", "background", "borderColour", "pipFill", "pipEmpty", "rangeInColour",
+            "rangeOutColour", "behindColour" }) do
             if style[field] ~= nil then CheckUnitColour(style[field], stylePath .. "." .. field) end
         end
         for field, range in pairs(S.STYLE_PIPS) do
@@ -527,6 +598,19 @@ local function CheckStyles(value, path, sparse)
             CheckEnum(style.badgeOrientation, stylePath .. ".badgeOrientation", S.STYLE_BADGE_ORIENTATIONS)
         end
         if style.badgeInitial ~= nil then CheckBoolean(style.badgeInitial, stylePath .. ".badgeInitial") end
+        if style.badgeShow ~= nil then CheckEnum(style.badgeShow, stylePath .. ".badgeShow", Set("count")) end
+        if style.levelColour ~= nil then CheckEnum(style.levelColour, stylePath .. ".levelColour", Set("difficulty")) end
+        if style.rangeDisplay ~= nil then
+            CheckEnum(style.rangeDisplay, stylePath .. ".rangeDisplay", Set("dot", "text", "both"))
+        end
+        for _, field in ipairs({ "rangeOutText", "rangeInText" }) do
+            if style[field] ~= nil then
+                style[field] = S.NormalizeValueName(CheckText(style[field], stylePath .. "." .. field, S.VALUE_NAME_LENGTH))
+            end
+        end
+        if style.rangeShow ~= nil then CheckEnum(style.rangeShow, stylePath .. ".rangeShow", Set("in", "always")) end
+        if style.behindDisplay ~= nil then CheckEnum(style.behindDisplay, stylePath .. ".behindDisplay", Set("text")) end
+        if style.behindFor ~= nil then CheckEnum(style.behindFor, stylePath .. ".behindFor", Set("focus")) end
         if style.iconUnable ~= nil then CheckEnum(style.iconUnable, stylePath .. ".iconUnable", Set("grey", "hide")) end
         if style.looseFor ~= nil then CheckEnum(style.looseFor, stylePath .. ".looseFor", Set("all")) end
         if style.looseIcon ~= nil then CheckEnum(style.looseIcon, stylePath .. ".looseIcon", Set("window")) end
@@ -567,7 +651,8 @@ end
 -- A context design's own profile options (Designs: options), each checked as a profile's is;
 -- castOnNames (false: no cast bar on names-only plates there) and "-" (optional sizes cleared, so
 -- they follow the health bar there) are a design's own.
--- plateHidden: an object type's Hide these plates (objectTypes).
+-- plateHidden: an object type's Hide these plates (objectTypes); totemDisplay: a Totems layer's Display (npcTypes;
+-- NormalizeDesign drops it elsewhere).
 local optionFields = Set("healthTexture", "healthColourMode", "healthColour", "castColours", "castOnNames", "plateHidden", CLEAR)
 for key in pairs(profileNumbers) do optionFields[key] = true end
 for key in pairs(S.optionalProfileRanges) do optionFields[key] = true end
@@ -577,6 +662,8 @@ for key in pairs(S.optionalProfileRanges) do clearableOptions[key] = true end
 for _, key in ipairs(HIGHLIGHT.KEYS) do optionFields[key], clearableOptions[key] = true, true end
 for _, key in ipairs(CLASS_COLOUR.KEYS) do optionFields[key], clearableOptions[key] = true, true end
 optionFields[NAME_COLOUR.KEY], clearableOptions[NAME_COLOUR.KEY] = true, true
+for _, key in ipairs(HEALS.KEYS) do optionFields[key], clearableOptions[key] = true, true end
+optionFields[TOTEMS.KEY] = true
 
 local function CheckOptions(value, path)
     CheckObject(value, path, optionFields)
@@ -614,6 +701,10 @@ local function CheckOptions(value, path)
             options[key] = CheckBoolean(raw, keyPath)
         elseif NAME_COLOUR.SET[key] then
             options[key] = CheckColour(raw, keyPath)
+        elseif HEALS.SET[key] then
+            options[key] = CheckHeal(key, raw, keyPath)
+        elseif TOTEMS.SET[key] then
+            options[key] = CheckTotems(raw, keyPath)
         end
     end
     return options
@@ -654,8 +745,9 @@ end
 local designFields = Set("full", "options", "layouts", "styles", "rules", "valueSlots", "auraLayouts")
 
 -- A sparse context design (Designs' storage, colours as hex as elsewhere in the document): each
--- area checked as a profile's is, every error naming its path; then made valid as a saved one is.
-local function CheckDesign(value, path, plateType)
+-- area checked as a profile's is, every error naming its path; then made valid as a saved one is (typed: a type's
+-- layer, NormalizeDesign's).
+local function CheckDesign(value, path, plateType, typed)
     CheckObject(value, path, designFields)
     local design = {}
     if value.options ~= nil then design.options = CheckOptions(value.options, path .. ".options") end
@@ -692,7 +784,7 @@ local function CheckDesign(value, path, plateType)
         CheckAuraLayouts(value.auraLayouts, path .. ".auraLayouts", rows, true)
         design.auraLayouts = rows
     end
-    return S.NormalizeDesign(design, plateType)
+    return S.NormalizeDesign(design, plateType, typed)
 end
 
 -- Overlays a validated document profile onto target, a fully normalized profile.
@@ -732,6 +824,10 @@ local function ApplyProfile(target, value, path, allowNames)
     -- Its own Name colour; absent, the automatic colour.
     if value.nameColour ~= nil then target.nameColour = CheckColour(value.nameColour, path .. ".nameColour")
     else target.nameColour = nil end
+    -- Its own Incoming heals and Absorbs; absent, off.
+    for _, key in ipairs(HEALS.KEYS) do
+        if value[key] ~= nil then target[key] = CheckHeal(key, value[key], path .. "." .. key) else target[key] = nil end
+    end
     -- Colour by interrupt's colours: any of ready, cooldown and locked; absent keeps the default.
     if value.castColours ~= nil then
         CheckObject(value.castColours, path .. ".castColours", castColourFields)
@@ -776,7 +872,15 @@ end
 
 local flavors = Set("forever", "retail")
 local documentFields = Set("format", "version", "readableFrom", "addon", "client", "flavor", "settings", "profiles",
-    "dungeonEnemy", "contexts", "enemyPlayers", "objectTypes", "modules")
+    "dungeonEnemy", "contexts", "enemyPlayers", "objectTypes", "npcTypes", "modules")
+-- The plate types with types of their own besides the Objects (DESIGN.TYPES_OF: the Enemies' and Friendly NPCs'
+-- Totems), carried as npcTypes.<plate type>.<type> (version 4, new in 1.4.0), in profile order.
+local NPC_TYPED, NPC_TYPED_ORDER = {}, {}
+for _, plateType in ipairs(profileOrder) do
+    if DESIGN.TYPES_OF[plateType] and plateType ~= "object" then
+        NPC_TYPED[plateType], NPC_TYPED_ORDER[#NPC_TYPED_ORDER + 1] = true, plateType
+    end
+end
 -- Font choices: a built-in key or an "lsm:" reference (PS.Media.IsFont).
 local fontSettings = { "font", "blizzardNameFontFace" }
 local settingFields = Set("relationshipColours", "classColours", "stylePresets", "threatColours", "threatPartColours")
@@ -988,7 +1092,21 @@ local function BuildCandidate(document)
             local path = "objectTypes." .. objectType
             CheckObject(record, path)
             if record.full ~= nil then Reject(path .. ".full", "is not allowed here") end
-            PS.Designs.SetType(candidate.plateProfiles.object, objectType, CheckDesign(record, path, "object"))
+            PS.Designs.SetType(candidate.plateProfiles.object, objectType, CheckDesign(record, path, "object", true))
+        end
+    end
+    -- The Enemies' and Friendly NPCs' types (version 4, new in 1.4.0: their Totems), each a sparse layer as above.
+    if document.npcTypes ~= nil then
+        CheckObject(document.npcTypes, "npcTypes", NPC_TYPED)
+        for plateType, map in pairs(document.npcTypes) do
+            local typePath = "npcTypes." .. plateType
+            CheckObject(map, typePath, DESIGN.TYPE_SETS[plateType])
+            for key, record in pairs(map) do
+                local path = typePath .. "." .. key
+                CheckObject(record, path)
+                if record.full ~= nil then Reject(path .. ".full", "is not allowed here") end
+                PS.Designs.SetType(candidate.plateProfiles[plateType], key, CheckDesign(record, path, plateType, true), plateType)
+            end
         end
     end
     local legacy = {}
@@ -1006,6 +1124,9 @@ end
 -- them from the defaults.
 local function DefaultSlot(slot)
     local base, colour = S.DEFAULT_VALUE_SLOT, slot.colour or {}
+    for _, field in ipairs(IMAGE.FIELDS) do
+        if slot[field] ~= nil then return false end
+    end
     return slot.source == base.source and slot.layer == base.layer and slot.fontSize == base.fontSize and not slot.name
         and not slot.template and not slot.kind and not slot.width and not slot.height and not slot.icon
         and colour.r == base.colour.r and colour.g == base.colour.g and colour.b == base.colour.b
@@ -1026,6 +1147,7 @@ local function ExportLayout(layout, slots)
             result[key] = { x = position.x, y = position.y, visible = position.visible ~= false, scale = position.scale or 1 }
             if position.parent then result[key].parent = position.parent end
             if position.attach then result[key].attach = position.attach end
+            if position.fill then result[key].fill = position.fill end
             if position.removed then result[key].removed = true end
             if position.stack then result[key].stack, result[key].gap = position.stack, position.gap end
             if position.free then result[key].free = true end
@@ -1060,10 +1182,12 @@ local function ExportRuleList(list)
 end
 
 local function ExportSlot(slot)
-    return { source = slot.source, anchor = slot.anchor, layer = slot.layer,
+    local result = { source = slot.source, anchor = slot.anchor, layer = slot.layer,
         whenMissing = slot.whenMissing, fontSize = slot.fontSize, colour = ColourToHex(slot.colour),
         name = slot.name, template = slot.template, kind = slot.kind, width = slot.width, height = slot.height,
         icon = slot.icon }
+    for _, field in ipairs(IMAGE.FIELDS) do result[field] = slot[field] end
+    return result
 end
 
 local function ExportProfile(profile, includeNames)
@@ -1096,6 +1220,11 @@ local function ExportProfile(profile, includeNames)
     end
     for _, key in ipairs(CLASS_COLOUR.KEYS) do result[key] = profile[key] end
     result.nameColour = profile.nameColour and ColourToHex(profile.nameColour) or nil
+    for _, key in ipairs(HEALS.KEYS) do
+        local own = profile[key]
+        if type(own) == "table" then own = ColourToHex(own) end
+        result[key] = own
+    end
     result.rules = {}
     for key, list in pairs(profile.rules or {}) do
         local shared = ExportRuleList(list)
@@ -1133,7 +1262,8 @@ local function UsesNewStyleField(style)
     return NEW_TEXTURES[style.texture] == true
 end
 
--- Whether an exported profile's texture, choices (NEW_PROFILE_VALUES) or styles, or saved styles (presets), use one.
+-- Whether an exported profile's texture, choices (NEW_PROFILE_VALUES), styles, images or fill riders, or saved styles
+-- (presets), use one.
 -- (A saved Backdrop preset, kind backdrop, is new since 1.1.1 too: NEW_PRESET_KINDS.)
 local NEW_PRESET_KINDS = Set("backdrop")
 -- Whether a rule's condition (when) or a custom part's text (template) anywhere in value uses a word older readers
@@ -1155,6 +1285,17 @@ end
 
 local function UsesNewStyleFields(profile, presets)
     if profile and NEW_TEXTURES[profile.healthTexture] then return true end
+    -- An image's own fields or a part riding a bar's fill (1.4.0).
+    for _, slot in pairs(profile and profile.valueSlots or {}) do
+        for _, field in ipairs(IMAGE.FIELDS) do
+            if slot[field] ~= nil then return true end
+        end
+    end
+    for _, field in ipairs({ "layout", "namesLayout", "dungeonNamesLayout" }) do
+        for _, position in pairs(profile and type(profile[field]) == "table" and profile[field] or {}) do
+            if type(position) == "table" and position.fill ~= nil then return true end
+        end
+    end
     for key, values in pairs(NEW_PROFILE_VALUES) do
         if profile and values[profile[key]] then return true end
     end
@@ -1191,8 +1332,13 @@ local function TrimNewEntries(exported, plateType)
         local layout, default = exported[field], defaults[field]
         for _, key in ipairs(type(layout) == "table" and NEW_LAYOUT_ENTRIES or {}) do
             if layout[key] ~= nil then
+                -- (The Range or Behind you part off the plate, as Behind you's default sits on the Loose mark, pins
+                -- nothing: an import gives the entry its default all the same.)
                 local pinned = false
-                for _, position in pairs(layout) do pinned = pinned or position.parent == key end
+                for child, position in pairs(layout) do
+                    pinned = pinned or (position.parent == key
+                        and not (position.removed and (child == "range" or child == "behindYou")))
+                end
                 -- A plate type without the part, or Blizzard's dungeon names (Studio's copy of a layout holds every
                 -- part), never draws it.
                 local unused = not NEW_LAYOUT_PLATES[key][plateType] or field == "dungeonNamesLayout"
@@ -1214,8 +1360,13 @@ local function ExportDesign(record)
     if type(record.options) == "table" then
         local options = Table.DeepCopy(record.options)
         if options.healthColour then options.healthColour = ColourToHex(options.healthColour) end
-        if options.targetGlowColour then options.targetGlowColour = ColourToHex(options.targetGlowColour) end
+        for key in pairs(S.colourSettings) do
+            if options[key] then options[key] = ColourToHex(options[key]) end
+        end
         if options.nameColour then options.nameColour = ColourToHex(options.nameColour) end
+        for key in pairs(HEALS.COLOURS) do
+            if options[key] then options[key] = ColourToHex(options[key]) end
+        end
         if options.castColours then
             for key, colour in pairs(options.castColours) do options.castColours[key] = ColourToHex(colour) end
         end
@@ -1358,6 +1509,19 @@ local function BuildDocument(db, live, withoutBody)
             newer = true
         end
     end
+    -- The Enemies' and Friendly NPCs' types with a layer (their Totems; version 4 only, none: left out).
+    local npcTypes
+    for _, plateType in ipairs(NPC_TYPED_ORDER) do
+        for _, key in ipairs(DESIGN.TYPES_OF[plateType]) do
+            local record = PS.Designs.Record(db, plateType, key)
+            if record and next(record) ~= nil then
+                npcTypes = npcTypes or {}
+                npcTypes[plateType] = npcTypes[plateType] or {}
+                npcTypes[plateType][key] = ExportDesign(record)
+                newer = true
+            end
+        end
+    end
     for key, absent in pairs(NEW_SETTINGS) do
         if Table.DeepEqual(settings[key], S.colourSettings[key] and ColourToHex(absent) or absent) then
             settings[key] = nil
@@ -1386,7 +1550,7 @@ local function BuildDocument(db, live, withoutBody)
         end
         profiles[key] = exported
         newer = newer or UsesNewStyleFields(exported) or HIGHLIGHT.Has(exported) or CLASS_COLOUR.Has(exported)
-            or NAME_COLOUR.Has(exported)
+            or NAME_COLOUR.Has(exported) or HEALS.Has(exported)
     end
     -- The Enemies' Dungeons & raids design resolved whole, whatever its kind: version 3's place for
     -- it, and in version 4 the body of a full one (contexts.enemy.dungeon = { full = true }).
@@ -1397,9 +1561,10 @@ local function BuildDocument(db, live, withoutBody)
         newer = true
     end
     newer = newer or UsesNewStyleFields(dungeonEnemy) or HIGHLIGHT.Has(dungeonEnemy) or CLASS_COLOUR.Has(dungeonEnemy)
-        or NAME_COLOUR.Has(dungeonEnemy)
+        or NAME_COLOUR.Has(dungeonEnemy) or HEALS.Has(dungeonEnemy)
     newer = newer or UsesNewWords(profiles, 0) or UsesNewWords(dungeonEnemy, 0) or UsesNewWords(contexts, 0)
-        or UsesNewWords(enemyPlayers, 0) or UsesNewWords(objectTypes, 0) or UsesNewWords(settings.stylePresets, 0)
+        or UsesNewWords(enemyPlayers, 0) or UsesNewWords(objectTypes, 0) or UsesNewWords(npcTypes, 0)
+        or UsesNewWords(settings.stylePresets, 0)
     local build = type(GetBuildInfo) == "function" and select(4, GetBuildInfo()) or nil
     local document = {
         format = FORMAT, version = newer and VERSION or LEGACY_VERSION, readableFrom = newer and LEGACY_VERSION or nil,
@@ -1411,6 +1576,7 @@ local function BuildDocument(db, live, withoutBody)
         contexts = newer and contexts or nil,
         enemyPlayers = enemyPlayers,
         objectTypes = objectTypes,
+        npcTypes = npcTypes,
     }
     for _, key in ipairs(live and SortedModuleKeys() or {}) do
         local ok, value = pcall(moduleFields[key].export)
@@ -1716,6 +1882,21 @@ local function ApplySections(db, parsed, selection, Selected, live)
             end
         end
         object.types = next(types) ~= nil and types or nil
+        -- The Enemies' and Friendly NPCs' types (Totems) likewise, per type carried; a look's never replace yours whole.
+        local carriedNpc = type(document.npcTypes) == "table" and document.npcTypes or {}
+        for _, plateType in ipairs(NPC_TYPED_ORDER) do
+            local world, theirTypes = profiles[plateType], type(carriedNpc[plateType]) == "table" and carriedNpc[plateType] or {}
+            local from, own = candidate.plateProfiles[plateType].types, {}
+            for key, record in pairs(type(world.types) == "table" and world.types or {}) do own[key] = record end
+            for _, key in ipairs(DESIGN.TYPES_OF[plateType]) do
+                local theirs = theirTypes[key] ~= nil and Selected("contexts") and Plate(plateType)
+                if theirs then own[key] = type(from) == "table" and from[key] or nil end
+                if type(own[key]) == "table" then
+                    own[key] = Rebase(own[key], theirs and candidate.plateProfiles[plateType] or before[plateType], world)
+                end
+            end
+            world.types = next(own) ~= nil and own or nil
+        end
         -- The Enemy players layer is replaced whole: a Blueprint without one removes yours.
         local enemy = profiles.enemy
         if Selected("enemyPlayers") and Plate("enemy") then
@@ -1815,6 +1996,40 @@ local function ImportResult(text, selection)
     return result
 end
 
+-- The pictures settings' image parts name that this install does not have (Media.PictureMissing: a game atlas this
+-- client lacks, LibSharedMedia or its media absent, a My media name not in the player's list), each once, sorted. The
+-- import window lists them for ImportResult's copy. Read from the stored designs (World, context designs, Enemy
+-- players, object types), never through Designs.For, as the copy is not the working settings.
+local function MissingPictures(settings)
+    local missing, seen = {}, {}
+    local function Visit(slots)
+        for _, slot in pairs(type(slots) == "table" and slots or {}) do
+            local image = type(slot) == "table" and slot.kind == "icon" and slot.source ~= "off" and slot.image
+            if image and not seen[image] and PS.Media.PictureMissing(image) then
+                seen[image] = true
+                missing[#missing + 1] = image
+            end
+        end
+    end
+    for _, plateType in ipairs(profileOrder) do
+        local world = type(settings) == "table" and type(settings.plateProfiles) == "table" and settings.plateProfiles[plateType]
+        if type(world) == "table" then
+            Visit(world.valueSlots)
+            for _, record in pairs(type(world.contexts) == "table" and world.contexts or {}) do
+                if type(record) == "table" then
+                    Visit(record.full == true and type(record.design) == "table" and record.design.valueSlots or record.valueSlots)
+                end
+            end
+            if type(world.players) == "table" then Visit(world.players.valueSlots) end
+            for _, record in pairs(type(world.types) == "table" and world.types or {}) do
+                if type(record) == "table" then Visit(record.valueSlots) end
+            end
+        end
+    end
+    table.sort(missing)
+    return missing
+end
+
 -- The one chat line for an import that skipped fields (nil when none): at most SKIPPED_SHOWN paths,
 -- each cut to SKIPPED_PATH_LENGTH bytes (ChatText), then how many more. A skipped field is one this
 -- version does not know (a newer PlateSmith's) or cannot keep (a context design a plate type cannot
@@ -1872,6 +2087,15 @@ local function Describe(text)
             labels[#labels + 1] = string.format(L["%s › %s"], PLATE_LABELS.object, PS.Designs.TYPE_LABELS[objectType])
         end
     end
+    local npcTypes = type(document.npcTypes) == "table" and document.npcTypes or {}
+    for _, plateType in ipairs(NPC_TYPED_ORDER) do
+        local map = type(npcTypes[plateType]) == "table" and npcTypes[plateType] or {}
+        for _, key in ipairs(DESIGN.TYPES_OF[plateType]) do
+            if type(map[key]) == "table" then
+                labels[#labels + 1] = string.format(L["%s › %s"], PLATE_LABELS[plateType], PS.Designs.TYPE_LABELS[key])
+            end
+        end
+    end
     local info = { contexts = labels, enemyPlayers = document.enemyPlayers ~= nil or nil }
     local named = {}
     for index, label in ipairs(labels) do named[index] = label end
@@ -1887,6 +2111,7 @@ PS.ExportBlueprint = ExportBlueprint
 PS.BlueprintDocument = function(settings) return BuildDocument(settings, false) end
 PS.ImportBlueprint = ImportBlueprint
 PS.BlueprintImportResult = ImportResult
+PS.BlueprintMissingPictures = MissingPictures
 -- The settings a Blueprint's JSON describes on its own (built from the defaults, checked as an import is), nothing
 -- applied: a look's versions compared (Studio's Show › The look's own changes). nil when it cannot be imported.
 PS.BlueprintCandidate = function(text)

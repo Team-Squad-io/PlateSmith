@@ -2,7 +2,7 @@
 ## Title: PlateSmith Nameplates
 ## Notes: Design your own nameplates in a live editor, with threat on every plate, cast bars, auras, quest markers and threat windows.
 ## Author: TeamSquadIO
-## Version: 1.3.2
+## Version: 1.4.0
 ## Category: Unit Frames
 ## SavedVariables: PlateSmithDB, PlateSmithDiagnosticsDB
 ## SavedVariablesPerCharacter: PlateSmithCharacterDB
@@ -35,6 +35,7 @@ UI\Layout.lua
 UI\Menu.lua
 Threat\Service.lua
 Diagnostics\History.lua
+Diagnostics\Activity.lua
 Diagnostics\Summary.lua
 Diagnostics\Performance.lua
 Diagnostics\ReportCode.lua
@@ -67,6 +68,7 @@ Nameplates\Placement.lua
 Nameplates\Values.lua
 Nameplates\Conflicts.lua
 Nameplates\Range.lua
+Nameplates\Behind.lua
 Nameplates\QuestProgress.lua
 Nameplates\TargetGlow.lua
 Nameplates\ComboPoints.lua
@@ -78,6 +80,9 @@ Nameplates\ObjectStatus.lua
 Nameplates\ObjectHover.lua
 Nameplates\LooseMark.lua
 Nameplates\Backdrop.lua
+Nameplates\HealPrediction.lua
+Data\Totems.lua
+Nameplates\Totems.lua
 Nameplates\Extras.lua
 Nameplates\Lifecycle.lua
 Core\Blueprint.lua
@@ -85,6 +90,7 @@ Core\ShareCode.lua
 Core\BlueprintLink.lua
 Core\ProfilePresets.lua
 Data\LookSnapshots.lua
+Data\ReleaseNotes.lua
 Studio\Components.lua
 Studio\Layout.lua
 Studio\Editor.lua
@@ -112,6 +118,7 @@ Studio\DesignRow.lua
 Studio\Frame.lua
 Studio\FirstRun.lua
 Studio\LookUpdate.lua
+Studio\WhatsNew.lua
 Threat\Kit.lua
 Threat\KitAtlas.lua
 Threat\Geometry.lua
@@ -122,4 +129,7 @@ Threat\RescueSecure.lua
 Threat\Rescue.lua
 Threat\Console.lua
 Threat\MeterSkin.lua
+Threat\ThreatModel.lua
+Threat\Breakdown.lua
 Core\Commands.lua
+Core\MinimapButton.lua

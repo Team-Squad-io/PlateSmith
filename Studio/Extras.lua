@@ -144,7 +144,7 @@ function Options.BuildExtrasSettings(SK, section, Bind)
     Check("extrasTarget", L["Target glow"], L["A soft glow behind your target's plate, in the Enemies' (or friendly "
         .. "type's) Target highlight glow colour, size and pulse."])
     Check("extrasLoose", L["Loose mark"], L["Right of Blizzard's name while a mob is loose, for tanks; its icon, pulse "
-        .. "and Show for are the Enemies' Loose mark's."])
+        .. "and For are the Enemies' Loose mark's."])
     local sample = BuildSample(SK, section)
     SK.Add(section, sample)
     Options.editorExtrasSample = sample

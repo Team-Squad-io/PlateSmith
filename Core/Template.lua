@@ -58,14 +58,27 @@ Template.tokens = {
     -- original game's herbs and veins) and whether your skill reaches it; unknown until it is known. Whether you can
     -- cultivate the herb now (Nameplates/Cultivation.lua, the Tauren racial).
     ["object.skill"] = "number", ["object.cangather"] = "flag", ["object.cancultivate"] = "flag",
+    -- How far the unit is (Nameplates/Range.lua): whether PlateSmith has an answer at all (never unknown), its band
+    -- from the spells you know and the band as text (<5, <30, 30+). Whether the target's or focus's plate is behind
+    -- the camera (Nameplates/Behind.lua), true only on the game's readable yes.
+    ["range.known"] = "flag", ["range.band"] = "enum", ["range"] = "text", ["unit.behind"] = "flag",
+    -- The unit is in a sanctuary; you are flagged for PvP yourself.
+    ["pvp.sanctuary"] = "flag", ["pvp.you"] = "flag",
+    -- How many of your group or raid target the unit (Nameplates/TargetedBy.lua), from readable answers only.
+    ["targeted.count"] = "number",
+    -- The unit's creature type (Secret.CreatureType): a locale-safe word for rules, and the client's own name as text.
+    ["unit.creature"] = "enum", ["creature"] = "text",
 }
 -- An enum token's values: a bare word on the right of = or != (object.kind = herb). Shown as text.
 Template.enums = {
     ["object.kind"] = { herb = true, ore = true, skin = true, loot = true, quest = true, inspect = true, interact = true,
         talk = true, trainer = true, vendor = true, flight = true, repair = true, mail = true, other = true },
     ["pvp.faction"] = { alliance = true, horde = true, neutral = true },
+    ["range.band"] = { melee = true, near = true, far = true, out = true },
+    ["unit.creature"] = {},
 }
--- Short names people know from other addons.
+for _, word in ipairs(Secret.CREATURE_TYPES) do Template.enums["unit.creature"][word] = true end
+-- Short names for common words.
 Template.aliases = {
     hp = "health", maxhp = "health.max", hpp = "health.percent", missinghp = "health.missing",
     ["health.current"] = "health", ["health.deficit"] = "health.missing",
@@ -107,7 +120,7 @@ local function Tokenize(condition)
             local operator = not word and not number and (rest:match("^==") or rest:match("^[<>!]=") or rest:match("^[<>=()]"))
             local piece = word or number or operator
             if not piece then return nil, string.format(L["cannot read \"%s\""], Format.Truncate(rest, 8)) end
-            -- == is = (as other addons write it).
+            -- == is =.
             list[#list + 1] = { text = piece == "==" and "=" or piece, word = word ~= nil,
                 number = number and tonumber(number) or nil }
             position = position + #piece
@@ -557,6 +570,11 @@ end
 local SINCE_132 = { ["pvp.ffa"] = true, ["pvp.faction"] = true, ["true"] = true, ["false"] = true }
 for _, name in pairs(Template.FORMER_NAMES) do
     if name ~= "threat.holding" then SINCE_132[name] = true end
+end
+-- And 1.4.0's words: a reader before it refuses them as "not a condition", where a version 4 code says it is newer.
+for _, name in ipairs({ "range.known", "range.band", "range", "unit.behind", "pvp.sanctuary", "pvp.you", "targeted.count",
+    "unit.creature", "creature" }) do
+    SINCE_132[name] = true
 end
 local function ConditionUsesNewWords(text)
     local list = Tokenize(text)

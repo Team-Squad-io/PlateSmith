@@ -25,14 +25,6 @@ local barSourceChoices = {
     { value = "powerPercent", label = L["Power %"] },
     { value = "threatPercent", label = L["Threat %"] },
 }
-local iconChoices = {
-    { value = "raid8", label = L["Skull"] }, { value = "raid7", label = L["Cross"] },
-    { value = "raid6", label = L["Square"] }, { value = "raid5", label = L["Moon"] },
-    { value = "raid4", label = L["Triangle"] }, { value = "raid3", label = L["Diamond"] },
-    { value = "raid2", label = L["Circle"] }, { value = "raid1", label = L["Star"] },
-    { value = "quest", label = L["Quest mark"] }, { value = "sword", label = L["Sword"] },
-    { value = "shield", label = L["Shield"] },
-}
 
 -- Sample values for a template in Studio's preview (the plates read the real ones).
 local TEMPLATE_SAMPLES = {
@@ -51,6 +43,14 @@ local TEMPLATE_SAMPLES = {
     ["threat.other"] = false, ["threat.offtank"] = false, ["threat.loose"] = false,
     ["you.hastarget"] = true, ["unit.inrange"] = true, ["quest.progress"] = "3/8", ["quest.percent"] = 38,
     ["combo"] = 3,
+    -- In range and known, within a 20-yard spell; your target's plate behind the camera (Test values' Behind you), so the
+    -- Behind you part just added shows.
+    ["range.known"] = true, ["range.band"] = "near", ["range"] = "<20", ["unit.behind"] = true,
+    ["pvp.sanctuary"] = false, ["pvp.you"] = false,
+    -- Two of your group target it (Test values' Targeted by), as the preview's first two badges do.
+    ["targeted.count"] = 2,
+    -- The sample Training Raider's creature type.
+    ["unit.creature"] = "humanoid", ["creature"] = L["Humanoid"],
     -- An object or NPC you can interact with (Test values' Object): a quest object, as the Objects tab's sample is,
     -- within reach. object.id is the book's, unit.id an innkeeper's.
     ["object.kind"] = "quest", ["object.unable"] = false, ["interact.inrange"] = true,
@@ -62,6 +62,14 @@ local TEMPLATE_SAMPLES = {
 -- Tokens other addons registered preview with their own sample (Template.RegisterToken).
 setmetatable(TEMPLATE_SAMPLES, { __index = function(_, token) return PS.Template.Sample(token) end })
 Options.templateSamples = TEMPLATE_SAMPLES
+-- The sample spellbook's reach for each range band (Test values' Range; out is past the longest, 30), and the band,
+-- {range} and unit.inrange it gives, as the plates write them (Range.Band).
+Options.SAMPLE_RANGE_REACH, Options.SAMPLE_RANGE_LONGEST = { melee = PS.Range.MELEE, near = PS.Range.NEAR, far = 30 }, 30
+function Options.SetSampleRangeBand(samples, band)
+    local inRange = band ~= "out"
+    local live, text = PS.Range.Band(inRange, Options.SAMPLE_RANGE_REACH[band], Options.SAMPLE_RANGE_LONGEST)
+    samples["range.band"], samples["range"], samples["unit.inrange"] = live, text, inRange
+end
 
 -- The sample unit's classification (UnitClassification's word; nil: normal) from Test values' elite, rare and boss
 -- (samples: a view's own, Studio's by default).
@@ -202,6 +210,9 @@ PS.RegisterEditorComponent("health", {
                 PS.PlateColours.Paint(component.previewBar, "SetStatusBarColor", Options.SampleBaseColour(general,
                     owner.templateSamples, owner.editorProfile, settings, "health"))
             end
+            -- Incoming heals and absorbs (the design's own): a sample heal and shield after the health, drawn by the
+            -- plates' own bars (HealPrediction.Preview).
+            PS.HealPrediction.Preview(component.previewBar, settings, math.floor((settings.width or 112) * scale + 0.5))
         end
     end,
 })
@@ -331,6 +342,8 @@ PS.RegisterEditorComponent("threat", {
         local format = PS.ThreatText and PS.ThreatText.Format and PS.ThreatText.Format() or "gap"
         if format == "percent" then
             component.previewText:SetText(tanking and "100%" or "82%")
+        elseif format == "gapOnly" then
+            component.previewText:SetText(PS.Format.SignedLead(tanking and 575 or 125))
         elseif format == "detailed" then
             component.previewText:SetText(tanking and "100%  L253%  T60k" or "82%  L82%  T49k")
         else
@@ -345,6 +358,65 @@ PS.RegisterEditorComponent("threat", {
         end
     end,
 })
+-- An image whose picture this install does not have: a dashed red box the part's size (the stack ghosts' dash art,
+-- Options.EDITOR_GHOST), made the first time one is missing. The plates draw nothing there.
+local MISSING_RED = { 0.95, 0.25, 0.2 }
+local function ShowMissingPicture(component, missing)
+    local box = component.previewMissing
+    if not missing then
+        if box then box:Hide() end
+        return
+    end
+    local ghost = Options.EDITOR_GHOST
+    if not box then
+        box = CreateFrame("Frame", nil, component)
+        box:SetAllPoints(component)
+        if box.EnableMouse then box:EnableMouse(false) end
+        box.edges = {}
+        for _, side in ipairs({ "top", "bottom", "left", "right" }) do
+            local edge = box:CreateTexture(nil, "OVERLAY")
+            local across = side == "top" or side == "bottom"
+            edge:SetTexture(across and ghost.h or ghost.v, "REPEAT", "REPEAT")
+            edge:SetVertexColor(MISSING_RED[1], MISSING_RED[2], MISSING_RED[3], 1)
+            if across then
+                edge:SetPoint(side == "top" and "TOPLEFT" or "BOTTOMLEFT", box, side == "top" and "TOPLEFT" or "BOTTOMLEFT", 0, 0)
+                edge:SetPoint(side == "top" and "TOPRIGHT" or "BOTTOMRIGHT", box, side == "top" and "TOPRIGHT" or "BOTTOMRIGHT", 0, 0)
+                edge:SetHeight(1)
+            else
+                edge:SetPoint(side == "left" and "TOPLEFT" or "TOPRIGHT", box, side == "left" and "TOPLEFT" or "TOPRIGHT", 0, 0)
+                edge:SetPoint(side == "left" and "BOTTOMLEFT" or "BOTTOMRIGHT", box, side == "left" and "BOTTOMLEFT" or "BOTTOMRIGHT",
+                    0, 0)
+                edge:SetWidth(1)
+            end
+            box.edges[side] = edge
+        end
+        component.previewMissing = box
+    end
+    -- The dashes keep their rhythm along the part's size.
+    local width, height = component:GetWidth() or 0, component:GetHeight() or 0
+    for side, edge in pairs(box.edges) do
+        if side == "top" or side == "bottom" then
+            edge:SetTexCoord(0, width / ghost.period, 0, 1)
+        else
+            edge:SetTexCoord(0, 1, 0, height / ghost.period)
+        end
+    end
+    box:Show()
+end
+
+-- The colour of the bar an image tinted by its bar (tint "bar") sits on in the preview, else r, g, b.
+local function PreviewBarColour(component, key, r, g, b)
+    local owner = component.previewOwner or Options
+    local layout = owner.editorLayout
+    local parent = layout and layout[key] and layout[key].parent
+    local bar = parent and owner.editorComponents and owner.editorComponents[parent]
+    bar = bar and bar.previewBar
+    if not (bar and bar.GetStatusBarColor) then return r, g, b end
+    local ok, br, bg, bb = pcall(bar.GetStatusBarColor, bar)
+    if ok and type(br) == "number" then return br, bg, bb end
+    return r, g, b
+end
+
 for index = 1, VALUE_SLOT_COUNT do
     local key = "value" .. index
     PS.RegisterEditorComponent(key, {
@@ -363,8 +435,9 @@ for index = 1, VALUE_SLOT_COUNT do
             if component.previewShape then component.previewShape:Hide() end
             if component.previewShapeBar then component.previewShapeBar:Hide() end
             component.previewBar, component.previewTexture = nil, nil
+            ShowMissingPicture(component, false)
             if kind then
-                local size = PS.ValueGraphicSize and PS.ValueGraphicSize[kind] or { 40, 10 }
+                local size = PS.ValueImage.SIZE[kind] or { 40, 10 }
                 local width, height = slot.width or size[1], slot.height or size[2]
                 component:SetSize(width, height)
                 component.previewText:SetText("")
@@ -392,18 +465,33 @@ for index = 1, VALUE_SLOT_COUNT do
                         component.previewShape = component:CreateTexture(nil, "ARTWORK")
                         component.previewShape:SetAllPoints(component)
                     end
+                    local shape, missing = component.previewShape, false
                     if kind == "box" then
-                        component.previewShape:SetColorTexture(colour.r, colour.g, colour.b, 0.85)
+                        shape:SetColorTexture(colour.r, colour.g, colour.b, 0.85)
+                        if shape.SetBlendMode then shape:SetBlendMode("BLEND") end
                     else
-                        -- A module's icon: its sample (a question mark without one).
+                        -- A module's icon: its sample (a question mark without one). An image: drawn by the plates'
+                        -- own route (ValueImage.Draw), in its tint from Test values; a picture this install lacks
+                        -- shows as a dashed red box (the inspector names it).
                         local module = PS.ModuleSources.SlotSource(slot)
-                        component.previewShape:SetTexture(module
-                            and (PS.ModuleSources.Sample(module) or "Interface\\Icons\\INV_Misc_QuestionMark")
-                            or PS.ValueIconPaths and PS.ValueIconPaths[slot.icon or "raid8"])
-                        component.previewShape:SetVertexColor(colour.r, colour.g, colour.b)
+                        if module then
+                            shape:SetTexture(PS.ModuleSources.Sample(module) or "Interface\\Icons\\INV_Misc_QuestionMark")
+                            shape:SetTexCoord(0, 1, 0, 1)
+                        else
+                            missing = not PS.ValueImage.Draw(shape, slot)
+                        end
+                        local r, g, b = colour.r, colour.g, colour.b
+                        if slot.tint == "bar" then
+                            r, g, b = PreviewBarColour(component, key, r, g, b)
+                        elseif slot.tint then
+                            r, g, b = Options.SampleTintColour(component.previewOwner or Options, slot.tint, colour)
+                        end
+                        shape:SetVertexColor(r, g, b)
                     end
-                    component.previewShape:Show()
-                    component.previewTexture = component.previewShape
+                    shape:SetAlpha(slot.alpha or 1)
+                    shape:SetShown(not missing)
+                    ShowMissingPicture(component, missing)
+                    component.previewTexture = shape
                 end
                 return
             end
@@ -493,7 +581,8 @@ PS.RegisterEditorComponent("combo", {
 })
 
 -- "Targeted by" badges as the plates draw them (Nameplates/TargetedBy.lua): four sample members in
--- their class colours, the first two targeting this unit and the others faint.
+-- their class colours, the first two targeting this unit and the others faint. Count only: Test values' count
+-- (targeted.count) as the plates write it (TargetedBy.CountText: nothing at 0).
 local TARGETED_BY_SAMPLES = { { "WARRIOR", "T" }, { "PRIEST", "H" }, { "MAGE", "M" }, { "ROGUE", "R" } }
 local SAMPLE_CLASS_COLOURS = { WARRIOR = { 0.78, 0.61, 0.43 }, PRIEST = { 1, 1, 1 }, MAGE = { 0.25, 0.78, 0.92 },
     ROGUE = { 1, 0.96, 0.41 } }
@@ -510,6 +599,11 @@ PS.RegisterEditorComponent("targetedBy", {
             component.previewBadges[index] = badge
             component.previewStyleTexts[index] = badge.text
         end
+        local count = component:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        count:SetPoint("CENTER", component, "CENTER", 0, 0)
+        count:Hide()
+        component.previewCount = count
+        component.previewStyleTexts[#component.previewStyleTexts + 1] = count
     end,
     refresh = function(component, profile)
         local geometry = PS.TargetedBy
@@ -517,8 +611,20 @@ PS.RegisterEditorComponent("targetedBy", {
         local style = profile and profile.styles and profile.styles.targetedBy or {}
         local scale = profile and profile.scale or 1
         local size, spacing, vertical, initials = geometry.StyleOf(style)
+        local counting = geometry.Counting(style)
         local width, height = geometry.RowSize(#component.previewBadges, size, spacing, vertical)
+        if counting then width, height = geometry.CountSize(size) end
         component:SetSize(width * scale, height * scale)
+        local count = component.previewCount
+        local text = counting and geometry.CountText(tonumber(Options.templateSamples["targeted.count"])) or nil
+        if text then
+            if type(PS.ApplyNameplateFont) == "function" then
+                PS.ApplyNameplateFont(count, geometry.CountFontSize(size * scale))
+            end
+            count:SetText(text)
+            count:SetTextColor(1, 1, 1)
+        end
+        count:SetShown(text ~= nil)
         -- The plates' class colours (PlateColours.Class: Player colours' own or Blizzard's), else the sample's own.
         local general = type(PS.GetSettings) == "function" and PS.GetSettings() or nil
         for index, badge in ipairs(component.previewBadges) do
@@ -536,7 +642,9 @@ PS.RegisterEditorComponent("targetedBy", {
             end
             badge.text:SetText(initial)
             badge.text:SetTextColor(0, 0, 0)
-            badge.text:SetShown(initials)
+            badge.text:SetShown(initials and not counting)
+            badge.edge:SetShown(not counting)
+            badge.fill:SetShown(not counting)
             local alpha = index <= 2 and 1 or 0.3
             badge.edge:SetAlpha(alpha)
             badge.fill:SetAlpha(alpha)
@@ -665,6 +773,69 @@ PS.RegisterEditorComponent("looseMark", {
         local tank = PS.ThreatColours.IsTank(settings, function() return samples["role.tank"] == true end)
         local shown = LooseMark.Shows(style, tank, samples["threat.loose"] == true and samples["you.combat"] ~= false)
         component.previewIcon:SetAlpha(shown and 1 or 0.3)
+    end,
+})
+
+-- The Range part as the plates draw it (Nameplates/Range.lua's BuildPart and PaintPart): for Test values' In range
+-- (unit.inrange) its dot, distance or both in its colour, the distance as the plates write a band (Range.Band: within a
+-- 20-yard spell, or past a 30-yard one), at the plates' size; on Objects, for Test values' Within reach
+-- (interact.inrange), its words or dot. Not shown for that answer (its Show): faint, so it can still be found and placed.
+PS.RegisterEditorComponent("range", {
+    label = L["Range"], x = 70, y = 0, width = 10, height = 10, visible = false,
+    create = function(component)
+        PS.Range.BuildPart(component)
+        component.previewText = component.rangeLabel
+    end,
+    refresh = function(component, profile)
+        local Range, Schema = PS.Range, PS.ProfileSchema
+        local owner = component.previewOwner or Options
+        local samples = owner.templateSamples or TEMPLATE_SAMPLES
+        local style = profile.styles and profile.styles.range
+        local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or {}
+        local auto = Schema.PartTextSize("range", profile.nameFontSize)
+        if type(PS.ApplyNameplateFont) == "function" then PS.ApplyNameplateFont(component.rangeLabel, auto, style) end
+        -- Unknown (range.known false) shows nothing on the plates: drawn here as out of range, faint.
+        local object = owner.editorProfile == "object"
+        local known = object or samples["range.known"] ~= false
+        local inRange, text
+        if object then
+            inRange = samples["interact.inrange"] ~= false
+            text = Range.ObjectWords(style, inRange)
+        else
+            inRange = samples["unit.inrange"] ~= false and known
+            text = select(2, Range.Band(inRange, Options.SAMPLE_RANGE_REACH[samples["range.band"]] or 20,
+                Options.SAMPLE_RANGE_LONGEST))
+        end
+        local points = Schema.ScaledFontSize(Schema.StyledFontSize(auto, style), settings.textScale)
+        local shows = Range.PaintPart(component, style, inRange, text, points, true, object)
+        local alpha = (shows and known) and 1 or 0.3
+        component.rangeDot:SetAlpha(alpha)
+        component.rangeLabel:SetAlpha(alpha)
+    end,
+})
+
+-- The Behind you part as the plates draw it (Nameplates/Behind.lua's BuildPart and PaintPart): its arrow or words in
+-- its colour, at the plates' size, shown when Behind.PartShows says so for Test values' Behind you (unit.behind), Your
+-- target and (with Target and focus) the focus. Not shown: faint, so it can still be found and placed.
+PS.RegisterEditorComponent("behindYou", {
+    label = L["Behind you"], x = 70, y = 16, width = 16, height = 16, visible = false,
+    create = function(component)
+        PS.Behind.BuildPart(component)
+        component.previewText = component.behindLabel
+    end,
+    refresh = function(component, profile)
+        local Behind, Schema = PS.Behind, PS.ProfileSchema
+        local owner = component.previewOwner or Options
+        local samples = owner.templateSamples or TEMPLATE_SAMPLES
+        local style = profile.styles and profile.styles.behindYou
+        local settings = type(PS.GetSettings) == "function" and PS.GetSettings() or {}
+        local auto = Schema.PartTextSize("behindYou", profile.nameFontSize)
+        if type(PS.ApplyNameplateFont) == "function" then PS.ApplyNameplateFont(component.behindLabel, auto, style) end
+        Behind.PaintPart(component, style, Schema.ScaledFontSize(Schema.StyledFontSize(auto, style), settings.textScale))
+        local shown = Behind.PartShows(style, samples["unit.behind"] == true, samples["unit.target"] == true,
+            samples["unit.focus"] == true)
+        component.behindIcon:SetAlpha(shown and 1 or 0.3)
+        component.behindLabel:SetAlpha(shown and 1 or 0.3)
     end,
 })
 
@@ -886,24 +1057,60 @@ local function ModuleTokens()
     end
     return list
 end
--- The choice a part shows: a module's source as "module:<id>", else its source (an icon: its picture).
+-- The choice a part shows: a module's source as "module:<id>", else its source (an image: its picture reference, a
+-- part from before 1.4.0 its icon's kit piece).
 local function SlotChoice(slot)
     if type(slot) ~= "table" then return nil end
     local id = PS.ModuleSources.SlotSource(slot)
     if id then return MODULE_SOURCE .. id end
-    if slot.kind == "icon" then return slot.icon or "raid8" end
+    if slot.kind == "icon" then return PS.Media.SlotPicture(slot) end
     if not slot.kind and slot.source == "template" and type(slot.template) == "string" then
         local token = slot.template:match("^{([%a%d%.]+)}$")
         if token and PS.Template.IsExtension(token) then return MODULE_SOURCE .. token end
     end
     return slot.source
 end
--- The fields a choice writes: a module's source, or the built-in value in field (source, or an icon's picture).
-local function ChoiceFields(value, field, kind)
+-- The fields a choice writes: a module's source, or the built-in value in field (source, or an image's picture). One
+-- of the twelve icons a part had before 1.4.0 is stored as that icon, as then, so a Blueprint of it reads in 1.3; any
+-- other picture as the part's image. A kit piece with a size of its own sizes a part that has none yet (slot).
+local function ChoiceFields(value, field, kind, slot)
     local id = type(value) == "string" and value:sub(1, #MODULE_SOURCE) == MODULE_SOURCE and value:sub(#MODULE_SOURCE + 1)
     if id then return { source = "template", template = PS.ModuleSources.Template(id) } end
-    if kind == "icon" then return { icon = value, source = "static" } end
+    if kind == "icon" then
+        local source, name = PS.Media.PictureSource(value)
+        if source == "kit" and PS.ProfileSchema.valueIcons[name] then return { icon = name, image = false, source = "static" } end
+        local fields = { image = value, icon = false, source = "static" }
+        local piece = (source == "kit" and PS.Media.KitPiece(name)) or (source == "unit" and PS.Media.UNIT_PICTURES[name])
+        if piece and piece.size and type(slot) == "table" and not slot.width and not slot.height then
+            fields.width, fields.height = piece.size[1], piece.size[2]
+        end
+        return fields
+    end
     return { [field] = value }
+end
+-- The picture sources Studio's picker offers (From), in order: PlateSmith's kit (with modules' live icons), a game
+-- atlas typed by name, shared media (while LibSharedMedia is installed), My media, and under Type › Totems the totem's
+-- own icon (Media's unit pictures, each offered only under its Type).
+local PICTURE_SOURCES = {
+    { value = "kit", label = L["Kit"], tooltip = L["PlateSmith's pictures, and other addons' icons."] },
+    { value = "atlas", label = L["Atlas"], tooltip = L["A game atlas, by its name."] },
+    { value = "lsm", label = L["Shared"], tooltip = L["Shared media from other addons (LibSharedMedia)."] },
+    { value = "media", label = L["Mine"], tooltip = L["Your own files (Settings › My media)."] },
+    { value = "unit", label = L["Totem"], tooltip = L["Each totem's own icon, found for the totem the plate is for."] },
+}
+-- The unit pictures offered with the open Type (Media's UNIT_PICTURES' only).
+local function UnitPictureChoices()
+    local list, open = {}, Options.EditorObjectType and Options:EditorObjectType()
+    for _, choice in ipairs(PS.Media.PictureChoices("unit")) do
+        local entry = PS.Media.UNIT_PICTURES[PS.Media.UnitPicture(choice.value)]
+        if entry and (entry.only == nil or entry.only == open) then list[#list + 1] = choice end
+    end
+    return list
+end
+-- Where the slot's picture comes from (a module's icon is the kit's).
+local function PictureSourceOf(slot)
+    if type(slot) ~= "table" or PS.ModuleSources.SlotSource(slot) then return "kit" end
+    return PS.Media.PictureSource(PS.Media.SlotPicture(slot)) or "kit"
 end
 
 Options.editorCatalog = {
@@ -913,13 +1120,20 @@ Options.editorCatalog = {
     editorDefinitions = editorDefinitions,
     VALUE_SLOT_COUNT = VALUE_SLOT_COUNT,
     barSourceChoices = barSourceChoices,
-    iconChoices = iconChoices,
     valueSourceChoices = valueSourceChoices,
     valueSourceByKey = valueSourceByKey,
     MODULE_SOURCE = MODULE_SOURCE,
     BarSourceChoices = function() return WithModules(barSourceChoices, PS.ModuleSources.List("bar")) end,
-    IconChoices = function() return WithModules(iconChoices, PS.ModuleSources.List("icon")) end,
     ValueSourceChoices = function() return WithModules(valueSourceChoices, ModuleTokens()) end,
+    -- An image's pictures from source (PICTURE_SOURCES): the kit's with modules' live icons, else Media's list.
+    PictureChoices = function(source)
+        if source == "kit" then return WithModules(PS.Media.PictureChoices("kit"), PS.ModuleSources.List("icon")) end
+        if source == "unit" then return UnitPictureChoices() end
+        return PS.Media.PictureChoices(source)
+    end,
+    UnitPictureChoices = UnitPictureChoices,
+    PICTURE_SOURCES = PICTURE_SOURCES,
+    PictureSourceOf = PictureSourceOf,
     SlotChoice = SlotChoice,
     ChoiceFields = ChoiceFields,
 }

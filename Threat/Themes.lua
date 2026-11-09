@@ -27,7 +27,7 @@ Themes.list = {
         header = 18, rowHeight = 18, spacing = 1, fillAlpha = 0.7, bar = "bar-smooth",
         titleText = { 0.96, 0.96, 0.96 }, headerText = { 0.68, 0.7, 0.74 }, text = { 0.96, 0.96, 0.96 },
         preview = "theme-glass-preview" },
-    -- Code-drawn: a solid fill and a 1 px border, like Details!'s default.
+    -- Code-drawn: a solid fill and a 1 px border.
     { id = "flat", label = L["Flat"], kind = "backdrop", buttons = "glass", edgeSize = 1, inset = 1, title = 18,
         header = 16, rowHeight = 18, spacing = 1, fillAlpha = 0.85, bar = "bar-flat", mono = true,
         fill = { 0.06, 0.065, 0.075 }, edge = { 0, 0, 0, 1 }, titleFill = { 0.12, 0.13, 0.15, 1 },

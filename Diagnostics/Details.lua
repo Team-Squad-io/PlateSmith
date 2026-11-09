@@ -42,6 +42,8 @@ local ROUTES = {
     { "meterSkin", "threatWindows", L["Damage meter skin"] },
     { "questProviders", "quest", L["Providers"] }, { "target.quest", "quest", L["Target"] },
     { "restrictions", "restrictions" }, { "protectedAction", "restrictions", L["Blocked action"] },
+    -- The activity log's lines are free text: the Summary and the Activity tab show them.
+    { "activity", "other", skip = true },
 }
 
 -- Friendly names for the report's keys; any other key is split at its capitals.

@@ -75,3 +75,10 @@ function Format.Clock(stamp)
     end
     return "unknown time"
 end
+
+-- A time() stamp as its time of day ("14:03:27"), with the date in front when it is not now's day.
+function Format.TimeOfDay(stamp, now)
+    if type(date) ~= "function" or type(stamp) ~= "number" or stamp <= 0 then return "--:--:--" end
+    if type(now) == "number" and date("%Y-%m-%d", stamp) ~= date("%Y-%m-%d", now) then return Format.Clock(stamp) end
+    return date("%H:%M:%S", stamp)
+end

@@ -1687,6 +1687,9 @@ function ThreatConsole:MenuItems(meter)
             self:SetSampleData(not self:IsSampleData())
             self:RefreshOptions()
         end }
+    -- Your own threat per pull (Threat/Breakdown.lua, a module of its own, loaded after this one).
+    items[#items + 1] = { text = L["Threat breakdown..."], disabled = PS.ThreatBreakdown == nil,
+        func = function() PS.ThreatBreakdown:Show() end }
     items[#items + 1] = { text = L["Threat window settings..."], func = function() self:OpenSettings() end }
     return items
 end

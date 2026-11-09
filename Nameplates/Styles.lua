@@ -73,13 +73,16 @@ end
 
 -- A colour rule's r, g, b: its colour, or its blend at read's health %; nothing for a protected or missing %.
 -- A Class colour rule (colourSource "class") asks class(owner) for the unit's class colour: r, g, b and whether
--- they were picked inside the client (folded: possibly protected, for a setter only); nothing without one.
+-- they were picked inside the client (folded: possibly protected, for a setter only); nothing without one. A Set
+-- difficulty colour rule (colourSource "difficulty") takes the game's colour for read's level (PlateColours'
+-- LevelDifficulty); nothing for a level that is not readable, so the part keeps its own colour.
 function Rules.Colour(rule, read, class, owner)
     if rule.set == "colour" then
         if rule.colourSource == "class" then
             if class then return class(owner) end
             return nil
         end
+        if rule.colourSource == "difficulty" then return PS.PlateColours.LevelDifficultyChannels(read("level")) end
         local colour = rule.colour
         if type(colour) == "table" then return colour.r, colour.g, colour.b end
         return nil
@@ -233,7 +236,12 @@ PS._CreatePlateStyles = function(context)
         local base = data.overlay:GetFrameLevel()
         local slot = IS_VALUE_KEY[key] and data.profile.valueSlots[key]
         if slot and slot.layer ~= "front" then return math.max(0, base - 1) end
-        local level = base + 1 + order.count - (order.rank[key] or order.count)
+        local rank = order.rank[key] or order.count
+        local level = base + 1 + order.count - rank
+        -- One level kept free just above the health bar for its incoming heals (HealPrediction.Level): every part in
+        -- front of it sits one higher.
+        local health = order.rank.health
+        if health and rank < health then level = level + 1 end
         -- Combo points on the health bar's bottom edge straddle it and what is stacked under it (the
         -- cast bar while casting): they draw in front of both bars, so a cast never covers them.
         if key == "combo" and S.ComboOnBarEdge(data.profile, data.layout) then
@@ -248,9 +256,11 @@ PS._CreatePlateStyles = function(context)
             frame:SetFrameLevel(LayerLevel(data, key == "questLoot" and "quest" or key))
         end
         for key, holder in pairs(data.valueHolders or EMPTY) do holder:SetFrameLevel(LayerLevel(data, key)) end
+        -- Incoming heals in the level kept free above the health bar (HealPrediction.Level).
+        if data.heals then PS.HealPrediction.Level(data.heals, LayerLevel(data, "health")) end
         -- The threat windows' spotlight (border and arrows) stays above every part.
         if data.beacon then
-            data.beacon:SetFrameLevel(data.overlay:GetFrameLevel() + 2 + DrawOrder(data.layout).count)
+            data.beacon:SetFrameLevel(data.overlay:GetFrameLevel() + 3 + DrawOrder(data.layout).count)
         end
         -- The target's soft glow stays under every part (TargetGlow.lua).
         if data.targetSoftGlow then PS.TargetGlow.Under(data.targetSoftGlow, data.overlay) end
@@ -566,9 +576,9 @@ PS._CreatePlateStyles = function(context)
         return false
     end
 
-    -- A part's own colour that may be protected (the cast bar's Colour by interrupt): written at
+    -- A part's own colour that may be protected (the cast bar's Colour by interrupt, an image's tint): written at
     -- once, or, while a rule's colour holds, kept as the colour to go back to. RuleColour never
-    -- reads it back, so a protected colour is only ever passed to the setter.
+    -- reads it back, so a protected colour is only ever passed to the setter (a bar's, else a texture's).
     function Styles.OwnColour(region, r, g, b)
         local own = region.plateSmithOwnColour or {}
         own[1], own[2], own[3] = r, g, b
@@ -578,7 +588,7 @@ PS._CreatePlateStyles = function(context)
             base[1], base[2], base[3] = r, g, b
             region.plateSmithBaseColour = base
         else
-            pcall(region.SetStatusBarColor, region, r, g, b)
+            pcall(region.SetStatusBarColor or region.SetVertexColor, region, r, g, b)
         end
     end
 

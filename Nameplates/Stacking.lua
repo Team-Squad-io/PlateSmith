@@ -923,7 +923,7 @@ function Stacking.ResetToDefaults()
     local done = Mutate(function(stacking) stacking.values, stacking.preset = {}, "custom" end)
     for _, cvar in ipairs(order) do
         local default = NamePolicy.Default(cvar)
-        if default == nil then left[#left + 1] = cvar else NamePolicy.Write(cvar, default) end
+        if default == nil then left[#left + 1] = cvar else NamePolicy.Write(cvar, default, nil, GROUP) end
     end
     return done, left
 end

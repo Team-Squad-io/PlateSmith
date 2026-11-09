@@ -563,6 +563,11 @@ PS._CreateDiagnosticProbes = function(context)
                 healthGlowShown = targetData.targetBorder ~= nil and targetData.targetBorder:IsShown() == true,
                 softGlowShown = targetData.targetSoftGlow ~= nil and targetData.targetSoftGlow.frame:IsShown() == true,
                 softGlowColour = targetData.targetGlowColour,
+                -- The edge's colour (Lifecycle's PaintTargetEdge): its own gold, or one picked readable or inside the client.
+                edgeColourMode = targetData.targetHighlight and targetData.targetHighlight.targetEdgeColourMode
+                    or db.targetEdgeColourMode,
+                edgeColour = targetData.edgeColour == nil and "gold"
+                    or targetData.edgeColour.opaque and "protected/displayable" or "readable",
             }
             local shownValues = {}
             for index = 1, VALUE_SLOT_COUNT do
@@ -1042,6 +1047,11 @@ PS._CreateDiagnosticProbes = function(context)
         if PS.ObjectHover and type(PS.ObjectHover.Report) == "function" then
             local ok, hover = pcall(PS.ObjectHover.Report)
             report.objectHover = ok and hover or { state = "failed" }
+        end
+        -- The activity log's newest lines (what changed, when, who did it), so a pasted report carries them.
+        if PS.ActivityLog then
+            local ok, activity = pcall(PS.ActivityLog.Report)
+            report.activity = ok and activity or { state = "failed" }
         end
         return report
     end

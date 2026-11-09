@@ -2,15 +2,56 @@
 -- the bar, box and icon kinds. Rendered in one pass per plate flush.
 local _, PS = ...
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
+local Media = assert(PS.Media, "PlateSmith Media missing")
 local BAR_BACKGROUND = S.STYLE_DEFAULTS.background -- behind every bar (Schema defines it once)
 local ThreatText = assert(PS.ThreatText, "PlateSmith ThreatText missing")
 
+-- Images (custom parts of kind icon; Studio's Image): the one route that draws a part's picture, for the plates and
+-- Studio's preview alike. Draw sets the texture (its file or atlas), its coordinates (a kit piece's or the atlas's,
+-- mirrored and turned: S.IMAGE), its blend, and a kit piece's nine-slice margins while it is fitted to a part. False
+-- when the picture is missing on this install: the plates then draw nothing and the preview its placeholder. unit: the
+-- plate's, for a unit picture (Media's unit:<name>; the preview passes none and draws its sample).
+local ValueImage = {}
+PS.ValueImage = ValueImage
+-- The size a part of each kind starts at (a slot without its own Width and Height).
+ValueImage.SIZE = { bar = { 60, 4 }, box = { 40, 10 }, icon = { 16, 16 } }
+local IMAGE = S.IMAGE
+function ValueImage.Draw(texture, slot, unit)
+    local how, value, entry = Media.Picture(Media.SlotPicture(slot), unit)
+    if not how then return false end
+    local turns = (IMAGE.ROTATIONS[slot.rotation] or 0) + (entry and entry.turn or 0)
+    if how == "atlas" then
+        if not pcall(texture.SetAtlas, texture, value) then return false end
+        -- The atlas's own coordinates, mirrored or turned only when asked (SetAtlas set them).
+        if slot.flipX or slot.flipY or turns % 4 ~= 0 then
+            local ok, info = pcall(C_Texture.GetAtlasInfo, value)
+            if ok and type(info) == "table" and type(info.leftTexCoord) == "number" then
+                local coords = { info.leftTexCoord, info.rightTexCoord, info.topTexCoord, info.bottomTexCoord }
+                texture:SetTexCoord(Media.PictureCoords(coords, slot.flipX, slot.flipY, turns))
+            end
+        end
+    else
+        if not pcall(texture.SetTexture, texture, value) then return false end
+        texture:SetTexCoord(Media.PictureCoords(entry and entry.coords, slot.flipX, slot.flipY, turns))
+    end
+    if texture.SetBlendMode then texture:SetBlendMode(entry and entry.blend or "BLEND") end
+    local slice = slot.fit and entry and entry.slice
+    if slice and texture.SetTextureSliceMargins then
+        texture.plateSmithSliced = pcall(texture.SetTextureSliceMargins, texture, slice[1], slice[2], slice[3], slice[4])
+    elseif texture.plateSmithSliced and texture.ClearTextureSlice then
+        pcall(texture.ClearTextureSlice, texture)
+        texture.plateSmithSliced = nil
+    end
+    return true
+end
+
 PS._CreatePlateValues = function(context)
     local IsReadable, HasValue = PS.Secret.IsReadable, PS.Secret.HasValue
-    local Readers, Styles = context.Readers, context.Styles
+    local Readers, Styles, RegionAlpha = context.Readers, context.Styles, context.RegionAlpha
     local IsDisplayNumber, ReadPercent = Readers.IsDisplayNumber, Readers.ReadPercent
     local VALUE_SLOT_COUNT = S.VALUE_SLOT_COUNT
     local VALUE_KEYS, EMPTY = Styles.VALUE_KEYS, Styles.EMPTY
+    local WHITE_COLOUR = { r = 1, g = 1, b = 1 }
     local function DisplayValue(region, format, first, second)
         local ok
         if HasValue(second) then
@@ -103,11 +144,40 @@ PS._CreatePlateValues = function(context)
     -- percentages pass straight to the bar (SetValue takes them). A bar or icon from a module's source
     -- (Core/ModuleSources.lua) fills from its token or shows its reader's texture, hiding when it has none.
     local Sources = PS.ModuleSources
-    local function RenderGraphic(data, key, slot, graphic)
+    -- An image's tint (S.IMAGE) from the unit: class (a player's, else its reaction), reaction or threat, each by the
+    -- reader the target glow's colour modes use (one reader per fact), else its own colour. A protected colour goes
+    -- only to the colour setter (Styles.OwnColour, which a rule's colour still wins over).
+    local function PaintTint(data, slot, texture)
+        local tint, has, r, g, b = slot.tint, false, nil, nil, nil
+        if tint == "threat" then
+            local Threat = PS.ThreatColours
+            local colour = Threat.ForPlate(data, Threat.GLOW)
+            if colour then
+                has, r, g, b = true, colour.r, colour.g, colour.b
+            else
+                has, r, g, b = Threat.FoldForPlate(data, Threat.GLOW)
+            end
+        elseif tint == "class" or tint == "reaction" then
+            if tint == "class" and PS.Secret.ReadBoolean(UnitIsPlayer, data.unit) == true then
+                local cr, cg, cb, folded = PS.PlateColours.UnitClassChannels(data.unit)
+                if folded ~= nil then has, r, g, b = true, cr, cg, cb end
+            end
+            local reaction = not has and PS.TargetGlow.Reaction(data.unit, data.friendly)
+            if reaction then has, r, g, b = true, reaction[1], reaction[2], reaction[3] end
+        end
+        if not has then
+            local colour = slot.colour or WHITE_COLOUR
+            r, g, b = colour.r, colour.g, colour.b
+        end
+        Styles.OwnColour(texture, r, g, b)
+    end
+
+    local function RenderGraphic(data, key, slot, graphic, all, threat)
         if not graphic or not data.valueTexts or graphic == data.valueTexts[key] then return end
         local position = data.layout[key]
         local module = slot.source == "template" and Sources.SlotSource(slot) or nil
-        if not data.own or data.namesOnly or not position or position.visible == false or slot.source == "off" then
+        if not data.own or data.namesOnly or not position or position.visible == false or slot.source == "off"
+            or graphic.plateSmithMissing then
             graphic:Hide()
         elseif module and slot.kind == "bar" then
             local percent = Sources.BarPercent(module, Readers.Get(data)(Sources.Bar(module).token))
@@ -130,6 +200,9 @@ PS._CreatePlateValues = function(context)
             end
             if HasValue(percent) and pcall(graphic.SetValue, graphic, percent) then graphic:Show() else graphic:Hide() end
         else
+            -- A tint from the unit follows a new unit (all) and, by threat, threat.
+            local tint = slot.kind == "icon" and slot.tint
+            if tint and tint ~= "bar" and (all or (threat and tint == "threat")) then PaintTint(data, slot, graphic) end
             graphic:Show()
         end
     end
@@ -175,7 +248,11 @@ PS._CreatePlateValues = function(context)
             -- No region: a part this plate's layout does not use, never made (Lifecycle).
             if region then
                 if slot.kind then
-                    RenderGraphic(data, key, slot, region)
+                    RenderGraphic(data, key, slot, region, all, threat)
+                elseif not region.SetText then
+                    -- Still the picture of the image the part was (a decoration set's text put in its slot): hidden
+                    -- until the plate's appearance gives it its text again (ApplyValueKind).
+                    region:Hide()
                 elseif source == "template" then
                     if not data.own or data.namesOnly or data.layout[key].visible == false or not slot.template then
                         region:Hide()
@@ -196,26 +273,34 @@ PS._CreatePlateValues = function(context)
     end
 
     -- Custom parts that are not text: a bar filled by a percentage, a box (a coloured rectangle) or
-    -- an icon. Made on first use on the part's holder frame; the part's region (data.values[key])
+    -- an image (ValueImage). Made on first use on the part's holder frame; the part's region (data.values[key])
     -- becomes the graphic, so placement, layering, hiding, rules and styles treat it like any part.
-    local VALUE_ICONS = {
-        raid1 = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_1",
-        raid2 = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_2",
-        raid3 = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_3",
-        raid4 = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_4",
-        raid5 = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_5",
-        raid6 = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_6",
-        raid7 = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_7",
-        raid8 = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_8",
-        skull = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_8",
-        quest = "Interface\\GossipFrame\\AvailableQuestIcon",
-        sword = "Interface\\Icons\\INV_Sword_04",
-        shield = "Interface\\Icons\\INV_Shield_06",
-    }
-    PS.ValueIconPaths = VALUE_ICONS
-    local VALUE_GRAPHIC_SIZE = { bar = { 60, 4 }, box = { 40, 10 }, icon = { 16, 16 } }
-    PS.ValueGraphicSize = VALUE_GRAPHIC_SIZE
-    local WHITE_COLOUR = { r = 1, g = 1, b = 1 }
+    local VALUE_GRAPHIC_SIZE = ValueImage.SIZE
+
+    -- An image tinted by its bar (tint "bar") takes every colour that bar is given: one hook per bar, made the first
+    -- time an image asks, runs as PlateSmith colours it (on events, never polled). The colour may be protected: it is
+    -- only handed to the image's setter.
+    local function OnBarColour(bar, r, g, b)
+        for texture in pairs(bar.plateSmithTinted) do
+            if texture.plateSmithTintBar == bar then Styles.OwnColour(texture, r, g, b) end
+        end
+    end
+    local function TintFromBar(data, key, texture)
+        local old = texture.plateSmithTintBar
+        if old then old.plateSmithTinted[texture], texture.plateSmithTintBar = nil, nil end
+        local position = data.layout and data.layout[key]
+        local parent = position and position.parent
+        local bar = parent and (Styles.IS_VALUE_KEY[parent] and data.values[parent] or data[parent])
+        if type(bar) ~= "table" or not bar.GetStatusBarColor then return false end
+        if not bar.plateSmithTinted then
+            bar.plateSmithTinted = {}
+            hooksecurefunc(bar, "SetStatusBarColor", OnBarColour)
+        end
+        bar.plateSmithTinted[texture], texture.plateSmithTintBar = true, bar
+        local ok, r, g, b = pcall(bar.GetStatusBarColor, bar)
+        if ok then Styles.OwnColour(texture, r, g, b) end
+        return ok
+    end
 
     local function ValueGraphic(data, key, kind)
         data.valueGraphics = data.valueGraphics or {}
@@ -263,8 +348,28 @@ PS._CreatePlateValues = function(context)
         elseif kind == "box" then
             graphic:SetColorTexture(colour.r, colour.g, colour.b, 0.85)
         else
-            graphic:SetTexture(VALUE_ICONS[slot.icon or "raid8"])
-            graphic:SetVertexColor(colour.r, colour.g, colour.b)
+            -- A module's icon shows its reader's texture (RenderGraphic): drawn whole.
+            if slot.source == "template" and Sources.SlotSource(slot) then
+                graphic:SetTexCoord(0, 1, 0, 1)
+                graphic.plateSmithMissing = nil
+            else
+                graphic.plateSmithMissing = not ValueImage.Draw(graphic, slot, data.unit) or nil
+            end
+            local tint = slot.tint
+            if tint ~= "bar" and graphic.plateSmithTintBar then
+                graphic.plateSmithTintBar.plateSmithTinted[graphic], graphic.plateSmithTintBar = nil, nil
+            end
+            if not tint then
+                graphic.plateSmithOwnColour = nil
+                graphic:SetVertexColor(colour.r, colour.g, colour.b)
+            elseif tint ~= "bar" or not TintFromBar(data, key, graphic) then
+                PaintTint(data, slot, graphic)
+            end
+        end
+        -- Its own opacity, under its rules' and a hidden parent's (Placement's RegionAlpha).
+        if kind ~= "bar" and graphic.plateSmithOwnAlpha ~= slot.alpha then
+            graphic.plateSmithOwnAlpha = slot.alpha
+            graphic:SetAlpha(RegionAlpha(graphic))
         end
         data.values[key] = graphic
         return graphic

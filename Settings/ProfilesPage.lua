@@ -4,10 +4,11 @@ local Profiles = assert(PS.Profiles, "PlateSmith Profiles missing")
 local Chat = assert(PS.Chat, "PlateSmith Chat missing")
 local L = PS.L
 
--- Settings > PlateSmith > Profiles: choose, create, copy, rename, and delete
--- profiles. Loading settings into the working copy (copy from, reset) still
--- needs Save; actions on whole profiles apply at once. Names and deletes are asked in
--- PlateSmith's own dialogs (Studio's), never a StaticPopup.
+-- Profiles: choose, create, copy, rename and delete profiles, and this character's automatic switching. Their one home
+-- is Studio › Settings › Profiles (built here with Studio's settings kit, so it works in combat); Game Options'
+-- Profiles page opens it. Loading settings into the working copy (copy from, reset) still needs Save; actions on whole
+-- profiles apply at once. Names and deletes are asked in PlateSmith's own dialogs (Studio's), never a StaticPopup.
+-- Studio's Profile menu is the quick switcher over the same PS.Profiles calls.
 
 local function Report(ok, reason)
     if not ok then Chat.Print(string.format(L["Profile change failed: %s"], L[reason or "unknown error"])) end
@@ -54,16 +55,15 @@ local function RuleChoices()
     return choices
 end
 
--- This character's automatic switching (Core/AutoProfile.lua): saved at once, like the tank role,
+-- This character's automatic switching (Core/AutoProfile.lua) into section: saved at once, like the tank role,
 -- since it is a per-character choice rather than part of a profile's design.
-function Options:BuildAutoProfileSection(kit, flow)
+local function BuildAutoProfileRows(kit, section)
     local Auto = PS.AutoProfile
-    local section = Options.SettingsSection(kit, flow, L["Automatic switching"])
-    kit.Add(section, kit.ControlHelp(section, L["This character can change profile by itself when it enters other content "
+    kit.Add(section, kit.Help(section, L["This character can change profile by itself when it enters other content "
         .. "or changes specialization. It waits until combat ends and until unsaved changes are saved or reverted."]))
     -- Audit #7: designs per place are the one route for a look; switching is for whole setups. Both read the place
     -- through NamePolicy.InstanceType, so a scenario is open world to each.
-    kit.Add(section, kit.ControlHelp(section, L["To change how plates look in a kind of place, give them a design "
+    kit.Add(section, kit.Help(section, L["To change how plates look in a kind of place, give them a design "
         .. "there in Studio (the Design menu). Switch profiles for whole different setups, such as per specialization. "
         .. "Scenarios and delves count as open world, as they do for designs."]))
     local dropdowns = {}
@@ -100,41 +100,28 @@ function Options:BuildAutoProfileSection(kit, flow)
         kit.Add(section, row)
         dropdowns.precedence = dropdown
     else
-        kit.Add(section, kit.ControlHelp(section, L["This client has no specializations to switch by."]))
+        kit.Add(section, kit.Help(section, L["This client has no specializations to switch by."]))
     end
     Options.autoProfileDropdowns = dropdowns
     Options.autoProfileSection = section
 end
 
--- Studio's Profile menu › Switch automatically...: this page at Automatic switching. Blizzard's
--- Settings panel is protected in combat, so the menu entry is off then; false if it cannot open.
-function Options:OpenAutoProfileSettings()
-    if PS.Secret.InCombat() then return false end
-    PS.CreateOptions()
-    local section, page = self.autoProfileSection, self.profilesPanel
-    if not (section and page and self.settingsSearch) then return false end
-    local opened = self.settingsSearch.Pick({ place = "blizzard", page = page, frame = section, section = section,
-        categoryObject = self.moduleSettings and self.moduleSettings.profiles })
-    -- Clients without the Settings panel's categories: the legacy route to the page itself.
-    if opened and not (Settings and Settings.OpenToCategory) and InterfaceOptionsFrame_OpenToCategory then
-        InterfaceOptionsFrame_OpenToCategory(page)
-    end
-    return opened
-end
-
-function Options:BuildProfilesPage(page)
-    local kit, flow, bar = self:NewSettingsPage(page, L["Profiles"],
-        L["Each character uses one profile. Edits apply straight away but are kept only when you press Save."], true)
-
-    local this = Options.SettingsSection(kit, flow, L["This character's profile"])
-    local activeRow, active = kit.DropdownRow(this, L["Active profile"], {
+-- Studio › Settings › Profiles (Inspector defines the page; Page and Section are its settings kit's): this character's
+-- profile, the other profiles, and automatic switching.
+function Options:BuildProfileSettings(SK, Page, Section)
+    local page = Page("profiles",
+        L["Each character uses one profile. Edits apply straight away but are kept only when you press Save."])
+    local this = Section(page, "profileThis", L["This character's profile"], function()
+        return tostring(Profiles.Active() or Profiles.DEFAULT)
+    end)
+    local activeRow, active = SK.DropdownRow(this, L["Active profile"], {
         choices = AllProfiles, name = "PlateSmithProfilesActiveDropdown",
         get = Profiles.Active, set = function(name) Report(Profiles.Switch(name)) end,
     })
     Register(active)
-    kit.Add(this, activeRow)
-    kit.Add(this, kit.ControlHelp(this, L["Save or revert unsaved changes before switching."]))
-    local actionsRow, actions = kit.ButtonsRow(this, "", {
+    SK.Add(this, activeRow)
+    SK.Add(this, SK.ControlHelp(this, L["Save or revert unsaved changes before switching."]))
+    local actionsRow = SK.ButtonsRow(this, nil, {
         { L["New profile"], 110, function()
             AskName(L["Name for the new profile:"], "", function(name) return Profiles.Create(name) end)
         end },
@@ -147,17 +134,10 @@ function Options:BuildProfilesPage(page)
             AskName(L["New name for this profile:"], Profiles.Active(), function(name) return Profiles.Rename(name) end)
         end },
     })
-    kit.Add(this, actionsRow)
-    -- Asked first, as in Studio; Revert still undoes it until you save.
-    local resetRow, resetButtons = kit.ButtonsRow(this, "", { { L["Reset to defaults"], 150, function()
-        Options:ConfirmStudioAction(L["Reset every setting and position in this profile to the defaults? "
-            .. "Revert undoes it until you save."], L["Reset settings"], function()
-                PS.ResetSettings()
-                Options:Refresh()
-            end)
-    end } })
-    kit.Add(this, resetRow)
-    Options.resetButton = resetButtons[1]
+    SK.Add(this, actionsRow)
+    -- Reset is the Settings footer's Reset settings (one control for it), under every Settings page.
+    SK.Add(this, SK.Help(this, L["Reset settings, at the foot of Settings, puts every setting and position in this "
+        .. "profile back to the defaults; Revert undoes it until you save."]))
 
     -- A new profile from a built-in preset, named after it (Core/ProfilePresets.lua).
     local presets = PS.ProfilePresets
@@ -166,37 +146,49 @@ function Options:BuildProfilesPage(page)
     for _, preset in ipairs(presets.LIST) do
         presetChoices[#presetChoices + 1] = { value = preset.id, label = preset.name, help = preset.description }
     end
-    local presetRow, presetDropdown = kit.DropdownRow(this, L["New from preset"], {
+    local presetRow, presetDropdown = SK.DropdownRow(this, L["New from preset"], {
         choices = presetChoices, name = "PlateSmithProfilesPresetDropdown",
         get = function() return chosenPreset end, set = function(id) chosenPreset = id end,
     })
     Register(presetDropdown)
-    kit.Add(this, presetRow)
-    local createRow, createButtons = kit.ButtonsRow(this, "", { { L["Create"], 100, function()
+    SK.Add(this, presetRow)
+    local createRow = SK.ButtonsRow(this, nil, { { L["Create"], 100, function()
         Report(Profiles.CreateFromPreset(chosenPreset))
     end } })
-    kit.Add(this, createRow)
-    kit.Add(this, kit.ControlHelp(this, L["Makes a new profile from the preset and switches to it. Your profiles are not changed."]))
-    Options.profilePresetDropdown, Options.profilePresetCreate = presetDropdown, createButtons[1]
+    SK.Add(this, createRow)
+    SK.Add(this, SK.ControlHelp(this, L["Makes a new profile from the preset and switches to it. Your profiles are not changed."]))
+    Options.profilePresetDropdown, Options.profilePresetCreate = presetDropdown, createRow.buttons[1]
 
-    local others = Options.SettingsSection(kit, flow, L["Other profiles"])
-    local copyRow, copy = kit.DropdownRow(others, L["Copy settings from"], {
+    local others = Section(page, "profileOthers", L["Other profiles"])
+    local copyRow, copy = SK.DropdownRow(others, L["Copy settings from"], {
         choices = OtherProfiles, name = "PlateSmithProfilesCopyDropdown", placeholder = L["Choose a profile"],
         get = function() return nil end, set = function(name) Report(Profiles.CopyFrom(name)) end,
     })
     Register(copy)
-    kit.Add(others, copyRow)
-    kit.Add(others, kit.ControlHelp(others, L["Loads another profile's settings into this one. Press Save to keep them."]))
-    local deleteRow, deleteDropdown = kit.DropdownRow(others, L["Delete a profile"], {
+    SK.Add(others, copyRow)
+    SK.Add(others, SK.ControlHelp(others, L["Loads another profile's settings into this one. Press Save to keep them."]))
+    local deleteRow, deleteDropdown = SK.DropdownRow(others, L["Delete a profile"], {
         choices = OtherProfiles, name = "PlateSmithProfilesDeleteDropdown", placeholder = L["Choose a profile"],
         get = function() return nil end, set = function(name) ConfirmDelete(name) end,
     })
     Register(deleteDropdown)
-    kit.Add(others, deleteRow)
+    SK.Add(others, deleteRow)
 
-    Options:BuildAutoProfileSection(kit, flow)
+    BuildAutoProfileRows(SK, Section(page, "autoProfile", L["Automatic switching"]))
 
-    Options.profilesSaveBar = bar
+    local actions = actionsRow.buttons
     Options.profileButtons = { new = actions[1], duplicate = actions[2], rename = actions[3], delete = deleteDropdown }
-    page:Relayout()
+    return page
+end
+
+-- Studio's Profile menu › Switch automatically...: Settings › Profiles at Automatic switching (in combat too).
+function Options:OpenAutoProfileSettings()
+    return self:OpenSettingsCategory("profiles", function() return self.autoProfileSection end)
+end
+
+-- Game Options' Profiles page: a launcher (Panel.lua's BuildLauncherPage), as Threat's and every module's is.
+function Options:BuildProfilesPage(page)
+    page.profilesOpenButton = self:BuildLauncherPage(page, L["Profiles"], L["Profiles are in Blueprint Studio › "
+        .. "Settings › Profiles: switch, create, copy, rename, delete and reset them, and choose when this character "
+        .. "switches by itself."], function() Options:OpenSettingsCategory("profiles") end)
 end

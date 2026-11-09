@@ -194,12 +194,22 @@ local function General()
     return type(PS.GetSettings) == "function" and PS.GetSettings() or nil
 end
 
+-- The settings a colour mode reads: the soft glow's, or the edge's (Edge colour), whose "gold" keeps the edge's own
+-- golds (EDGE_GOLD: the health bar's edge, the bars' steady and pulsing edges, the text's glow), so Colour and Pick
+-- give no colour for it.
+Glow.KEYS = { glow = { mode = "targetGlowColourMode", colour = "targetGlowColour" },
+    edge = { mode = "targetEdgeColourMode", colour = "targetEdgeColour" } }
+Glow.EDGE_GOLD = { border = { 1, 0.82, 0.12, 1 }, steady = { 1, 0.72, 0.16, 0.65 }, pulse = { 1, 0.68, 0.1, 0.55 },
+    text = { 1, 0.7, 0.14 } }
+
 -- The settings' colour (r, g, b) from readable facts: classFile (a player's, or nil), then reaction
 -- (a REACTION colour, or nil), or for the Threat mode threat (a threat colour { r, g, b }, or nil), then
--- the custom colour, which is also what any unknown falls back to. ColourFor and Studio's preview (a
--- sample, not a unit) both choose through it.
-function Glow.Colour(settings, classFile, reaction, threat)
-    local mode = settings.targetGlowColourMode
+-- the custom colour, which is also what any unknown falls back to. keys: KEYS' glow (nil) or edge; nothing for
+-- the edge's Gold. Pick and Studio's preview (a sample, not a unit) both choose through it.
+function Glow.Colour(settings, classFile, reaction, threat, keys)
+    keys = keys or Glow.KEYS.glow
+    local mode = settings[keys.mode]
+    if mode == "gold" then return nil end
     if mode == "class" then
         local r, g, b = PS.PlateColours.Class(General(), classFile) -- nil for none, or one it cannot read
         if r then return r, g, b end
@@ -209,57 +219,64 @@ function Glow.Colour(settings, classFile, reaction, threat)
     elseif mode ~= "custom" and reaction then
         return reaction[1], reaction[2], reaction[3]
     end
-    local colour = settings.targetGlowColour or S.defaults.targetGlowColour
+    local colour = settings[keys.colour] or S.defaults[keys.colour]
     return colour.r, colour.g, colour.b
 end
 
--- Threat mode on plate data: its threat colour (ThreatColours' part "glow", the shared colours for your
--- role and its state, as the bars and edge take them) while it is in combat with you: readable, or picked
--- inside the client from protected answers (FoldForPlate, straight to the pieces' colour setter, as the
--- health bar's edge takes it). True when painted.
-local function PaintThreat(glow, data)
-    local Threat = PS.ThreatColours
-    if not (Threat and data) then return false end
-    local colour = Threat.ForPlate(data, Threat.GLOW)
-    if colour then
-        Glow.Paint(glow, colour.r, colour.g, colour.b)
-        return true
-    end
-    local folded, r, g, b = Threat.FoldForPlate(data, Threat.GLOW)
-    if not folded then return false end
-    local painted = true
-    for _, piece in ipairs(glow.pieces) do painted = pcall(piece.SetVertexColor, piece, r, g, b) and painted end
-    return painted
+-- What keys' mode falls back to for unit when its colour cannot be drawn (a setter refused protected channels):
+-- the reaction for Class, else the custom colour. Returns which, r, g, b.
+function Glow.Fallback(settings, keys, unit, friendly)
+    local reaction = settings[keys.mode] == "class" and Glow.Reaction(unit, friendly) or nil
+    return reaction and "reaction" or "custom", Glow.Colour(settings, nil, reaction, nil, keys)
 end
 
--- Paints the glow in the settings' colour for unit: a player's class (a protected class file goes
--- straight to the client's colour sink), the reaction, the plate's threat colour (data: the plate, for
--- Threat), or the custom colour, which is also what any unknown falls back to. Returns which was used.
-function Glow.ColourFor(glow, settings, unit, friendly, data)
-    local mode = settings.targetGlowColourMode
+-- The one choice of a colour mode on a plate, for the soft glow and the edge alike (keys): which ("threat", "class",
+-- "reaction", "custom"; "gold" and no colour for the edge's Gold), r, g, b, and opaque: true when the channels may
+-- be protected (for a colour setter only, in pcall). Threat: the plate's threat colour (data; ThreatColours' part
+-- "glow", the shared colours for your role and its state, as the bars and edge take them) while it is in combat
+-- with you, readable or picked inside the client from protected answers (FoldForPlate); otherwise the custom colour.
+-- Class: a player's class colour (a protected class file through the client's own colour); anyone else, or one it
+-- cannot tell, the reaction. Any unknown ends at the custom colour.
+function Glow.Pick(settings, keys, unit, friendly, data)
+    local mode = settings[keys.mode]
+    if mode == "gold" then return "gold" end
     if mode == "threat" then
-        if PaintThreat(glow, data) then return "threat" end
-        Glow.Paint(glow, Glow.Colour(settings))
-        return "custom"
+        local Threat = PS.ThreatColours
+        if Threat and data then
+            local colour = Threat.ForPlate(data, Threat.GLOW)
+            if colour then return "threat", colour.r, colour.g, colour.b, false end
+            local folded, r, g, b = Threat.FoldForPlate(data, Threat.GLOW)
+            if folded == true then return "threat", r, g, b, true end
+        end
+        return "custom", Glow.Colour(settings, nil, nil, nil, keys)
     end
     if mode == "class" and unit and Secret.ReadBoolean(UnitIsPlayer, unit) == true then
         local classFile, has = Secret.ClassFile(unit)
         if has then
             local r, g, b = PS.PlateColours.Class(General(), classFile)
-            if r then
-                Glow.Paint(glow, r, g, b)
-                return "class"
-            end
-            local painted = true
-            for _, piece in ipairs(glow.pieces) do
-                painted = Secret.SetClassColour(piece, classFile, "SetVertexColor") and painted
-            end
-            if painted then return "class" end
+            if r then return "class", r, g, b, false end
+            local ok, pr, pg, pb = Secret.ClassColourChannels(classFile)
+            if ok then return "class", pr, pg, pb, true end
         end
     end
     local reaction = mode ~= "custom" and Glow.Reaction(unit, friendly) or nil
-    Glow.Paint(glow, Glow.Colour(settings, nil, reaction))
-    return reaction and "reaction" or "custom"
+    return reaction and "reaction" or "custom", Glow.Colour(settings, nil, reaction, nil, keys)
+end
+
+-- Paints the glow in the settings' colour for unit (Pick; data: the plate, for Threat). Returns which was used.
+function Glow.ColourFor(glow, settings, unit, friendly, data)
+    local keys = Glow.KEYS.glow
+    local which, r, g, b, opaque = Glow.Pick(settings, keys, unit, friendly, data)
+    if not opaque then
+        Glow.Paint(glow, r, g, b)
+        return which
+    end
+    local painted = true
+    for _, piece in ipairs(glow.pieces) do painted = pcall(piece.SetVertexColor, piece, r, g, b) and painted end
+    if painted then return which end
+    which, r, g, b = Glow.Fallback(settings, keys, unit, friendly)
+    Glow.Paint(glow, r, g, b)
+    return which
 end
 
 -- A part's box in its own units, from the profile that sizes it (never measured: a restricted plate's
@@ -484,7 +501,7 @@ function Glow.Hide(glow)
     glow.shown = false
 end
 
--- The plate side. context: Transforms (Placement's). The glow is made the first time a plate shows
+-- The plate side. context: Transforms (Placement's), RestyleEdge (settings). The glow is made the first time a plate shows
 -- it (data.targetSoftGlow), as the target's highlight is: a child of the plate's overlay, so it takes
 -- the plate's scale, visibility and fades (Blizzard's distance fade on the nameplate, the threat
 -- spotlight's on the overlay) as every part does, LEVELS_UNDER below it (Styles.ApplyDrawOrder keeps it
@@ -616,10 +633,12 @@ PS._CreatePlateTargetGlow = function(context)
         data.targetGlowColour = Glow.ColourFor(glow, highlight, data.unit, data.friendly, data)
     end
 
-    -- A glow setting changed (Settings' SetOption, or a design's own glow option): only the plates showing
-    -- the glow restyle it, each with its own design's values.
+    -- A glow setting or the edge's colour changed (Settings' SetOption, or a design's own option): only the plates
+    -- showing the glow restyle it, each with its own design's values, and the target's edge takes its colour again
+    -- (context.RestyleEdge: Lifecycle's).
     function Glow.RestyleShown(settings)
         for data in pairs(shown) do Show(data, settings, true) end
+        if context.RestyleEdge then context.RestyleEdge(settings) end
         -- And the glow behind your target's plate where Blizzard draws it (Extras.lua).
         local extras = PS.Extras and PS.Extras._pass
         if extras then extras.RestyleShown(settings) end

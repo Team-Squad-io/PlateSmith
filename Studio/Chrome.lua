@@ -47,8 +47,10 @@ local INSPECTOR = { width = FRAME.inspector, rail = 8, lane = 32 }
 local CPU_READOUT = { right = 381, width = 200, height = 22, gap = 16, interval = 3, ticker = "studio.cpu-readout" }
 -- Settings' categories panel: the search box across its top, then a scrolling list of a row per category, the
 -- Modules group under its heading at the end (headerH), x in from the panel's sides and bottom above its foot.
-local CATEGORIES = { top = 12, searchX = 12, searchH = 34, searchGap = 12, rowStep = 46, rowH = 44, headerH = 34, x = 8,
-    bottom = 12, bar = 26, icon = 22, iconX = 12, labelX = 42 }
+-- The categories' list: rows rowH tall every rowStep, each group under a headerH heading (the footer's under a rule),
+-- each row's icon at iconX and its label at labelX.
+local CATEGORIES = { top = 12, searchX = 12, searchH = 34, searchGap = 12, rowStep = 32, rowH = 30, headerH = 28, x = 8,
+    bottom = 12, bar = 26, icon = 18, iconX = 10, labelX = 36, font = 14 }
 Options.editorSettingsCategoryMetrics = CATEGORIES
 -- The preview panel's rows (canvas units from its top-left): the design row under the tabs, the foot's
 -- controls footY above its bottom, Test values after Snap and its panel panelGap above the foot. The picture
@@ -82,7 +84,13 @@ SetStudioButtonState = function(button, selected)
         or primaryLit and "selected" or "normal"
     button.studioState = state
     if button.studioArt then button.studioArt:SetState(state) end
-    if button.studioRow then
+    if button.studioNav then
+        -- A settings category row: a soft wash on hover, and the selected one lit with a gold bar at its left.
+        button.studioRow:Hide()
+        local selectedRow = state == "selected"
+        button.navFill:SetColorTexture(1, 0.86, 0.5, selectedRow and 0.10 or button.studioHover and 0.05 or 0)
+        button.navBar:SetShown(selectedRow)
+    elseif button.studioRow then
         Theme.Place(button.studioRow, "settings-category-row-" .. state, button, 0, 0, button:GetWidth(), button:GetHeight())
     end
     local lit = enabled and (button.studioHover or button.studioSelected)
@@ -799,34 +807,71 @@ end
 
 -- Settings: the categories down the left, one category's page at a time on the right. Pages
 -- are the panels built by the inspector (their keys), in the order shown.
+-- group: the heading a category sits under (Plates; Yours: personal, this character's profile and what is kept at once),
+-- or the footer (under a rule, after the Modules). icon: its picture before the label.
 local SETTINGS_CATEGORIES = {
-    { key = "plate", label = L["Behaviour & display"], summary = L["Shared settings for the active profile."] },
-    { key = "objects", label = L["Objects & interacting"],
+    { key = "plate", group = "plates", icon = "Interface\\Icons\\INV_Misc_Spyglass_02", label = L["Behaviour & display"],
+        summary = L["Shared settings for the active profile."] },
+    { key = "visibility", group = "plates", icon = "Interface\\Icons\\INV_Misc_Eye_01", label = L["Where plates show"],
+        summary = L["Which plate types show in the world, dungeons & raids, battlegrounds & arenas and cities & inns."] },
+    { key = "objects", group = "plates", icon = "Interface\\Icons\\INV_Box_01", label = L["Objects & interacting"],
         summary = L["Object plates, pointing at them, and the game's interact key."] },
-    { key = "stacking", label = L["Stacking & distance"],
+    { key = "stacking", group = "plates", icon = "Interface\\Icons\\INV_Misc_Map_01", label = L["Stacking & distance"],
         summary = L["How Blizzard stacks, spaces, scales and fades plates, and which draws on top."] },
-    { key = "auras", label = L["Aura defaults"], summary = L["Which buffs and debuffs the plates show."] },
-    { key = "relations", label = L["Player colours"],
+    { key = "auras", group = "plates", icon = "Interface\\Icons\\Spell_Holy_PowerWordShield", label = L["Aura defaults"],
+        summary = L["Which buffs and debuffs the plates show."] },
+    { key = "relations", group = "plates", icon = "Interface\\Icons\\INV_Misc_Gem_Ruby_01", label = L["Player colours"],
         summary = L["Colours for group, guild, friends, classes and PvP-flagged players."] },
+    { key = "profiles", group = "yours", icon = "Interface\\Icons\\INV_Misc_Book_09", label = L["Profiles"],
+        summary = L["This character's profile: switch, create, copy and delete profiles, and switch by itself."] },
+    { key = "hiddenAuras", group = "yours", icon = "Interface\\Icons\\Spell_Shadow_Teleport", label = L["Hidden auras"],
+        summary = L["Buffs and debuffs no plate shows. Personal; kept at once, never needs Save, never in a Blueprint."] },
+    { key = "media", group = "yours", icon = "Interface\\Icons\\INV_Scroll_03", label = L["My media"],
+        summary = L["Your own picture files for Image parts. Personal; never needs Save, never in a Blueprint."] },
+    { key = "studio", group = "yours", icon = "Interface\\Icons\\Trade_Engineering", label = L["Studio"],
+        summary = L["Studio's size, accessibility and notices. Personal; never needs Save."] },
     -- tooltip: the page header's "?" (Options.editorSettingsHelp).
-    { key = "experimental", label = L["Experimental"], summary = L["Tests of what the game allows. Each is off by default."],
+    { key = "experimental", group = "footer", icon = "Interface\\Icons\\INV_Potion_01", label = L["Experimental"],
+        summary = L["Tests of what the game allows. Each is off by default."],
         tooltip = L["Each option here tests something the game may or may not allow on this client. They are off by "
             .. "default and cost nothing while off. Turn one on, play, then run /ps diagnose: its experimental section "
             .. "says whether each one worked."] },
-    { key = "studio", label = L["Studio"], summary = L["Studio's size, accessibility and notices. Personal; never needs Save."] },
-    { key = "help", label = L["Help"], summary = L["How Blueprint Studio works, and PlateSmith's commands."] },
+    { key = "help", group = "footer", icon = "Interface\\Icons\\INV_Misc_QuestionMark", label = L["Help"],
+        summary = L["How Blueprint Studio works, and PlateSmith's commands."] },
 }
+local CATEGORY_GROUPS = { plates = L["Plates"], yours = L["Yours"], modules = L["Modules"] }
 
--- The built-in categories shown, then the Modules group's (Studio/Modules.lua: category.module is its registration).
+-- The built-in categories shown, the Modules group's (Studio/Modules.lua: category.module is its registration) after
+-- Plates and Yours, and the footer's (Experimental, Help) last.
 function Options:SettingsCategoryList()
     local list = {}
     for _, category in ipairs(SETTINGS_CATEGORIES) do
-        if not category.hidden then list[#list + 1] = category end
+        if not category.hidden and category.group ~= "footer" then list[#list + 1] = category end
     end
     for _, category in ipairs(self.ModuleSettingsCategories and self:ModuleSettingsCategories() or {}) do
         list[#list + 1] = category
     end
+    for _, category in ipairs(SETTINGS_CATEGORIES) do
+        if not category.hidden and category.group == "footer" then list[#list + 1] = category end
+    end
     return list
+end
+
+-- How many of a category's settings differ from a new profile's (its bound controls' settings: a page counts once it
+-- is built). Modules show their unsaved dot instead.
+function Options:SettingsCategoryChanged(key)
+    local bound, db = self.editorSettingsControls, PS.GetSettings and PS.GetSettings()
+    local defaults = PS.ProfileSchema and PS.ProfileSchema.defaults
+    if not (bound and db and defaults) then return 0 end
+    local prefix, count, seen = key .. ".", 0, {}
+    for id in pairs(bound) do
+        local setting = id:sub(1, #prefix) == prefix and id:sub(#prefix + 1) or nil
+        if setting and defaults[setting] ~= nil and not seen[setting] then
+            seen[setting] = true
+            if not PS.Table.DeepEqual(db[setting], defaults[setting]) then count = count + 1 end
+        end
+    end
+    return count
 end
 
 -- A category's key, label and summary, listed now or not.
@@ -895,27 +940,59 @@ function Options:LayoutEditorSettingsPanels()
     if self.editorSettingsScrollBar then self.editorSettingsScrollBar:Sync() end
 end
 
--- The categories' list: a row per category, then the Modules heading over the modules' rows (each with its icon, an
--- unsaved dot while its profile settings differ from the saved profile, and greyed with the reason in its tooltip
--- when its page cannot show), scrolling when they outgrow the panel (the bar then takes the rows' right end).
+-- The categories' list: each group under its heading (Plates, Yours, Modules; the footer's Experimental and Help under
+-- a rule), a row per category with its icon, a count of its settings changed from a new profile's (a module: an unsaved
+-- dot while its profile settings differ from the saved profile, and greyed with the reason in its tooltip when its page
+-- cannot show), scrolling when they outgrow the panel (the bar then takes the rows' right end).
 local GREYED = { 0.50, 0.48, 0.45 }
+local function CategoryGroup(category) return category.group or (category.module and "modules") or "plates" end
+function Options:SettingsGroupHeader(group)
+    local headers = self.editorSettingsGroupHeaders or {}
+    self.editorSettingsGroupHeaders = headers
+    if group == "modules" and self.editorSettingsModulesHeader then headers.modules = self.editorSettingsModulesHeader end
+    if headers[group] then return headers[group] end
+    local content = self.editorSettingsCategoryContent
+    local header
+    if group == "footer" then
+        header = content:CreateTexture(nil, "ARTWORK")
+        header:SetColorTexture(GOLD[1], GOLD[2], GOLD[3], 0.25)
+        header:SetHeight(1)
+    else
+        header = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        header:SetFont(FONT, 13)
+        header:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+        header:SetText(CATEGORY_GROUPS[group] or "")
+    end
+    headers[group] = header
+    return header
+end
 function Options:LayoutEditorSettingsCategoryRows(current, searching)
     local list, content = self.editorSettingsCategoryList, self.editorSettingsCategoryContent
     if not list or not content then return end
     local categories = self:SettingsCategoryList()
-    local modules = 0
-    for _, category in ipairs(categories) do if category.module then modules = modules + 1 end end
-    local total = #categories * CATEGORIES.rowStep + (modules > 0 and CATEGORIES.headerH or 0)
+    local total, counted = 0, {}
+    for _, category in ipairs(categories) do
+        local group = CategoryGroup(category)
+        if not counted[group] then counted[group], total = true, total + CATEGORIES.headerH end
+        total = total + CATEGORIES.rowStep
+    end
     local width = list:GetWidth() or 0
     local rowWidth = math.max(1, width - (total > (list:GetHeight() or 0) + 0.5 and CATEGORIES.bar or 0))
-    local header, y, headed = self.editorSettingsModulesHeader, 0, false
+    local y, lastGroup, placed = 0, nil, {}
     for index, category in ipairs(categories) do
-        if category.module and not headed then
-            headed = true
-            if header then
-                header:ClearAllPoints()
-                header:SetPoint("TOPLEFT", content, "TOPLEFT", CATEGORIES.iconX, -(y + CATEGORIES.headerH - 24))
+        local group = CategoryGroup(category)
+        if group ~= lastGroup then
+            lastGroup, placed[group] = group, true
+            local header = self:SettingsGroupHeader(group)
+            header:ClearAllPoints()
+            if group == "footer" then
+                header:SetPoint("TOPLEFT", content, "TOPLEFT", CATEGORIES.iconX, -(y + math.floor(CATEGORIES.headerH / 2)))
+                header:SetPoint("TOPRIGHT", content, "TOPLEFT", rowWidth - CATEGORIES.iconX,
+                    -(y + math.floor(CATEGORIES.headerH / 2)))
+            else
+                header:SetPoint("TOPLEFT", content, "TOPLEFT", CATEGORIES.iconX, -(y + 8))
             end
+            header:Show()
             y = y + CATEGORIES.headerH
         end
         local row = self:EditorSettingsCategoryRow(index)
@@ -925,17 +1002,32 @@ function Options:LayoutEditorSettingsCategoryRows(current, searching)
         row.categoryKey, row.categoryModule = category.key, category.module
         row.label:SetText(category.label)
         local entry, icon = category.module, row.categoryIcon
-        if entry and entry.icon and not icon then
+        local picture = entry and entry.icon or category.icon
+        if picture and not icon then
             icon = row:CreateTexture(nil, "OVERLAY")
             icon:SetSize(CATEGORIES.icon, CATEGORIES.icon)
             icon:SetPoint("LEFT", row, "LEFT", CATEGORIES.iconX, 0)
+            if icon.SetTexCoord then icon:SetTexCoord(0.08, 0.92, 0.08, 0.92) end
             row.categoryIcon = icon
         end
         if icon then
-            if entry and entry.icon then icon:SetTexture(entry.icon) end
-            icon:SetShown(entry ~= nil and entry.icon ~= nil)
+            if picture then icon:SetTexture(picture) end
+            icon:SetShown(picture ~= nil)
         end
-        row.studioLabelX = entry and entry.icon and CATEGORIES.labelX or nil
+        row.studioLabelX = picture and CATEGORIES.labelX or nil
+        local changed = not entry and self:SettingsCategoryChanged(category.key) or 0
+        local badge = row.categoryBadge
+        if changed > 0 and not badge then
+            badge = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            badge:SetFont(FONT, 12)
+            badge:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+            badge:SetPoint("RIGHT", row, "RIGHT", -12, 0)
+            row.categoryBadge = badge
+        end
+        if badge then
+            badge:SetText(changed > 0 and tostring(changed) or "")
+            badge:SetShown(changed > 0)
+        end
         local dot = row.categoryDot
         if entry and not dot then
             dot = row:CreateTexture(nil, "OVERLAY")
@@ -952,7 +1044,9 @@ function Options:LayoutEditorSettingsCategoryRows(current, searching)
         y = y + CATEGORIES.rowStep
     end
     for index = #categories + 1, #(self.editorSettingsCategoryRows or {}) do self.editorSettingsCategoryRows[index]:Hide() end
-    if header then header:SetShown(headed) end
+    for group, header in pairs(self.editorSettingsGroupHeaders or {}) do
+        if not placed[group] then header:Hide() end
+    end
     content:SetSize(math.max(1, width), math.max(1, y))
     if self.editorSettingsCategoryScrollBar then self.editorSettingsCategoryScrollBar:Sync() end
 end

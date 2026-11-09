@@ -45,15 +45,20 @@ PS._CreatePlatePlacement = function(context)
 
     -- A region's size without failing: the client can refuse to measure a restricted nameplate's
     -- regions. Text is its rendered string with its font's height; an icon or bar its own size.
+    -- A text's line: its font's size, else its string's or frame's height.
+    local function TextHeight(region)
+        if region.GetFont then
+            local ok, _, size = pcall(region.GetFont, region)
+            if ok and IsReadable(size) and type(size) == "number" then return size end
+        end
+        return ReadNumber(region, "GetStringHeight") or ReadNumber(region, "GetHeight")
+    end
+
     local function SafeSize(region, data)
         local width, height
         if IsText(region) then
             width = TextWidth(region)
-            if region.GetFont then
-                local ok, _, size = pcall(region.GetFont, region)
-                if ok and IsReadable(size) and type(size) == "number" then height = size end
-            end
-            height = height or ReadNumber(region, "GetStringHeight") or ReadNumber(region, "GetHeight")
+            height = TextHeight(region)
         else
             width, height = ReadNumber(region, "GetWidth"), ReadNumber(region, "GetHeight")
             if not width or width <= 0 then width = ReadNumber(region, "GetStringWidth") or width end
@@ -110,8 +115,15 @@ PS._CreatePlatePlacement = function(context)
         local region = PartRegion(data, key)
         if not region or not region.GetHeight then return nil end
         local width, height = SafeSize(region, data)
-        if not width then return nil end
-        if IsText(region) then data.measuredWidths[key] = width end
+        local text = IsText(region)
+        if not width then
+            -- A text showing a protected value (the threat text) has no readable width, but its
+            -- line still takes its room in an up or down stack (Schema's StackOffsets).
+            height = text and TextHeight(region)
+            if not height then return nil end
+        elseif text then
+            data.measuredWidths[key] = width
+        end
         -- Only what the plate shows right now takes space: a hidden power bar, an idle cast bar or
         -- a missing guild line closes up (it is still placed). Combo points on the health bar are not
         -- in their stack's flow, so they take none either.
@@ -233,24 +245,53 @@ PS._CreatePlatePlacement = function(context)
         return false
     end
 
+    -- A custom part riding a bar's fill (S.FILL): the bar it meets now, as its key and region: target (the part it is
+    -- pinned to), or, while that bar is not shown and the entry says next, the next bar that shows (S.FILL.NEXT); nil
+    -- while none does (it stays on its own bar and hides with it).
+    local FILL = S.FILL
+    local function FillBar(data, key, target)
+        local bar = PartRegion(data, target)
+        if data.layout[key].fill ~= "next" or not bar or bar:IsShown() then return target, bar end
+        for _, other in ipairs(FILL.NEXT[target] or FILL.OTHER_NEXT) do
+            local region = PartRegion(data, other)
+            if region and region:IsShown() and not S.TurnedOff(data.layout[other]) then return other, region end
+        end
+        return nil
+    end
+
+    -- Anchors region to the fill texture of the bar key rides (FillBar): the client moves it with the value, so no
+    -- value or width is read. A channel's bar fills from the right (data.castChannel, which PlateSmith sets itself).
+    local function PlaceOnFill(region, data, key, target, x, y)
+        local barKey, bar = FillBar(data, key, target)
+        local ok, fill = false, nil
+        if bar and bar.GetStatusBarTexture then ok, fill = pcall(bar.GetStatusBarTexture, bar) end
+        if not (ok and fill) then return false end
+        local reverse = barKey == "cast" and data.castChannel == true
+        if barKey == "cast" then data.castFillReverse = reverse end
+        local point, relative = FILL.Points(data.layout[key].attach, reverse)
+        return pcall(region.SetPoint, region, point, fill, relative, x, y)
+    end
+
     -- Places region at key's drawn centre and scale. Offsets are in the region's own scaled units.
     -- A Dynamic part is pinned to its parent part's edge with a real anchor, so it follows that
     -- part live (a name's width as the text changes); to the part it takes the place of while its
-    -- parent is turned off or absent.
+    -- parent is turned off or absent. A custom part riding a bar's fill meets its fill (PlaceOnFill).
     local function PlaceRegion(region, layout, key, data)
         local transform = Transforms(layout, data)[key]
         if not transform then return end
         local scale = transform.scale > 0 and transform.scale or 1
         local position = layout[key]
         local edge = position and S.ATTACH_EDGES[position.attach]
-        local parentRegion = edge and data and PartRegion(data, S.PinTarget(layout, key, data.absent))
+        local target = edge and data and S.PinTarget(layout, key, data.absent)
+        local parentRegion = target and PartRegion(data, target)
         if parentRegion then
             local parentTransform = Transforms(layout, data)[position.parent]
             local parentScale = parentTransform and parentTransform.scale or 1
+            local x, y = (position.x or 0) * parentScale / scale, (position.y or 0) * parentScale / scale
             -- ApplyComponentLayout lets every part go first, so the parent cannot still hang off this
             -- part from another layout; should the client refuse anyway, the part keeps its place.
-            if pcall(region.SetPoint, region, edge[3], parentRegion, edge[4], (position.x or 0) * parentScale / scale,
-                (position.y or 0) * parentScale / scale) then
+            if (position.fill and PlaceOnFill(region, data, key, target, x, y))
+                or pcall(region.SetPoint, region, edge[3], parentRegion, edge[4], x, y) then
                 if region.SetScale then region:SetScale(scale) end
                 return
             end
@@ -281,11 +322,36 @@ PS._CreatePlatePlacement = function(context)
         end
     end
 
+    -- An image or box sized to the part it is anchored to (its slot's fit, S.IMAGE): its corners on that part's,
+    -- outset px past them (offset by its own x and y), so it follows the part's size without measuring it. False when
+    -- it is not fitted, sits on a group or the plate, or the client refuses.
+    local FITTED_KINDS = { icon = true, box = true }
+    local function PlaceFitted(data, region, key)
+        local slot, position = data.profile.valueSlots[key], data.layout[key]
+        local parentKey = position.parent
+        if not (slot.fit and FITTED_KINDS[slot.kind] and parentKey and not S.IsGroupKey(parentKey)) then return false end
+        local parent = PartRegion(data, parentKey)
+        if not parent then return false end
+        local transforms = Transforms(data.layout, data)
+        local own, above = transforms[key], transforms[parentKey]
+        local scale = own and own.scale > 0 and own.scale or 1
+        local factor = (above and above.scale or 1) / scale
+        local x, y, outset = (position.x or 0) * factor, (position.y or 0) * factor, (slot.outset or 0) * factor
+        if pcall(region.SetPoint, region, "TOPLEFT", parent, "TOPLEFT", x - outset, y + outset)
+            and pcall(region.SetPoint, region, "BOTTOMRIGHT", parent, "BOTTOMRIGHT", x + outset, y - outset) then
+            if region.SetScale then region:SetScale(scale) end
+            return true
+        end
+        region:ClearAllPoints()
+        return false
+    end
+
     -- Combo points on the health bar (ComboOnBar) are anchored there at their placed scale.
     local function AnchorPart(data, region, key)
         if not data.layout[key] then return end
         region:ClearAllPoints()
         region.plateSmithOverlay = data.overlay
+        if IS_VALUE_KEY[key] and PlaceFitted(data, region, key) then return end
         local onBar = ComboOnBar(data, key)
         if onBar then
             local transform = Transforms(data.layout, data)[key]
@@ -314,7 +380,8 @@ PS._CreatePlatePlacement = function(context)
             for key, position in pairs(layout) do
                 local parent = type(position) == "table" and position.parent
                 if parent and layout[parent] and not S.IsGroupKey(parent) then
-                    list[#list + 1] = { key = key, parent = parent, value = IS_VALUE_KEY[key] == true }
+                    list[#list + 1] = { key = key, parent = parent, value = IS_VALUE_KEY[key] == true,
+                        next = position.fill == "next" }
                     list.parentOf[key] = parent
                 end
             end
@@ -346,17 +413,17 @@ PS._CreatePlatePlacement = function(context)
         return result
     end
 
-    -- A region's alpha: 0 while faded under a hidden parent, else its rule's opacity. Set only when
-    -- it changes (region.plateSmithParentFaded records the fade), so a flush with nothing to hide
-    -- writes no alphas.
+    -- A region's alpha: 0 while faded under a hidden parent, else its rule's opacity times its own (an image's or
+    -- box's Opacity: plateSmithOwnAlpha). Set only when it changes (region.plateSmithParentFaded records the fade),
+    -- so a flush with nothing to hide writes no alphas.
     local function RegionAlpha(region)
         if region.plateSmithParentFaded then return 0 end
-        return region.plateSmithRuleAlpha or 1
+        return (region.plateSmithRuleAlpha or 1) * (region.plateSmithOwnAlpha or 1)
     end
 
     local function Unfade(region)
         region.plateSmithParentFaded = nil
-        if region.SetAlpha then region:SetAlpha(region.plateSmithRuleAlpha or 1) end
+        if region.SetAlpha then region:SetAlpha(RegionAlpha(region)) end
     end
 
     local function SetParentFaded(region, faded, into)
@@ -406,7 +473,10 @@ PS._CreatePlatePlacement = function(context)
             local first, second
             if entry.value then first = values[entry.key] else first, second = PartRegions(data, entry.key) end
             if first or second then
-                local under = HiddenUnder(data, layout, children.parentOf, entry.parent, 0)
+                -- A part riding the next bar's fill while its own is not shown hides with that bar instead.
+                local parent = entry.parent
+                if entry.next then parent = FillBar(data, entry.key, S.PinTarget(layout, entry.key, data.absent) or parent) or parent end
+                local under = HiddenUnder(data, layout, children.parentOf, parent, 0)
                 SetParentFaded(first, under, faded)
                 SetParentFaded(second, under, faded)
             end
@@ -427,14 +497,19 @@ PS._CreatePlatePlacement = function(context)
 
     -- Values are placed like every other part (a value on a bar is that bar's child); a bar that
     -- hides takes its values with it (ApplyParentVisibility).
+    -- data.fillRiders: a custom part rides a bar's fill (a channel's reversed fill places it again: Lifecycle).
     UpdateValueAnchors = function(data)
         if data.valueAnchorsDirty then
+            local riders = false
             for index = 1, VALUE_SLOT_COUNT do
                 local key = VALUE_KEYS[index]
                 local region = data.values[key]
-                if region then AnchorPart(data, region, key) end
+                if region then
+                    AnchorPart(data, region, key)
+                    riders = riders or (data.layout[key] ~= nil and data.layout[key].fill ~= nil)
+                end
             end
-            data.valueAnchorsDirty = false
+            data.valueAnchorsDirty, data.fillRiders = false, riders or nil
         end
         MarkVisibility(data)
     end
@@ -595,6 +670,8 @@ PS._CreatePlatePlacement = function(context)
         if data.actionIcon then data.actionIcon:ClearAllPoints() end
         if data.statusText then data.statusText:ClearAllPoints() end
         if data.looseMark then data.looseMark:ClearAllPoints() end
+        if data.range then data.range:ClearAllPoints() end
+        if data.behindYou then data.behindYou:ClearAllPoints() end
         -- The Backdrop (Backdrop.lua) wraps parts placed here: let go and hidden until the visibility pass fits it again.
         if data.backdrop then
             data.backdrop:ClearAllPoints()
@@ -626,6 +703,9 @@ PS._CreatePlatePlacement = function(context)
         if data.statusText and data.layout.statusText then AnchorPart(data, data.statusText, "statusText") end
         -- The Loose mark is made only on a plate that shows it (LooseMark.lua); only Enemies layouts have the entry.
         if data.looseMark and data.layout.looseMark then AnchorPart(data, data.looseMark, "looseMark") end
+        -- So are the Range and Behind you parts (Range.lua, Behind.lua).
+        if data.range and data.layout.range then AnchorPart(data, data.range, "range") end
+        if data.behindYou and data.layout.behindYou then AnchorPart(data, data.behindYou, "behindYou") end
         -- The classification's icon is placed like its text, not centred on it: an empty text is
         -- 0 px wide, so an icon on its centre would sit half over the bar it is pinned to.
         if data.classificationIcon then AnchorPart(data, data.classificationIcon, "classification") end
@@ -667,6 +747,16 @@ PS._CreatePlatePlacement = function(context)
             end
             table.sort(pinParents)
             keys.pinParents = pinParents
+            -- keys.fillBars: the bars a part rides the fill of, ready to ride the next (S.FILL): their shown state
+            -- decides which bar it meets.
+            local fillBars = {}
+            for _, position in pairs(layout) do
+                if type(position) == "table" and position.fill == "next" and type(position.parent) == "string" then
+                    fillBars[#fillBars + 1] = position.parent
+                end
+            end
+            table.sort(fillBars)
+            keys.fillBars = fillBars
             stackKeysCache[layout] = keys
         end
         return keys
@@ -700,7 +790,17 @@ PS._CreatePlatePlacement = function(context)
                 changed = true
             end
         end
-        for index = count + #pinParents + 1, #states do states[index] = nil end
+        count = count + #pinParents
+        local fillBars = keys.fillBars
+        for index = 1, #fillBars do
+            local region = PartRegion(data, fillBars[index])
+            local state = region and region.IsShown and region:IsShown() and 2 or 1
+            if states[count + index] ~= state then
+                states[count + index] = state
+                changed = true
+            end
+        end
+        for index = count + #fillBars + 1, #states do states[index] = nil end
         data.stackStatesFor = layout
         return changed
     end

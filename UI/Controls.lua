@@ -324,7 +324,8 @@ function Controls.MenuField(parent, spec)
     function field:GetText() return text:GetText() end
     function field:MenuItems() return spec.items() end
     function field:ToggleMenu()
-        local width = math.max(self:GetWidth(), spec.minMenuWidth or 0)
+        -- The field's width as it shows (Menu.WidthFrom), at least the menu's own minimum (in the menu's units).
+        local width = math.max(PS.UI.Menu.WidthFrom(self, self:GetWidth()), spec.minMenuWidth or 0)
         return PS.UI.Menu.Toggle(self, function() return self:MenuItems() end, { width = width })
     end
     function field:OnMenuClosed() self:PaintState(self.IsMouseOver and self:IsMouseOver() and "hover" or "normal") end
@@ -383,7 +384,8 @@ function Controls.Dropdown(parent, spec)
         local items = {}
         for _, choice in ipairs(choices) do
             local selected = choice
-            local item = { text = selected.label, checked = selected.value ~= nil and current == selected.value }
+            local item = { text = selected.label, checked = selected.value ~= nil and current == selected.value,
+                icon = selected.icon, iconCoords = selected.iconCoords }
             if selected.help then item.tooltip = { title = selected.label, text = selected.help } end
             if selected.value ~= nil then
                 item.func = function()

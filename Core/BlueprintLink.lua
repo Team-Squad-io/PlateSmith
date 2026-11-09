@@ -4,7 +4,7 @@ local Chat = assert(PS.Chat, "PlateSmith Chat missing")
 local Ticker = assert(PS.Ticker, "PlateSmith Ticker missing")
 local L = PS.L
 
--- Blueprint chat links, as WeakAuras shares auras. The sender's chat box gets plain text,
+-- Blueprint chat links. The sender's chat box gets plain text,
 -- "[PlateSmith: <name> #<id>]"; an "addon:" hyperlink is local-only and the server refuses one in a
 -- chat message. A receiver with PlateSmith turns that text into a local addon link (a chat message
 -- filter, using the message's author as the sender); a click whispers the sender's client over hidden

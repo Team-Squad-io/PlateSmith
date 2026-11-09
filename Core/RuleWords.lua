@@ -9,7 +9,8 @@ local RuleWords = {}
 PS.RuleWords = RuleWords
 
 RuleWords.TOPICS = {
-    { id = "unit", label = L["Unit"] }, { id = "pvp", label = L["PvP"] }, { id = "health", label = L["Health & power"] },
+    { id = "unit", label = L["Unit"] }, { id = "range", label = L["Range"] }, { id = "pvp", label = L["PvP"] },
+    { id = "health", label = L["Health & power"] },
     { id = "cast", label = L["Cast"] }, { id = "threat", label = L["Threat"] }, { id = "quest", label = L["Quest"] },
     { id = "level", label = L["Level"] }, { id = "objects", label = L["Objects"] }, { id = "you", label = L["You"] },
 }
@@ -21,6 +22,13 @@ local PLATES = {
     objects = L["Objects"], npcs = L["Enemies, Friendly NPCs"],
 }
 RuleWords.PLATES = PLATES
+-- The plate types (Studio's tabs, Options.editorProfile) each of PLATES covers; all is every one.
+local PLATE_TYPES = {
+    units = { enemy = true, enemyPlayer = true, friendlyPlayer = true, friendlyNPC = true },
+    enemies = { enemy = true, enemyPlayer = true }, players = { friendlyPlayer = true, enemyPlayer = true },
+    friends = { friendlyPlayer = true }, interact = { object = true, friendlyNPC = true }, objects = { object = true },
+    npcs = { enemy = true, friendlyNPC = true },
+}
 
 -- { word, topic, plates, what it means, an example }, in each topic's order.
 RuleWords.WORDS = {
@@ -42,12 +50,35 @@ RuleWords.WORDS = {
     { "unit.focus", "unit", "units", L["The unit is your focus."], "unit.focus" },
     { "unit.ingroup", "unit", "friends", L["The player is in your group."], "unit.ingroup" },
     { "unit.inguild", "unit", "friends", L["The player is in your guild."], "unit.inguild and unit.ingroup = false" },
-    { "unit.inrange", "unit", "enemies", L["Your class spells reach the unit; unknown until PlateSmith has checked it."],
-        "unit.inrange = false" },
     { "unit.id", "unit", "npcs", L["An NPC's ID from the game."], "unit.id = 6740" },
+    { "unit.creature", "unit", "units", L["The unit's creature type, the same word in every language (notspecified: "
+        .. "the game's Not specified). Unknown where the game keeps it private or has none (objects)."],
+        "unit.creature = beast or unit.creature = critter" },
+    { "creature", "unit", "units", L["The unit's creature type as the game names it, in your game's language."],
+        "{creature}" },
+    { "targeted.count", "unit", "enemies", L["How many of your group or raid (not you) target the unit. Only answers "
+        .. "the game gives are counted; unknown while it gives none."], "targeted.count >= 3" },
+    { "unit.behind", "unit", "units", L["Your target's or focus's plate is behind the camera, as the game says; false on "
+        .. "every other plate and while the game gives no readable answer. Not a direction or line of sight. The Behind you "
+        .. "part shows it."],
+        "unit.behind = false or unit.target = false" },
+    { "unit.inrange", "range", "units", L["Your spells reach the unit, from your spellbook: harmful ones on enemies, "
+        .. "helpful ones (heals, buffs) on friends. Unknown until PlateSmith has checked it, while one that may be too close "
+        .. "cannot tell, and where the game withholds the answer (some in combat). The Range part shows it."],
+        "unit.inrange = false" },
+    { "range.known", "range", "units", L["PlateSmith has a range answer for the unit; false until it has checked and "
+        .. "where the game withholds it, never unknown. A part hidden by it shows only while the range is known."],
+        "range.known = false or unit.inrange" },
+    { "range.band", "range", "units", L["How far the unit is, from the spells you know (not exact yards): melee (within "
+        .. "5 yards), near (20), far (your longest spell's reach) or out (beyond it)."], "range.band = melee" },
+    { "range", "range", "units", L["The band as text from your spells' own ranges: the nearest reach the unit is within "
+        .. "(<5, <20, <30) or 30+ past your longest. Not exact yards."], "{range}" },
     { "pvp.flagged", "pvp", "players", L["The unit is flagged for PvP."], "pvp.flagged = false" },
     { "pvp.ffa", "pvp", "players", L["The unit is flagged for free-for-all PvP."], "pvp.ffa" },
     { "pvp.faction", "pvp", "players", L["The unit's faction."], "pvp.faction = horde" },
+    { "pvp.sanctuary", "pvp", "units", L["The unit is in a sanctuary, where no one can be attacked."],
+        "pvp.sanctuary = false and pvp.flagged" },
+    { "pvp.you", "pvp", "all", L["You are flagged for PvP yourself."], "pvp.you and pvp.flagged" },
     { "health", "health", "units", L["Hit points."], "{health:short}" },
     { "health.max", "health", "units", L["Maximum hit points."], "{health} / {health.max}" },
     { "health.percent", "health", "units", L["Health, 0 to 100 (write the % yourself)."], "health.percent < 35" },
@@ -193,6 +224,92 @@ function RuleWords.FlagNames()
         elseif kind == "enum" then enums[#enums + 1] = entry.word end
     end
     return table.concat(flags, " "), table.concat(enums, " ")
+end
+
+-- Every word custom text can write as {word} (all but flags), in topic order, then other addons' tokens: the custom
+-- text editor's list, so a new token is listed once it has its entry here.
+function RuleWords.ValueNames()
+    local names = {}
+    for _, entry in ipairs(RuleWords.Entries()) do
+        if Template.tokens[entry.word] ~= "flag" then names[#names + 1] = "{" .. entry.word .. "}" end
+    end
+    for _, token in ipairs(Template.ListTokens()) do
+        if not token.builtin and token.kind ~= "flag" then names[#names + 1] = "{" .. token.id .. "}" end
+    end
+    return table.concat(names, " ")
+end
+
+-- A condition on word to start from (Studio's + Word): a flag alone, a word with values = one of them, a number
+-- compared; each as the word's example writes it where that compiles (range.band = melee, targeted.count >= 3), else
+-- the first value or > 0. nil for a text word (custom text shows it; a condition has no use for it).
+function RuleWords.Starter(word, example)
+    local kind = Template.tokens[word]
+    if kind == "flag" then return word end
+    if kind ~= "enum" and kind ~= "number" and kind ~= "percent" and kind ~= "signed" then return nil end
+    local clause = type(example) == "string" and example:match("^" .. word:gsub("%p", "%%%0") .. "%s*[<>=!]+%s*[%w%.%-]+")
+    if clause and Template.CompileCondition(clause) then return clause end
+    local values = Template.enums[word]
+    if values then
+        local names = {}
+        for name in pairs(values) do names[#names + 1] = name end
+        table.sort(names)
+        return names[1] and word .. " = " .. names[1] or nil
+    end
+    return word .. " > 0"
+end
+
+-- The words a condition can use on plateType (Studio's tab; nil: every plate type), by topic as Help lists them:
+-- { { id, label, words = { { word, text, starter } } } }, a topic with none left out.
+function RuleWords.Conditions(plateType)
+    local topics, byTopic = {}, {}
+    for _, topic in ipairs(RuleWords.TOPICS) do
+        byTopic[topic.id] = { id = topic.id, label = topic.label, words = {} }
+        topics[#topics + 1] = byTopic[topic.id]
+    end
+    for _, word in ipairs(RuleWords.WORDS) do
+        local on = PLATE_TYPES[word[3]]
+        local starter = RuleWords.Starter(word[1], word[5])
+        if starter and (plateType == nil or on == nil or on[plateType]) then
+            local list = byTopic[word[2]].words
+            list[#list + 1] = { word = word[1], text = word[4], starter = starter }
+        end
+    end
+    local shown = {}
+    for _, topic in ipairs(topics) do if #topic.words > 0 then shown[#shown + 1] = topic end end
+    return shown
+end
+
+-- Where a condition may start: the beginning, or after and, or, not or "(".
+local function OpensClause(head)
+    if head == "" or head:sub(-1) == "(" then return true end
+    local last = head:match("([%w%.]+)$")
+    return last == "and" or last == "or" or last == "not"
+end
+
+-- text with starter added (Studio's + Word): at cursor (a byte offset, as an edit box gives it) where a condition may
+-- start there, joined to what follows by and; else at the end after " and " (or after a trailing and, or, not). Returns
+-- the condition and the offset just past starter, or nil when it would be longer than limit.
+function RuleWords.InsertCondition(text, starter, cursor, limit)
+    text = type(text) == "string" and text or ""
+    local result, stop
+    cursor = tonumber(cursor)
+    local head = cursor and text:sub(1, cursor):match("^(.-)%s*$")
+    if text:match("^%s*$") then
+        result, stop = starter, #starter
+    elseif head and cursor < #text and OpensClause(head) then
+        local tail = text:sub(cursor + 1):match("^%s*(.-)$")
+        local first = tail:match("^([%w%.]+)")
+        local join = ((tail == "" or tail:sub(1, 1) == ")") and "") or ((first == "and" or first == "or") and " ")
+            or " and "
+        local before = (head == "" or head:sub(-1) == "(") and head or head .. " "
+        result, stop = before .. starter .. join .. tail, #before + #starter
+    else
+        local trimmed = text:match("^(.-)%s*$")
+        local before = trimmed .. (OpensClause(trimmed) and " " or " and ")
+        result, stop = before .. starter, #before + #starter
+    end
+    if limit and #result > limit then return nil end
+    return result, stop
 end
 
 -- The README's Rules reference (tools/build-rule-reference.py writes it between its markers; a test compares).

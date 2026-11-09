@@ -81,6 +81,16 @@ function Options:IsEditorBlizzardNames(settings)
 end
 
 -- Whether this plate type uses key (and it is on the plate: not deleted, unless includeRemoved).
+-- Type › Totems: the parts a totem never fills on the plates (it casts nothing, has no power, quest, classification,
+-- tag, threat table or target, and rarely an aura) leave the tree and the preview, so the layer reads as a totem's.
+-- They stay in the layout (the All NPCs look's), on the plates as empty as ever.
+local NEVER_ON_TOTEM = { cast = true, power = true, buffs = true, debuffs = true, quest = true, questLoot = true,
+    classification = true, tagged = true, threat = true, combo = true, targetName = true, targetedBy = true,
+    guild = true, behindYou = true }
+Options.editorNeverOnTotem = NEVER_ON_TOTEM
+-- The custom part sources a totem never fills either (no power, no threat table): + Add lists them off under Totems.
+Options.editorNeverOnTotemSource = { powerPercent = true, powerCurrent = true, powerValue = true, threatPercent = true,
+    leadPercent = true, rawThreat = true, differential = true }
 function Options:IsEditorComponentRelevant(key, settings, includeRemoved)
     if not editorDefinitions[key] then return false end
     if self:IsEditorBlizzardNames(settings) then return key == "name" end
@@ -99,8 +109,13 @@ function Options:IsEditorComponentRelevant(key, settings, includeRemoved)
     if key == "looseMark" then return self:IsEditorEnemy() and position ~= nil end
     -- The Backdrop (Backdrop.lua): Objects only.
     if key == "backdrop" then return self:IsEditorObject() and position ~= nil end
-    -- Objects: the name, the quest mark, the Action icon, the Status text and the Backdrop (no custom parts).
-    if self:IsEditorObject() then return key == "name" or key == "quest" or key == "actionIcon" end
+    -- The Range part (Range.lua): in the layouts that have it, Objects' too (their in-reach answer); on friendly plates
+    -- as their other parts are. The Behind you part (Behind.lua): the same, but not on Objects.
+    if key == "range" and position == nil then return false end
+    if key == "behindYou" and (position == nil or self:IsEditorObject()) then return false end
+    -- Objects: the name, the quest mark, the Action icon, Range, the Status text and the Backdrop (no custom parts).
+    if self:IsEditorObject() then return key == "name" or key == "quest" or key == "actionIcon" or key == "range" end
+    if NEVER_ON_TOTEM[key] and self:IsEditorTotem() then return false end
     settings = settings or (type(PS.GetSettings) == "function" and PS.GetSettings())
     -- Friendly plates Blizzard draws (Show as: Blizzard plates) have no parts here.
     local showAs = settings and PS.ProfileSchema.FRIENDLY.Mode(settings, self.editorProfile)
@@ -122,7 +137,10 @@ function Options:IsEditorComponentRelevant(key, settings, includeRemoved)
     if self.editorProfile == "friendlyPlayer" then
         return key ~= "quest" and key ~= "questLoot" and key ~= "classification"
     end
-    return key ~= "relationshipIcon" and key ~= "pvpIcon" and key ~= "classification" and key ~= "guild"
+    -- Friendly NPCs keep the guild line: there it is the NPC's title (PlateIdentity.NpcTitle), outside dungeons & raids,
+    -- where Blizzard draws them.
+    if key == "guild" then return self.editorDesign ~= "dungeon" end
+    return key ~= "relationshipIcon" and key ~= "pvpIcon" and key ~= "classification"
 end
 
 -- Styles in the preview, over what each component's refresh has just drawn: font, Font size,
@@ -261,10 +279,20 @@ function Options:ApplyEditorPreviewThreat(ruled)
     if not Threat or not settings then return end
     local components, samples = self.editorComponents or {}, self.templateSamples or {}
     local enemy, profile = self:IsEditorEnemy(), self:EditorProfileSettings()
+    -- Out of reach's Grey (ActionIcon.GREY) on the name, under a rule of its own, as on the plates.
+    local far = self:EditorReachCue() == "grey" and PS.ActionIcon.GREY or nil
     for _, key in ipairs(Threat.RULE_PARTS) do
         local component = components[key]
-        local colour = not ruled[key] and (key == "health" and Threat.GreyForSample(profile, samples, enemy)
-            or Threat.ForSample(settings, key, samples, profile))
+        local colour
+        if not ruled[key] then
+            if key == "health" and Threat.GreyForSample(profile, samples, enemy) then
+                -- Tagged: the threat colour darkened, or grey (ThreatColours.TaggedChannels), as on the plates.
+                local r, g, b = Threat.TaggedChannels(Threat.ForSample(settings, key, samples, profile))
+                colour = { r = r, g = g, b = b }
+            else
+                colour = (key == "name" and far) or Threat.ForSample(settings, key, samples, profile)
+            end
+        end
         if colour and component and component:IsShown() and not component.previewNative then
             if component.previewBar then
                 component.previewBar:SetStatusBarColor(colour.r, colour.g, colour.b)
@@ -272,6 +300,15 @@ function Options:ApplyEditorPreviewThreat(ruled)
                 component.previewText:SetTextColor(colour.r, colour.g, colour.b)
             end
         end
+    end
+    -- The Level's Colour › Difficulty, under a colour rule of its own, as on the plates (Lifecycle's SetLevelDifficulty):
+    -- the game's colour for the sample's level against yours.
+    local level = components.level
+    local styles = profile and profile.styles
+    if level and level.previewText and not ruled.level and level:IsShown() and not level.previewNative
+        and styles and styles.level and styles.level.levelColour == "difficulty" then
+        local colour = PS.PlateColours.LevelDifficulty(self.editorPreviewLevel)
+        if colour then level.previewText:SetTextColor(colour.r, colour.g, colour.b) end
     end
     local health = components.health
     if not health then return end
@@ -306,6 +343,27 @@ function Options:ApplyEditorMarkFrame(profile)
     local glow, edge = health.targetPreviewGlow, health.previewThreatEdge
     if glow then Mark.PlaceRing(glow, health, (self.targetPreviewStyle == "halo" and 3 or 1) + outset) end
     if edge then Mark.PlaceRing(edge, health, 1 + outset) end
+end
+
+-- Type › Totems with a Display other than Plate: the sample totem as the plates draw one (Lifecycle's ApplyLayout,
+-- TOTEMS.Layout, Totems.Choice): every part but the name and the totem icon parts (Icon: not the name; Name only, Hidden:
+-- neither) faint, as a hidden part is, so it can still be selected and edited. Icon or Icon and name with no icon part,
+-- or no sample icon found: the name, as the plates. The icon parts draw the sample's icon themselves (Media's unit
+-- picture: Totems.SampleIcon).
+function Options:ApplyEditorTotemPreview()
+    local components, choice = self.editorComponents or {}, self:EditorTotemChoice()
+    if not choice then return end
+    local icons
+    if choice == "icon" or choice == "iconName" then
+        icons = PS.ProfileSchema.TOTEMS.IconKeys(self:EditorProfileSettings())
+        if not icons or not PS.Totems.SampleIcon() then choice, icons = "name", nil end
+    end
+    local kept = icons and icons.keys or {}
+    for key, component in pairs(components) do
+        if component:IsShown() and not kept[key] and (key ~= "name" or choice == "icon" or choice == "hidden") then
+            component:SetAlpha((component:GetAlpha() or 1) * 0.12)
+        end
+    end
 end
 
 function Options:ApplyEditorPreviewPartRules(profile)
@@ -350,12 +408,14 @@ function Options:ApplyEditorPreviewPartRules(profile)
     self:ApplyEditorPreviewThreat(ruled)
 end
 
+-- The text's glow in the edge's colour (options.targetPreviewEdge: RefreshTargetHighlightPreview's), at strength.
 local function SetTargetPreviewStrength(options, strength)
+    local edge = options.targetPreviewEdge or PS.TargetGlow.EDGE_GOLD.text
     -- Blizzard's own name keeps its look (PlateSmith's target glow is not on its plates).
     for _, component in ipairs(options.targetPreviewTexts or {}) do
         local text = not component.previewNative and component.previewText
         if text and strength and component.targetPreviewVisible then
-            text:SetShadowColor(1, 0.7, 0.14, strength)
+            text:SetShadowColor(edge[1], edge[2], edge[3], strength)
             text:SetShadowOffset(1, -1)
         elseif text then
             local original = component.targetPreviewShadow
@@ -386,15 +446,29 @@ end
 -- The soft glow style's preview: the plates' own glow (Nameplates/TargetGlow.lua), placed and coloured
 -- as they do it, round the sample's bars and texts under every part, in the sample's colour (Test values' reaction; a
 -- player sample in your class colour; Threat: the threat colour Test values' role and threat flags give, as the bars'
--- Threat colours take it, out of combat the custom colour). highlight: the design's (Schema's HIGHLIGHT).
-local function SoftGlowColour(options, highlight)
+-- Threat colours take it, out of combat the custom colour). highlight: the design's (Schema's HIGHLIGHT). keys:
+-- TargetGlow.KEYS' (nil: the glow's; the edge's gives nothing for its Gold).
+local function SoftGlowColour(options, highlight, keys)
+    keys = keys or PS.TargetGlow.KEYS.glow
     local samples, reactions = options.templateSamples or {}, PS.TargetGlow.REACTION
     local classFile -- never truth-tested: it may be protected (Glow.Colour reads it through Secret)
     if samples["unit.player"] then classFile = PS.Secret.ClassFile("player") end
     local reaction = samples["unit.hostile"] and reactions.hostile or samples["unit.friendly"] and reactions.friendly or reactions.neutral
-    local threat = highlight.targetGlowColourMode == "threat" and PS.ThreatColours
+    local threat = highlight[keys.mode] == "threat" and PS.ThreatColours
         and PS.ThreatColours.ForSample(PS.GetSettings(), PS.ThreatColours.GLOW, samples) or nil
-    return PS.TargetGlow.Colour(highlight, classFile, reaction, threat)
+    return PS.TargetGlow.Colour(highlight, classFile, reaction, threat, keys)
+end
+-- An image's tint in the preview (Schema's IMAGE: class, reaction or threat), from Test values as the soft glow's colour
+-- modes are, with its own colour where they have none, as the plates' tint falls back (Values.lua's PaintTint).
+local tintModes = {}
+function Options.SampleTintColour(options, tint, colour)
+    local mode = tintModes[tint]
+    if not mode then
+        mode = { targetGlowColourMode = tint }
+        tintModes[tint] = mode
+    end
+    mode.targetGlowColour = colour
+    return SoftGlowColour(options, mode)
 end
 local function EditorTransforms(_, options) return options:EditorTransforms() end
 -- As on the plates, a part counts only while it draws something: not a faint sample (the cast bar while
@@ -469,8 +543,18 @@ function Options:RefreshTargetHighlightPreview(settings)
             glow:SetPoint("TOPLEFT", component, "TOPLEFT", -inset, inset)
             glow:SetPoint("BOTTOMRIGHT", component, "BOTTOMRIGHT", inset, -inset)
             glow:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = style == "halo" and 2 or 1 })
-            glow:SetBackdropBorderColor(1, 0.7, 0.14, 1)
         end
+    end
+    -- The edge in its Edge colour (the plates' choice, TargetGlow.Colour, for the sample), or its gold.
+    local edge = self.targetPreviewEdge or {}
+    edge[1], edge[2], edge[3] = SoftGlowColour(self, highlight, PS.TargetGlow.KEYS.edge)
+    if not edge[1] then
+        local gold = PS.TargetGlow.EDGE_GOLD.text
+        edge[1], edge[2], edge[3] = gold[1], gold[2], gold[3]
+    end
+    self.targetPreviewEdge = edge
+    for _, component in ipairs(self.targetPreviewBars or {}) do
+        component.targetPreviewGlow:SetBackdropBorderColor(edge[1], edge[2], edge[3], 1)
     end
     -- Test values: only a targeted sample shows the glow, except while the Plate row (its Target
     -- highlight) is selected: then it always shows, and Test values stay as they are.
@@ -751,13 +835,17 @@ function Options:RefreshEditorAppearance(settings, light)
             local height = Schema.ScaledFontSize(Schema.StyledFontSize(Schema.PartTextSize("level", profile.nameFontSize),
                 styles and styles.level), settings.textScale)
             local samples = self.templateSamples or {}
-            local text = tostring(PS.ClassificationMark.LevelText(math.floor(tonumber(samples.level) or 14),
-                self.SampleClassification(samples), style, height * PS.ClassificationMark.DRAGON.SKULL))
+            local levelSample, kind = math.floor(tonumber(samples.level) or 14), self.SampleClassification(samples)
+            local text = tostring(PS.ClassificationMark.LevelText(levelSample, kind, style,
+                height * PS.ClassificationMark.DRAGON.SKULL))
             level.previewText:SetText(text)
             PS.StyleBox.MinWidth(level.previewText, text, level.styleBox ~= nil and level.styleBox:IsShown())
+            -- The level the difficulty colour is for (ApplyEditorPreviewThreat), as the plates take it: -1 under a skull.
+            self.editorPreviewLevel = PS.ClassificationMark.SkullForLevel(kind, style) and -1 or levelSample
         else
             level.previewText:SetText("15")
             PS.StyleBox.MinWidth(level.previewText, "15", level.styleBox ~= nil and level.styleBox:IsShown())
+            self.editorPreviewLevel = 15
         end
     end
     local guild = self.editorComponents.guild
@@ -772,6 +860,8 @@ function Options:RefreshEditorAppearance(settings, light)
         else
             guild.previewText:SetText(L["<Guild Name>"])
         end
+    elseif guild and guild.previewText and self.editorProfile == "friendlyNPC" then
+        guild.previewText:SetText(L["<Flight Master>"])
     end
     -- A selected group or the Plate row has no component; it stays selected.
     local inspectingOther = self.selectedComponent == nil and (self.editorSelectedGroup or self.editorInspectingPlate)
@@ -785,6 +875,7 @@ function Options:RefreshEditorAppearance(settings, light)
     self:ApplyEditorPreviewStyles(profile)
     self:ApplyEditorPreviewRules(profile)
     self:ApplyEditorMarkFrame(profile)
+    self:ApplyEditorTotemPreview()
     if blizzardNames then self:ApplyEditorBlizzardName(settings) end
     -- Again, now what the rules hide is known: a hidden part's ghost goes under the drawn ones.
     self:RefreshEditorComponentLayers()
@@ -801,12 +892,22 @@ function Options:RefreshEditorAppearance(settings, light)
     -- Fade objects you can't use, as the plates fade (Lifecycle's ObjectFade), with Test values' Can't use yet; a herb
     -- with Cultivation ready does not fade.
     local stage = self.editorPreviewStage
+    local cue = self:EditorReachCue()
     if stage and stage.SetAlpha then
         local samples = self.templateSamples or {}
         local faded = self:IsEditorObject() and settings.objectFadeUnable == true and samples["object.unable"] == true
             and not (samples["object.kind"] == "herb" and samples["object.cancultivate"] == true)
-        stage:SetAlpha(faded and PS.ObjectPlate.FADE or 1)
+        stage:SetAlpha((faded or cue == "dim") and PS.ObjectPlate.FADE or 1)
     end
+end
+
+-- Out of reach's cue for the open design and Test values (ActionIcon.Cue, as the plates decide it): only on Objects
+-- and Friendly NPCs, the plate types with an Action icon; nil for none.
+function Options:EditorReachCue()
+    local settings = PS.GetSettings and PS.GetSettings()
+    if not settings or not (self:IsEditorObject() or self.editorProfile == "friendlyNPC") then return nil end
+    local samples = self.templateSamples or {}
+    return PS.ActionIcon.Cue(settings.interactRangeCue, samples["object.kind"], samples["interact.inrange"])
 end
 
 -- The preview's Editing: Names only / Full plate switch: friendly plates, on every design but Dungeons &
@@ -958,7 +1059,8 @@ function Options:CreateEditorComponent(key, definition)
         glow:SetPoint("TOPLEFT", component, "TOPLEFT", -1, 1)
         glow:SetPoint("BOTTOMRIGHT", component, "BOTTOMRIGHT", 1, -1)
         glow:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-        glow:SetBackdropBorderColor(1, 0.7, 0.14, 1)
+        local edge = self.targetPreviewEdge or PS.TargetGlow.EDGE_GOLD.text
+        glow:SetBackdropBorderColor(edge[1], edge[2], edge[3], 1)
         glow:EnableMouse(false)
         glow:Hide()
         component.targetPreviewGlow = glow

@@ -93,7 +93,7 @@ local function Show(cvar)
     if applied[cvar] == nil and not (record and record[cvar] ~= nil) then return end
     if Secret.InCombat() then
         if applied[cvar] ~= "show" and record and record[cvar] ~= nil then
-            NamePolicy.Write(cvar, record[cvar])
+            NamePolicy.Write(cvar, record[cvar], nil, GROUP)
         end
         applied[cvar] = "show"
         return

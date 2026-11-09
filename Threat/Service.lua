@@ -1202,36 +1202,17 @@ local function OnThreatTable(record)
         or (type(record.rawThreat) == "number" and record.rawThreat > 0) or group
 end
 
--- Creature types that are never part of a fight, as the English client names them; the client's own
--- names for them (Critter 8, Non-combat Pet 12, Wild Pet 14) are added when it can say them.
-local CRITTER_TYPES = { Critter = true, ["Non-combat Pet"] = true, ["Wild Pet"] = true }
-local CRITTER_TYPE_IDS = { 8, 12, 14 }
-local critterNamesAdded = false
-
-local function CritterTypes()
-    if critterNamesAdded then return CRITTER_TYPES end
-    critterNamesAdded = true
-    local getInfo = C_CreatureInfo and C_CreatureInfo.GetCreatureTypeInfo
-    if type(getInfo) ~= "function" then return CRITTER_TYPES end
-    for index = 1, #CRITTER_TYPE_IDS do
-        local ok, info = pcall(getInfo, CRITTER_TYPE_IDS[index])
-        if ok and IsReadable(info) and type(info) == "table" then
-            local name = info.name
-            if IsReadable(name) and type(name) == "string" and name ~= "" then CRITTER_TYPES[name] = true end
-        end
-    end
-    return CRITTER_TYPES
-end
+-- Creature types that are never part of a fight (Secret.CreatureType's locale-safe words).
+local CRITTER_TYPES = { critter = true, noncombatpet = true, wildpet = true }
 
 -- Whether a unit is a critter, a companion or a wild battle pet: true, false, or nil when the client
 -- will not say (its creature type protected, and no pet answer that it is one).
 local function ReadCritter(unit)
     if ReadBoolean(UnitIsWildBattlePet, unit) == true then return true end
-    if type(UnitCreatureType) ~= "function" then return nil end
-    local ok, creature = pcall(UnitCreatureType, unit)
-    if not ok or not IsReadable(creature) then return nil end
+    local creature, _, answered = Secret.CreatureType(unit)
+    if not answered then return nil end
     -- A readable nil is a mob of no creature type, which is no critter.
-    return type(creature) == "string" and CritterTypes()[creature] == true
+    return creature ~= nil and CRITTER_TYPES[creature] == true
 end
 
 -- Neutral mobs you can attack are listed as hostile ones are, idle until the fight. Left out of the

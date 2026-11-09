@@ -423,6 +423,40 @@ PlateSmith:InvalidateFact("kickwatch.cd")
 (up to eight modules' facts, after PlateSmith's own flags), its sample until the player ticks or unticks it, so a rule
 `when kickwatch.ready` can be tried in the preview.
 
+## Pictures and decoration sets (1.4.0)
+
+A player's **Image** parts (Studio's + Add > Shape > Image) pick a picture from PlateSmith's kit, a game atlas,
+shared media or their own files. A module can add pictures to the kit and ready-made groups of parts to
++ Add > Decoration set:
+
+```lua
+-- A picture shipped in your addon's folder, offered in the kit as "kit:kickwatch.ring".
+PlateSmith:RegisterPicture("kickwatch.ring", {
+    label = "Kick ring", file = "Interface\\AddOns\\KickWatch\\ring.tga",
+    -- optional: coords = { left, right, top, bottom }, turn = 0-3 (clockwise quarter turns the file is drawn at),
+    -- blend = "ADD", size = { width, height } (a new part's), slice = { left, top, right, bottom } (nine-slice
+    -- margins in pixels, used while the image is fitted to a part where the client has SetTextureSliceMargins)
+})
+
+-- Parts added together and applied by value (each becomes an ordinary custom part the player edits).
+PlateSmith:RegisterDecorationSet("kickwatch.rings", {
+    name = "Kick rings", help = "A ring round the health bar.",
+    parts = {
+        { name = "Ring", parent = "health", x = 0, y = 0,
+          slot = { kind = "icon", source = "static", image = "kit:kickwatch.ring", fit = "part", outset = 3 } },
+        -- parent: a part key, or an earlier part of the set by its index; attach = "top" | "bottom" | "right" |
+        -- "left", fill = "hide" | "next" (ride that bar's fill), rules = { ... } and style = { ... } as a part's.
+    },
+})
+```
+
+- IDs follow the module ID grammar (above). Both calls return `true`, or `false, reason`.
+- A picture's file must be inside `Interface\AddOns\` and end in .tga, .blp or .png. A Blueprint names the picture
+  (`kit:kickwatch.ring`), never its file; where your module is not installed the part's picture is missing: it draws
+  nothing on the plates, Studio shows a dashed red box, and the import review names it.
+- A decoration set is checked when it is added, as a Blueprint's parts are (bad fields are dropped); it needs as many
+  free custom parts as it has parts.
+
 ## Planned extension points: style API
 
 Status: designed, not implemented, apart from the calls above (full part types of a module's own, with their own

@@ -14,9 +14,9 @@ local GROUP = "interaction"
 Interaction.GROUP = GROUP
 local ON_OFF = { on = "1", off = "0" }
 -- setting key -> its CVar and what each choice but Game's setting writes (Schema's INTERACT lists the choices), in
--- the order Settings shows them. SoftTargetInteract is a mode: 0 off, 3 always (the value Forever Loot Sparkles
--- writes; 1 and 2 limit it to a gamepad), so On is 3. Range is in yards, though Forever appears to drop the
--- interaction target past about 15 yards whatever it says (Loot Sparkles' own note). Arc: 0 straight ahead, 1 in
+-- the order Settings shows them. SoftTargetInteract is a mode: 0 off, 3 always (1 and 2 limit it to a gamepad), so
+-- On is 3. Range is in yards, though Forever appears to drop the interaction target past about 15 yards whatever it
+-- says. Arc: 0 straight ahead, 1 in
 -- front, 2 all around. OnlyInRange: 1 picks only what is within reach, 0 also what is out of reach.
 Interaction.SWITCHES = {
     { key = "interactTargeting", cvar = "SoftTargetInteract", values = { on = "3", off = "0" } },
@@ -62,6 +62,36 @@ function Interaction.AnySupported()
     return false
 end
 
+-- A corpse plate shows the game's loot or skin icon only for a corpse the game gives one, its interaction target (live,
+-- Forever: with interaction targeting off, a corpse that was the mouseover and target was no softinteract unit). The first of
+-- Interact key target and Plate on it this client readably has off ("0", a write PlateSmith has queued counting), or nil
+-- (on, unknown or not on this client). Corpse plates hold both On (Interaction.Forced), so this is off only where
+-- someone else turned one off since (Settings then offers to turn them back on).
+Interaction.CORPSE_NEEDS = { "interactTargeting", "interactNameplate" }
+function Interaction.CorpseNeeds()
+    for _, key in ipairs(Interaction.CORPSE_NEEDS) do
+        local switch = SwitchFor(key)
+        if switch and Interaction.Supported(key) then
+            local value = NamePolicy.Pending(switch.cvar) or NamePolicy.Read(switch.cvar)
+            if value ~= nil and NamePolicy.SameText(value, "0") then return key end
+        end
+    end
+    return nil
+end
+
+-- Whether key's CVar is held On by Corpse plates (on, drawn by PlateSmith: ActionIcon.CorpsesOn): Interact key target
+-- and Plate on it. The player's own choice for it is kept, unchanged, and applies again once Corpse plates are off.
+function Interaction.Forced(key, settings)
+    settings = settings or Settings()
+    if not (type(settings) == "table" and settings.corpsePlates == true and settings.objectPlates ~= "blizzard") then
+        return false
+    end
+    for _, need in ipairs(Interaction.CORPSE_NEEDS) do
+        if need == key then return true end
+    end
+    return false
+end
+
 -- Gives cvar back: its original, unless someone else changed it after PlateSmith did (NamePolicy.RestoreGroup
 -- leaves their newer value standing). In combat (not immediate) the original is queued and its record kept until
 -- PLAYER_REGEN_ENABLED applies again (NamePolicy.Release). keep: written, but the record stays (logout in combat).
@@ -80,7 +110,8 @@ function Interaction.Apply()
     local active = settings.enabled ~= false
     for _, switch in ipairs(Interaction.SWITCHES) do
         if Interaction.Supported(switch.key) then
-            local cvar, want = switch.cvar, settings[switch.key]
+            local cvar = switch.cvar
+            local want = Interaction.Forced(switch.key, settings) and "on" or settings[switch.key]
             local value = active and want ~= nil and switch.values[want] or nil
             if value then
                 if NamePolicy.Drifted(GROUP, cvar) ~= nil then
@@ -101,6 +132,21 @@ function Interaction.Apply()
         end
     end
     return true
+end
+
+-- The game's value of key's CVar while PlateSmith follows someone else's change of it (Apply's yield), else nil: the
+-- setting then reads as chosen while the game holds another value, so Settings says so.
+function Interaction.Following(key)
+    local switch = SwitchFor(key)
+    if not (switch and yielded[switch.cvar] ~= nil) then return nil end
+    return NamePolicy.Read(switch.cvar) or "?"
+end
+
+-- The player picked key's setting again (or Turn them on): PlateSmith stops following the outside change, so the next
+-- Apply writes the setting's value.
+function Interaction.TakeBack(key)
+    local switch = SwitchFor(key)
+    if switch then yielded[switch.cvar] = nil end
 end
 
 -- Puts every switch back now (logout, PlateSmith turned off). keep: the originals stay recorded, so the next login's

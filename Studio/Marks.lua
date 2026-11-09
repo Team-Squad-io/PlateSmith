@@ -15,8 +15,8 @@ local state = {}
 local function Settings() return type(PS.GetSettings) == "function" and PS.GetSettings() or nil end
 
 -- The design the marks are about: the open one, for Enemy players their layer (the Enemies'
--- "players" design, marked against the Enemies' World), or for an object type its layer (the Objects'
--- "<type>" design, marked against All objects: the open place's design).
+-- "players" design, marked against the Enemies' World), or for a type its layer (the plate type's
+-- "<type>" design, marked against All objects or All NPCs: the open place's design).
 local function MarkDesign(self)
     if self.editorProfile == "enemyPlayer" then return "enemy", Designs.PLAYERS end
     local objectType = self.EditorObjectType and self:EditorObjectType()
@@ -24,11 +24,11 @@ local function MarkDesign(self)
     return self.editorProfile, self.editorDesign or "world"
 end
 
--- What a mark's "World" is: the Enemies' World for Enemy players, the open place's design for an object type, else
--- the plate type's World.
+-- What a mark's "World" is: the Enemies' World for Enemy players, the open place's design for a type, else the plate
+-- type's World.
 local function BaseTarget(self)
     local plateType, design = MarkDesign(self)
-    if Designs.TYPE_SET[design] and (self.editorDesign or "world") ~= "world" then
+    if Designs.ANY_TYPE[design] and (self.editorDesign or "world") ~= "world" then
         return plateType .. "@" .. self.editorDesign
     end
     return plateType
@@ -52,8 +52,8 @@ function Options:EditorChangedAreas()
                     areas = Designs.ChangedAreas(db, plateType, entry.context) }
             end
         end
-        -- On All objects: what each object type changes too.
-        for _, objectType in ipairs(plateType == Designs.TYPED and Designs.TYPES or {}) do
+        -- On All objects (All NPCs): what each type changes too.
+        for _, objectType in ipairs(Designs.TypesOf(plateType)) do
             if Designs.Record(db, plateType, objectType) then
                 state.others[#state.others + 1] = { context = objectType,
                     areas = Designs.ChangedAreas(db, plateType, objectType) }
@@ -61,10 +61,11 @@ function Options:EditorChangedAreas()
         end
     end
     self.editorMarkBuilds = self.editorMarkBuilds + 1
-    -- Enemy players reset to what the Enemies have, an object type to All objects.
+    -- Enemy players reset to what the Enemies have, a type to All objects (All NPCs).
     if self.editorMarkConfig then
         self.editorMarkConfig.resetLabel = design == Designs.PLAYERS and L["Reset to Enemies"]
-            or Designs.TYPE_SET[design] and L["Reset to All objects"] or L["Reset to World"]
+            or Designs.ANY_TYPE[design] and string.format(L["Reset to %s"], self:EditorAllTypesLabel())
+            or L["Reset to World"]
     end
     return state
 end
@@ -227,8 +228,8 @@ function Options:EditorMarkTip(area)
         if self.editorProfile == "enemyPlayer" then
             return { string.format(L["Changed here (Enemies: %s)"], WorldText(self, area)) }
         end
-        if Designs.TYPE_SET[marks.design] then
-            return { string.format(L["Changed here (All objects: %s)"], WorldText(self, area)) }
+        if Designs.ANY_TYPE[marks.design] then
+            return { string.format(L["Changed here (%s: %s)"], self:EditorAllTypesLabel(), WorldText(self, area)) }
         end
         return { string.format(L["Changed here (World: %s)"], WorldText(self, area)) }
     end

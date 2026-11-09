@@ -60,8 +60,9 @@ PS._CreatePlateSettings = function(context)
     -- Returns the plate type and the context (nil: World), or nil when target is not one: an
     -- unknown name must not fall back to editing the enemy profile. Friendly plates' "dungeon" is
     -- their Dungeons & raids design, Blizzard's: World's dungeonNamesLayout.
-    -- An object type's layer (Designs.TYPES) is "object/<type>" or "object@<context>/<type>": edited as that layer
-    -- over that place's design (the third result), its differences stored against that place's design.
+    -- A type's layer (Designs.TypesOf: an object type, the Enemies' or Friendly NPCs' Totems) is "<plate type>/<type>"
+    -- or "<plate type>@<context>/<type>" ("object/herb", "enemy@pvp/totem"): edited as that layer over that place's
+    -- design (the third result), its differences stored against that place's design.
     local function ResolveProfileKey(target)
         if target == nil then return "enemy" end
         if target == "enemyDungeon" then return "enemy", "dungeon" end
@@ -70,13 +71,13 @@ PS._CreatePlateSettings = function(context)
         local objectType
         local rest, suffix = target:match("^([%w@]+)/(%w+)$")
         if rest then
-            if not Designs.TYPE_SET[suffix] then return nil end
+            if not Designs.ANY_TYPE[suffix] then return nil end
             target, objectType = rest, suffix
         end
         local plateType, design = target:match("^(%w+)@(%w+)$")
         plateType = plateType or target
         if not profileDefaults[plateType] then return nil end
-        if objectType and plateType ~= Designs.TYPED then return nil end
+        if objectType and not Designs.IsType(plateType, objectType) then return nil end
         if design == "world" then design = nil end
         if design and not (S.DESIGN.STORED[plateType][design] or Designs.IsBlizzard(plateType, design)) then return nil end
         return plateType, design, objectType
@@ -120,8 +121,8 @@ PS._CreatePlateSettings = function(context)
         PS.Profiles.MarkChanged()
         PS.TargetGlow.RestyleShown(db)
     end
-    -- An object type's edit (objectType): a working copy of the type over the place's design; what changed is stored
-    -- in the type's layer as its difference from that design (made by the first edit, gone when it holds nothing).
+    -- A type's edit (objectType): a working copy of the type over the place's design; what changed is stored in the
+    -- type's layer as its difference from that design (made by the first edit, gone when it holds nothing).
     local function MutateType(db, plateType, design, objectType, mutate)
         local world = db.plateProfiles[plateType]
         local base = Designs.For(db, plateType, design)
@@ -130,7 +131,7 @@ PS._CreatePlateSettings = function(context)
         local work = Designs.WorkingCopy(before)
         if mutate(work, db, plateType, design, objectType) == false then return false end
         Designs.StoreDiff(base, record, before, work)
-        Designs.SetType(world, objectType, record)
+        Designs.SetType(world, objectType, record, plateType)
         Designs.Invalidate()
         RefreshAll()
         return true
@@ -171,6 +172,11 @@ PS._CreatePlateSettings = function(context)
         return Mutate(db, plateType, design, mutate, glow, objectType)
     end
 
+    -- Totems' Display (Schema's TOTEMS) is the Enemies' and Friendly NPCs' Totems layer's own, never a design's.
+    local function TotemsOffered(plateType, objectType)
+        return S.TOTEMS.PLATES[plateType] == true and objectType == "totem"
+    end
+
     -- key may be a table of options ({ [key] = value }, profile options only): all are written in one edit, so
     -- they are one change (Studio's Glow wrap: Fixed size unticks Same width and height with it).
     local function SetProfileOption(target, key, value)
@@ -180,11 +186,14 @@ PS._CreatePlateSettings = function(context)
                 if not S.IsProfileOption(name) or name == "plateHidden" then return false end
                 glow = glow and S.glowSettings[name] == true
             end
-            return MutateProfile(target, function(profile, db, plateType, design)
+            return MutateProfile(target, function(profile, db, plateType, design, objectType)
                 local fallback = ProfileFallback(db, plateType, design)
+                for name in pairs(key) do
+                    if S.TOTEMS.SET[name] and not TotemsOffered(plateType, objectType) then return false end
+                end
                 for name, option in pairs(key) do
                     profile[name] = S.ProfileOptionValue(profile, name, option, fallback)
-                    if plateType == "enemy" and not design and S.ENEMY_ALIASES[name] then db[name] = profile[name] end
+                    if plateType == "enemy" and not design and not objectType and S.ENEMY_ALIASES[name] then db[name] = profile[name] end
                 end
             end, glow)
         end
@@ -198,10 +207,11 @@ PS._CreatePlateSettings = function(context)
         end
         if not S.IsProfileOption(key) then return false end
         return MutateProfile(target, function(profile, db, plateType, design, objectType)
-            -- Hiding a whole plate is an object type's own (Studio's Type: Hide these plates).
-            if key == "plateHidden" and not objectType then return false end
+            -- Hiding a whole plate is an object type's own (Studio's Type: Hide these plates); Totems hide with Display.
+            if key == "plateHidden" and not (objectType and plateType == Designs.TYPED) then return false end
+            if S.TOTEMS.SET[key] and not TotemsOffered(plateType, objectType) then return false end
             profile[key] = S.ProfileOptionValue(profile, key, value, ProfileFallback(db, plateType, design))
-            if plateType == "enemy" and not design and S.ENEMY_ALIASES[key] then db[key] = profile[key] end
+            if plateType == "enemy" and not design and not objectType and S.ENEMY_ALIASES[key] then db[key] = profile[key] end
         end, S.glowSettings[key] == true)
     end
 
@@ -219,6 +229,40 @@ PS._CreatePlateSettings = function(context)
         Designs.Invalidate()
         RefreshAll()
         return true
+    end
+
+    -- Incoming heals and absorbs (what: "heals", Schema's HEALS) as target's design draws them, written into the same
+    -- design of every other plate type that has them (World into World, Dungeons & raids into Dungeons & raids...),
+    -- each through MutateProfile, so it is one change for one Save. A design another plate type does not have, or that
+    -- is Blizzard's there, is left out; a World copy reaches the Enemy players layer too while it exists. Returns
+    -- whether one was written, and how many.
+    local COPY_PLATES = { "enemy", "enemyPlayer", "friendlyPlayer", "friendlyNPC" }
+    local function CopyDesignLook(target, what)
+        local area = what == "heals" and S.HEALS or nil
+        local db = GetSettings()
+        local plateType, design, objectType = ResolveProfileKey(target)
+        if not (area and db and plateType) or objectType then return false, 0 end
+        if design and Designs.IsBlizzard(plateType, design) then design = nil end
+        local players = design == Designs.PLAYERS
+        if not area.PLATES[players and "enemyPlayer" or plateType] then return false, 0 end
+        local source = Designs.For(db, plateType, design)
+        local keys, values = area.KEYS or { area.KEY }, {}
+        for _, key in ipairs(keys) do values[key] = Table.DeepCopy(source[key]) end
+        local place = (design == nil or players) and "world" or design
+        local count = 0
+        for _, other in ipairs(COPY_PLATES) do
+            local own = other == (players and "enemyPlayer" or plateType)
+            local otherTarget = other == "enemyPlayer" and "enemyPlayer" or place == "world" and other or other .. "@" .. place
+            if area.PLATES[other] and not own and (other ~= "enemyPlayer" or place == "world")
+                and (other == "enemyPlayer" or not Designs.IsBlizzard(other, place))
+                and MutateProfile(otherTarget, function(profile, _, otherType, otherDesign)
+                    local fallback = ProfileFallback(db, otherType, otherDesign)
+                    for _, key in ipairs(keys) do profile[key] = S.ProfileOptionValue(profile, key, values[key], fallback) end
+                end) then
+                count = count + 1
+            end
+        end
+        return count > 0, count
     end
 
     local function SetOption(key, value)
@@ -337,7 +381,7 @@ PS._CreatePlateSettings = function(context)
             result = edit(layout)
             if not result then return false end
             profile[field] = validated and layout or NormalizeLayout(layout, fallback)
-            if plateType == "enemy" and not design then db.layout = profile.layout end
+            if plateType == "enemy" and not design and not objectType then db.layout = profile.layout end
         end, nil, objectType)
         return done and result
     end
@@ -404,7 +448,7 @@ PS._CreatePlateSettings = function(context)
     -- A part moved this way is placed statically (Dynamic pins to one parent's edge).
     local function PlaceDrawn(layout, key, x, y, drawnScale)
         local position = layout[key]
-        position.attach = nil
+        position.attach, position.fill = nil, nil
         local parent = position.parent and layout[position.parent]
             and S.LayoutTransforms(layout, layoutMeasure)[position.parent] or ROOT
         position.scale = S.ComponentScale(drawnScale / parent.scale)
@@ -500,10 +544,12 @@ PS._CreatePlateSettings = function(context)
             if edge then
                 position.attach = edge
                 position.x, position.y = PIN_GAP[edge][1], PIN_GAP[edge][2]
+                -- Riding the fill needs an edge it has (S.FILL.EDGES): its top, bottom or end.
+                if not S.FILL.EDGES[edge] then position.fill = nil end
                 return true
             end
             local x, y = Drawn(layout, key)
-            position.attach = nil
+            position.attach, position.fill = nil, nil
             if layoutMeasure then
                 local ox, oy = position.x, position.y
                 position.x, position.y = 0, 0
@@ -811,6 +857,9 @@ PS._CreatePlateSettings = function(context)
             and value >= S.valueFontRange[1] and value <= S.valueFontRange[2]
     end
 
+    local IMAGE_FIELD = {}
+    for _, field in ipairs(S.IMAGE.FIELDS) do IMAGE_FIELD[field] = true end
+
     -- One custom-part field made valid: true and the value to store (nil clears an optional
     -- field), or false.
     local function SlotFieldValue(field, value)
@@ -849,6 +898,8 @@ PS._CreatePlateSettings = function(context)
             if value ~= nil and type(value) ~= "string" then return false end
             return true, S.NormalizeValueTemplate(value)
         end
+        -- An image's own fields (S.IMAGE): a default (own, fixed, 0, 1, false) or nil clears the field.
+        if IMAGE_FIELD[field] then return S.IMAGE.Check(field, value) end
         return false
     end
 
@@ -868,6 +919,7 @@ PS._CreatePlateSettings = function(context)
     -- false clears an optional field (name, template, kind, width, height, icon). All are checked
     -- before any is written, so a refused field leaves the part as it was.
     local CLEARABLE = { name = true, template = true, kind = true, width = true, height = true, icon = true }
+    for field in pairs(IMAGE_FIELD) do CLEARABLE[field] = true end
     local function SetValueSlotFields(profileKey, key, fields)
         if type(fields) ~= "table" or not ExistingSlot(profileKey, key) then return false end
         local checked = {}
@@ -1212,9 +1264,9 @@ PS._CreatePlateSettings = function(context)
             if not db then return nil end
             return db.plateProfiles.enemy, Designs.Record(db, "enemy", Designs.PLAYERS), db, true
         end
-        -- An object type's layer ("object", "<type>"): reset (all or one area), never added, copied or slimmed (an
-        -- edit makes it); the fifth result names it.
-        if plateType == Designs.TYPED and Designs.TYPE_SET[design] then
+        -- A type's layer ("object", "<type>"; "enemy" or "friendlyNPC", "totem"): reset (all or one area), never added,
+        -- copied or slimmed (an edit makes it); the fifth result names it.
+        if Designs.IsType(plateType, design) then
             if not db then return nil end
             return db.plateProfiles[plateType], Designs.Record(db, plateType, design), db, false, design
         end
@@ -1249,18 +1301,18 @@ PS._CreatePlateSettings = function(context)
         local world, record, _, players, objectType = DesignOf(plateType, design)
         if not record or (players and design ~= nil and design ~= "world") then return false end
         if players then Designs.SetPlayers(world, nil)
-        elseif objectType then Designs.SetType(world, objectType, nil)
+        elseif objectType then Designs.SetType(world, objectType, nil, plateType)
         else Designs.SetFull(world, design, nil) end
         return DesignsChanged()
     end
 
-    -- Every override goes; the design stays, following World (a full one becomes sparse). An object type's layer
-    -- goes with its overrides: the type is All objects again.
+    -- Every override goes; the design stays, following World (a full one becomes sparse). A type's layer goes with its
+    -- overrides: the type is All objects (All NPCs) again.
     function designs.ResetDesign(plateType, design)
         local world, record, _, players, objectType = DesignOf(plateType, design)
         if not record or not Designs.ResetAll(record) then return false end
         if players then Designs.SetPlayers(world, record) end
-        if objectType then Designs.SetType(world, objectType, record) end
+        if objectType then Designs.SetType(world, objectType, record, plateType) end
         return DesignsChanged()
     end
 
@@ -1270,7 +1322,7 @@ PS._CreatePlateSettings = function(context)
         local world, record, _, players, objectType = DesignOf(plateType, design)
         if not record or not Designs.Reset(world, record, area, players and "enemy" or plateType) then return false end
         if players then Designs.SetPlayers(world, record) end
-        if objectType then Designs.SetType(world, objectType, record) end
+        if objectType then Designs.SetType(world, objectType, record, plateType) end
         return DesignsChanged()
     end
 
@@ -1285,7 +1337,7 @@ PS._CreatePlateSettings = function(context)
     -- follows World), made if to had none.
     function designs.CopyDesign(plateType, from, to)
         local world, _, _, players, objectType = DesignOf(plateType, to)
-        if not world or players or objectType or Designs.TYPE_SET[from] or from == to then return false end
+        if not world or players or objectType or Designs.ANY_TYPE[from] or from == to then return false end
         local copy = {}
         if from ~= "world" then
             local _, source = DesignOf(plateType, from)
@@ -1318,11 +1370,172 @@ PS._CreatePlateSettings = function(context)
         return not Table.DeepEqual(Presets.ObjectStyleOf(db), base)
     end
 
-    -- A custom-part slot free in every design of target's plate type (Designs.FreeValueSlot), or nil.
+    -- A custom-part slot free in every design of target's plate type (Designs.FreeValueSlot), or nil; then how many are.
     function designs.FreeValueSlot(target)
         local db = GetSettings()
         local plateType = ResolveProfileKey(target)
-        return db and plateType and Designs.FreeValueSlot(db, plateType) or nil
+        if not (db and plateType) then return nil, 0 end
+        local _, used = Designs.InUse(db, plateType, "layout")
+        local first, count = nil, 0
+        for index = 1, S.VALUE_SLOT_COUNT do
+            if not used["value" .. index] then
+                first, count = first or "value" .. index, count + 1
+            end
+        end
+        return first, count
+    end
+
+    -- A custom part pinned to a bar's top, bottom or right edge rides that bar's fill (S.FILL): mode "hide" (it hides
+    -- with the bar) or "next" (it rides the next bar that shows), nil to meet the bar's edge again. Riding it, the part
+    -- starts at the fill's end (no offset along the bar).
+    function designs.SetComponentFill(key, mode, profileKey, variant)
+        if mode ~= nil and not S.FILL.MODES[mode] then return false end
+        return EditLayout(profileKey, variant, function(layout)
+            local position = layout[key]
+            if not position then return false end
+            if mode == nil then
+                position.fill = nil
+                return true
+            end
+            if not S.FILL.Value(key, mode, position.attach) or not position.parent or not layout[position.parent]
+                or S.IsGroupKey(position.parent) then
+                return false
+            end
+            if not position.fill then
+                if position.attach == "right" then position.x, position.y = 0, 0 else position.x = 0 end
+            end
+            position.fill = mode
+            return true
+        end)
+    end
+
+    -- + Add › Decoration set: a set's parts (ProfilePresets.DECORATIONS by id, or a table of that shape) as custom parts
+    -- of target's design (variant: the layout Studio edits), each in a slot free in every design of the plate type,
+    -- applied by value as a style preset is: from then on they are ordinary parts. A part names its parent as a part
+    -- ("health") or an earlier part of the set (its index); one whose parent this layout lacks or deleted sits on the
+    -- plate. One edit (one Save, one Revert). Returns the keys made, or false and a reason a player can read.
+    function designs.AddDecorations(target, variant, set)
+        if type(set) == "string" then set = PS.ProfilePresets and PS.ProfilePresets.Decoration(set) end
+        if type(set) ~= "table" or type(set.parts) ~= "table" or #set.parts == 0 then return false end
+        local db = GetSettings()
+        local plateType, design, field, objectType = LayoutTarget(target, variant)
+        if not db or not plateType then return false end
+        local _, used = Designs.InUse(db, plateType, "layout")
+        local keys = {}
+        for index = 1, S.VALUE_SLOT_COUNT do
+            if not used["value" .. index] and #keys < #set.parts then keys[#keys + 1] = "value" .. index end
+        end
+        if #keys < #set.parts then
+            return false, string.format(L["%s needs %d free custom parts; this plate type has %d."], set.name or "",
+                #set.parts, #keys)
+        end
+        local fallback = LayoutFallback(db, plateType, design, field)
+        local done = Mutate(db, plateType, design, function(profile)
+            local layout = type(profile[field]) == "table" and Table.DeepCopy(profile[field]) or NormalizeLayout(nil, fallback)
+            local slots = Table.DeepCopy(profile.valueSlots)
+            local rules, styles = Table.DeepCopy(profile.rules or {}), Table.DeepCopy(profile.styles or {})
+            for index, part in ipairs(set.parts) do
+                local key = keys[index]
+                local slot = S.DefaultValueSlot()
+                for name, value in pairs(type(part.slot) == "table" and part.slot or {}) do slot[name] = Table.DeepCopy(value) end
+                slot.name = part.name
+                slots[key] = S.NormalizeValueSlot(slot)
+                local parent = type(part.parent) == "number" and keys[part.parent] or part.parent
+                local entry = type(parent) == "string" and layout[parent]
+                if type(entry) ~= "table" or entry.removed or S.IsGroupKey(parent) then parent = nil end
+                layout[key] = { x = tonumber(part.x) or 0, y = tonumber(part.y) or 0, visible = true,
+                    scale = tonumber(part.scale) or 1, parent = parent, attach = parent and part.attach or nil,
+                    fill = parent and part.fill or nil }
+                rules[key] = type(part.rules) == "table" and S.NormalizePartRules(rules, key, Table.DeepCopy(part.rules)) or nil
+                styles[key] = type(part.style) == "table" and S.NormalizeStyles({ [key] = part.style })[key] or nil
+            end
+            profile.valueSlots, profile.rules, profile.styles = slots, rules, styles
+            profile[field] = NormalizeLayout(layout, fallback)
+            if plateType == "enemy" and not design and not objectType then db.layout = profile.layout end
+        end, nil, objectType)
+        return done and keys or false
+    end
+
+    -- My media (Core/Media.lua): name -> a picture file, account state (kept at once, never in a profile or a
+    -- Blueprint). oldName: the entry it renames. The plates draw a part naming it at once (PS.RedrawImages). false and
+    -- a reason a player can read for a bad name or path, or a full list.
+    function designs.SetMyMedia(name, path, oldName)
+        local Media, state = PS.Media, PS.GetState()
+        if type(name) == "string" then name = name:match("^%s*(.-)%s*$") end
+        if not Media.IsMediaName(name) then
+            return false, L["Name it with letters, digits, spaces, _, - or . (at most 32)."]
+        end
+        local clean = Media.MediaPath(path)
+        if not clean then return false, L["The file must be inside Interface\\AddOns\\ and end in .tga, .blp or .png."] end
+        local list = Table.DeepCopy(state.media or {})
+        if type(oldName) == "string" and oldName ~= name then list[oldName] = nil end
+        local count = 0
+        for _ in pairs(list) do count = count + 1 end
+        if not list[name] and count >= Media.MEDIA_MAX then
+            return false, string.format(L["All %d names are used: remove one first."], Media.MEDIA_MAX)
+        end
+        list[name] = clean
+        state.media = Media.NormalizeMediaList(list)
+        if PS.RedrawImages then PS.RedrawImages() end
+        if PS.ActivityLog then PS.ActivityLog.Account("media", name) end
+        return true
+    end
+
+    function designs.RemoveMyMedia(name)
+        local state = PS.GetState()
+        if not (type(state.media) == "table" and state.media[name]) then return false end
+        state.media[name] = nil
+        if next(state.media) == nil then state.media = nil end
+        if PS.RedrawImages then PS.RedrawImages() end
+        if PS.ActivityLog then PS.ActivityLog.Account("mediaRemoved", name) end
+        return true
+    end
+
+    -- Hidden auras (Schema's HIDDEN_AURAS): spell ID or name text, and who (plate type -> true; nil: every one), account
+    -- state kept at once. The same ID or name again updates its plate types. Every plate's aura rows are read again
+    -- (PS.RedrawAuras). false and a reason a player can read for bad text, no plate type, or a full list.
+    function designs.SetHiddenAura(text, who)
+        local H, state = S.HIDDEN_AURAS, PS.GetState()
+        local kind, value = H.Parse(text)
+        if not kind then
+            return false, string.format(L["Type a spell ID or an aura's name (at most %d characters)."], H.NAME_LENGTH)
+        end
+        local picked = false
+        for _, key in ipairs(H.WHO) do picked = picked or (type(who) == "table" and who[key] == true) end
+        if not picked then return false, L["Tick at least one kind of plate."] end
+        local entry = kind == "id" and { id = value } or { name = value }
+        entry.who = H.Who(who)
+        local key, list, replaced = H.Key(entry), {}, false
+        for _, old in ipairs(state.hiddenAuras or {}) do
+            if H.Key(old) == key then
+                list[#list + 1], replaced = entry, true
+            else
+                list[#list + 1] = Table.DeepCopy(old)
+            end
+        end
+        if not replaced then
+            if #list >= H.MAX then return false, string.format(L["All %d are used: remove one first."], H.MAX) end
+            list[#list + 1] = entry
+        end
+        state.hiddenAuras = H.Normalize(list)
+        if PS.RedrawAuras then PS.RedrawAuras() end
+        if PS.ActivityLog then PS.ActivityLog.Account("hiddenAura", value) end
+        return true, replaced
+    end
+
+    function designs.RemoveHiddenAura(text)
+        local H, state = S.HIDDEN_AURAS, PS.GetState()
+        local kind, value = H.Parse(text)
+        local key = kind and H.Key(kind == "id" and { id = value } or { name = value })
+        local list, found = {}, false
+        for _, old in ipairs(state.hiddenAuras or {}) do
+            if H.Key(old) == key then found = true else list[#list + 1] = Table.DeepCopy(old) end
+        end
+        if not found then return false end
+        state.hiddenAuras = H.Normalize(list)
+        if PS.RedrawAuras then PS.RedrawAuras() end
+        if PS.ActivityLog then PS.ActivityLog.Account("hiddenAuraRemoved", value) end
+        return true
     end
 
     local api = {
@@ -1354,6 +1567,7 @@ PS._CreatePlateSettings = function(context)
         GetDefaultLayout = GetDefaultLayout,
         SetPlateProfileOption = SetProfileOption,
         CopyTargetHighlight = CopyTargetHighlight,
+        CopyDesignLook = CopyDesignLook,
         SetPlateValueSlot = SetProfileValueSlot,
         SetPlateValueSlotFields = SetValueSlotFields,
         SetPlateAuraLayout = SetProfileAuraLayout,
