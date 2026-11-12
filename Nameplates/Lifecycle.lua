@@ -3422,12 +3422,14 @@ local pending = { kinds = false, relationships = false, relationshipsAt = 0, aur
 
 local function UpdateCastTimes(now)
     local castTime = now * 1000
+    -- Let the client ease between progress updates. Cast starts and timing changes snap to the new range.
+    local interpolation = Enum and Enum.StatusBarInterpolation and Enum.StatusBarInterpolation.ExponentialEaseOut
     for data in pairs(activeCasts) do
         local cast = data.cast
         if not data.restrictedFriendly then
-            cast:SetValue(castTime)
+            cast:SetValue(castTime, interpolation)
             UpdateCastTime(data, now)
-        elseif data.restrictedOverlayEnabled and not pcall(cast.SetValue, cast, castTime) then
+        elseif data.restrictedOverlayEnabled and not pcall(cast.SetValue, cast, castTime, interpolation) then
             DisableRestrictedOverlay(data, "cast update failed")
         elseif data.restrictedOverlayEnabled then
             UpdateCastTime(data, now)
