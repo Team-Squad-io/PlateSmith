@@ -734,16 +734,18 @@ local function ThreatRecord(unit, refresh)
 end
 
 -- The client's duration object for a cast whose times are protected (newer clients): its time
--- left goes straight to SetFormattedText. nil when the client has none.
+-- left goes straight to SetFormattedText. nil when the client has none. Forever's DurationObject is a userdata (its
+-- methods through its metatable), so a userdata counts as well as a table; the method is looked up under pcall, as a
+-- userdata without an __index errors when indexed. (GitHub issue #1: the time never showed on Forever 1.60.1.)
 local function CastDuration(unit, channel)
     local api
     if channel then api = UnitChannelDuration else api = UnitCastingDuration end
     if type(api) ~= "function" then return nil end
     local ok, duration = pcall(api, unit)
-    if ok and IsReadable(duration) and type(duration) == "table"
-        and type(duration.GetRemainingDuration) == "function" then
-        return duration
-    end
+    local kind = ok and IsReadable(duration) and type(duration)
+    if kind ~= "table" and kind ~= "userdata" then return nil end
+    local found, method = pcall(function() return duration.GetRemainingDuration end)
+    if found and type(method) == "function" then return duration end
 end
 
 -- The cast's time left, one decimal, counting down for casts and channels alike. Readable times
@@ -851,6 +853,7 @@ local function HideOwnedParts(data)
     rounds.objectStatus.Release(data)
     rounds.objectHover.Release(data)
     rounds.looseMark.Release(data)
+    rounds.classMark.Release(data)
     rounds.backdrop.Release(data)
     rounds.totems.Release(data)
     rounds.extras.Clear(data)
@@ -1241,6 +1244,7 @@ local function UpdateIdentity(data)
     addPhases.Stop("quest", questStarted, questNested)
     UpdateRelationshipIcon(data)
     UpdatePvPIcon(data)
+    rounds.classMark.Update(data)
     UpdateClassification(data, kind)
     UpdateTargetName(data)
     MarkRules(data)
@@ -1331,6 +1335,10 @@ rounds.range = assert(PS._CreatePlateRange, "PlateSmith PlateRange missing")({
 rounds.behind = assert(PS._CreatePlateBehind, "PlateSmith PlateBehind missing")({
     active = active, MarkValues = MarkValues, RunBatch = RunBatch, Styles = Styles, AnchorPart = Placement.AnchorPart,
     MarkStacks = MarkStacks,
+})
+-- The Class icon part (Identity.lua's ClassMark): a player's class, read with the plate's identity.
+rounds.classMark = assert(PS._CreatePlateClassMark, "PlateSmith PlateClassMark missing")({
+    Styles = Styles, AnchorPart = Placement.AnchorPart, MarkStacks = MarkStacks,
 })
 -- The Objects' Backdrop (Backdrop.lua): placed in the flush's visibility pass, after what it wraps.
 rounds.backdrop = assert(PS._CreatePlateBackdrop, "PlateSmith PlateBackdrop missing")({
@@ -1812,6 +1820,7 @@ local function ApplyAppearance(data)
     data.raidIcon:SetSize(math.max(16, profile.nameFontSize + 6), math.max(16, profile.nameFontSize + 6))
     data.relationshipIcon:SetSize(markSize, markSize)
     data.pvpIcon:SetSize(markSize, markSize)
+    rounds.classMark.ApplyAppearance(data, markSize)
     StyledBar(data, "cast", data.cast, profile.healthTexture)
     StyledFont(data, "name", data.name, profile.nameFontSize)
     StyledFont(data, "level", data.level, detailFontSize)
@@ -2187,7 +2196,7 @@ local function ApplyLayout(data)
     -- What each update compares against is read again for a fresh plate or new settings.
     data.healthValue, data.healthMaxValue, data.powerRead = nil, nil, nil
     data.threatValuesSet, data.taggedShown, data.taggedGrey, data.pvpState = nil, nil, nil, nil
-    data.threatTextInfo, data.threatTextRevision = nil, nil
+    data.threatTextInfo, data.threatTextRevision, data.classState = nil, nil, nil
     -- What the plate's custom parts and rules read (MarkValues skips the rest).
     data.reads = Readers.PlateReads(data.profile, data.layout, settingsRevision)
     -- The profile too: a sparse context design without layout overrides shares World's layout table.
@@ -2307,6 +2316,7 @@ local function ApplyLayout(data)
         data.raidIcon:Hide()
         data.relationshipIcon:Hide()
         data.pvpIcon:Hide()
+        rounds.classMark.Release(data)
         data.classification:Hide()
         data.classificationIcon:Hide()
         data.tagged:Hide()
@@ -2887,6 +2897,7 @@ local function RemovePlate(unit)
     if data.beacon then data.beacon:Hide() end
     rounds.combo.Release(data)
     rounds.behind.Release(data)
+    rounds.classMark.Release(data)
     rounds.range.Release(data)
     rounds.targetedBy.Release(data)
     rounds.actionIcon.Release(data)
@@ -2994,12 +3005,15 @@ end
 
 -- A drawn part's rectangle about the plate's centre, from the layout's placement and the part's
 -- size, never its screen position: the client will not measure a restricted plate's regions.
+-- A name showing a protected value has no width (left and right nil) but still its line.
 local function SpotlightPartRect(data, transforms, key)
     local region, transform = data[key], transforms and transforms[key]
     if not (region and transform and RegionDrawn(region)) then return nil end
-    local width, height = SafeSize(region, data)
-    if not (width and height and width > 0 and height > 0) then return nil end
-    local halfWidth, halfHeight = width * transform.scale / 2, height * transform.scale / 2
+    local width, height = Placement.LineSize(region, data)
+    if not (height and height > 0) or (width and width <= 0) then return nil end
+    local halfHeight = height * transform.scale / 2
+    if not width then return nil, nil, transform.y - halfHeight, transform.y + halfHeight end
+    local halfWidth = width * transform.scale / 2
     return transform.x - halfWidth, transform.x + halfWidth, transform.y - halfHeight, transform.y + halfHeight
 end
 
@@ -3360,6 +3374,19 @@ function changes.UnitKinds()
             end
             -- Your own PvP flag (pvp.you), for what reads it.
             MarkValues(data, "pvpYou")
+        end
+    end
+end
+
+-- Combat ended: a plate added in combat may have been read while the client withheld what it is (a game object's
+-- UnitIsGameObject is protected then, so a dropped pouch was laid out as a level-0 enemy and stayed one until its
+-- plate came back). Each plate's kind is checked again; only one that changed is laid out again.
+function rounds.CombatEnded()
+    for unit, data in pairs(active) do
+        if data.unit == unit and changes.KindChanged(data) then
+            data.threatTrackRetryAt = nil
+            ApplyLayout(data)
+            ApplySpotlightStyle(data)
         end
     end
 end
@@ -4079,8 +4106,13 @@ local function HandleEvent(event, unit)
         local data = PlateFor(unit)
         if data then
             SafePlateUpdate(data, UpdateHealth)
-            -- Health reaching nothing is how a death usually arrives (rounds.DeathCheck).
-            if event == "UNIT_HEALTH" then SafePlateUpdate(data, rounds.DeathCheck) end
+            -- Health reaching nothing is how a death usually arrives (rounds.DeathCheck). A plate laid out alive whose
+            -- health still reads above nothing has not died: no read.
+            local health = data.healthValue
+            if event == "UNIT_HEALTH" and not (data.dead == false and IsReadable(health) and type(health) == "number"
+                and health > 0) then
+                SafePlateUpdate(data, rounds.DeathCheck)
+            end
         end
     elseif POWER_EVENTS[event] then
         local data = PlateFor(unit)
@@ -4168,6 +4200,8 @@ local function HandleEvent(event, unit)
         NamePolicy.FlushPending()
         -- A names-only switch given back in combat drops its record now (and one wanted again is set).
         NamePolicy.ApplyNamesOnly()
+        -- Plates whose kind was withheld in combat (a game object) are checked again.
+        rounds.CombatEnded()
         -- Aura reads that errored during combat are tried again.
         for plateUnit, data in pairs(active) do
             if data.unit == plateUnit and (data.buffsIndexError or data.debuffsIndexError) then

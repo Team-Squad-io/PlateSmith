@@ -228,6 +228,104 @@ function PvPMark.ColourOnBar(settings, profile, barShown)
     return onBar, not onBar
 end
 
+-- A player's class emblem (the Class icon part, classIcon; 1.4.1): the client's "classicon-<class>" atlas where it has
+-- it, else the character-creation class sheet cropped by the client's CLASS_ICON_TCOORDS. Only a readable class file is
+-- ever drawn (no sink takes a protected one): a protected or unknown class draws nothing. One route for the plates and
+-- Studio's preview.
+local ClassMark = {
+    ATLAS = "classicon-%s",
+    SHEET = "Interface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES",
+}
+PS.ClassMark = ClassMark
+
+-- Draws classFile's emblem on icon; false (nothing set) for a class it cannot draw.
+function ClassMark.Apply(icon, classFile)
+    if not PS.Secret.IsReadable(classFile) or type(classFile) ~= "string" or not classFile:match("^%u+$") then
+        return false
+    end
+    local atlas = string.format(ClassMark.ATLAS, classFile:lower())
+    if type(icon.SetAtlas) == "function" and HasAtlas(atlas) then
+        local ok, result = pcall(icon.SetAtlas, icon, atlas)
+        if ok and result ~= false then return true end
+    end
+    local sheet = rawget(_G, "CLASS_ICON_TCOORDS")
+    local coords = type(sheet) == "table" and sheet[classFile]
+    if type(coords) ~= "table" then return false end
+    for index = 1, 4 do
+        if type(coords[index]) ~= "number" then return false end
+    end
+    icon:SetTexture(ClassMark.SHEET)
+    icon:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+    return true
+end
+
+-- unit's class file while the client says readably that it is a player and names its class readably, else nil.
+function ClassMark.Read(unit)
+    if PS.Secret.ReadBoolean(UnitIsPlayer, unit) ~= true then return nil end
+    return PS.Secret.String((PS.Secret.ClassFile(unit)))
+end
+
+-- The plate side. context: Styles, AnchorPart (Placement), MarkStacks. A plate's icon is made the first time its layout
+-- shows the part, in its own layer over the plate (off by default, so a plate without it costs nothing); Placement
+-- places it from then on.
+PS._CreatePlateClassMark = function(context)
+    local Styles, AnchorPart, MarkStacks = context.Styles, context.AnchorPart, context.MarkStacks
+    local Pass = {}
+
+    local function PartShown(data)
+        local position = data.own and not data.object and data.layout and data.layout.classIcon
+        return type(position) == "table" and not S.TurnedOff(position)
+    end
+
+    function Pass.Ensure(data)
+        if data.classIcon then return data.classIcon end
+        local layer = CreateFrame("Frame", nil, data.overlay)
+        layer:SetAllPoints(data.overlay)
+        data.layerFrames.classIcon = layer
+        local icon = layer:CreateTexture(nil, "OVERLAY")
+        icon:Hide()
+        data.classIcon = icon
+        AnchorPart(data, icon, "classIcon")
+        layer:SetFrameLevel(Styles.LayerLevel(data, "classIcon"))
+        data.stackStatesFor = nil
+        MarkStacks(data)
+        return icon
+    end
+
+    -- After a settings or layout change (Lifecycle's ApplyAppearance): made where the layout shows it, at the plates'
+    -- mark size (size, the PvP mark's).
+    function Pass.ApplyAppearance(data, size)
+        if not data.classIcon and not PartShown(data) then return end
+        Pass.Ensure(data):SetSize(size, size)
+    end
+
+    -- The icon for the plate's unit (Lifecycle's UpdateIdentity: a new unit, its identity events, a relayout), for a
+    -- player only: an NPC on Enemies never has one. data.classState: the class drawn, or "none" (nil after a layout or
+    -- a reuse, so it is drawn again). Returns whether it changed.
+    function Pass.Update(data)
+        local classFile = PartShown(data) and ClassMark.Read(data.unit) or nil
+        local state = classFile or "none"
+        if data.classState == state then return false end
+        data.classState = state
+        local icon = data.classIcon
+        if classFile and not icon then icon = Pass.Ensure(data) end
+        if not icon then return true end
+        if classFile and ClassMark.Apply(icon, classFile) then
+            icon:Show()
+        elseif icon:IsShown() then
+            icon:Hide()
+        end
+        return true
+    end
+
+    -- The plate leaves its unit, or is not drawn: its class goes with it.
+    function Pass.Release(data)
+        data.classState = nil
+        if data.classIcon and data.classIcon:IsShown() then data.classIcon:Hide() end
+    end
+    return Pass
+end
+
 -- {level.smart}: the level and the mark's letters as one text ("60+", "60R+"; a hidden level is "??", a world
 -- boss "??B"); a level that is not a readable number is passed on as it is.
 local function LevelBase(level) return level < 0 and "??" or level end
@@ -694,7 +792,7 @@ PS._CreatePlateIdentity = function(context)
     -- A friendly NPC's title ("Flight Master") for Friendly NPCs' Guild / title line: the second line of its tooltip, the
     -- game's only way to give it. An NPC without one has its level line there ("Level 30 Humanoid"), told apart by the
     -- game's own level texts, so it works in every language. Kept per creature ID, as a title never changes (false:
-    -- none); bounded, starting over when full.
+    -- none), or per GUID for a unit without one (a pet: its owner's name is its title); bounded, starting over when full.
     local titles, titleCount, levelPatterns = {}, 0, nil
     local MAX_TITLES = 400
     local function IsLevelLine(text)
@@ -729,12 +827,12 @@ PS._CreatePlateIdentity = function(context)
     end
     local function NpcTitle(unit)
         local guid = PS.Secret.ReadGUID(unit)
-        local npcID = guid and tonumber(guid:match("^Creature%-[^-]*%-[^-]*%-[^-]*%-[^-]*%-(%d+)"))
-        if npcID and titles[npcID] ~= nil then return titles[npcID] or nil end
+        local key = guid and (tonumber(guid:match("^Creature%-[^-]*%-[^-]*%-[^-]*%-[^-]*%-(%d+)")) or guid)
+        if key and titles[key] ~= nil then return titles[key] or nil end
         local title = ReadTitle(unit)
-        if npcID then
+        if key then
             if titleCount >= MAX_TITLES then titles, titleCount = {}, 0 end
-            titles[npcID], titleCount = title, titleCount + 1
+            titles[key], titleCount = title, titleCount + 1
         end
         return title or nil
     end

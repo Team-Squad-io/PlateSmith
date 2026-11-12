@@ -43,7 +43,7 @@ local editorContextForKey = {
     raidIcon = "raidIcon", relationshipIcon = "relationshipIcon", pvpIcon = "pvpIcon", classification = "classification",
     buffs = "buffs", debuffs = "debuffs", threat = "threat", combo = "combo", targetedBy = "targetedBy", tagged = "tagged",
     actionIcon = "actionIcon", statusText = "statusText", looseMark = "looseMark", backdrop = "backdrop", range = "range",
-    behindYou = "behindYou",
+    behindYou = "behindYou", classIcon = "classIcon",
 }
 for index = 1, VALUE_SLOT_COUNT do editorContextForKey["value" .. index] = "value" end
 -- Settings search finds a part's Display rows through it (Search.lua).
@@ -69,6 +69,7 @@ local editorDescriptions = {
     raidIcon = L["Shows the assigned Blizzard raid target icon."],
     relationshipIcon = L["Marks current group or guild members outdoors."],
     pvpIcon = L["Marks a PvP-flagged friendly player outdoors."],
+    classIcon = L["The player's class, as its emblem. Players only: never on an NPC's plate."],
     classification = L["Shows elite, rare, rare elite, or world-boss status."],
     buffs = L["Buffs on this unit."],
     debuffs = L["Debuffs on this unit."],
@@ -860,7 +861,7 @@ local ADD_MENU = {
         tip = L["Built-in text parts: the name, level, threat and the like."] },
     { label = L["Bars"], keys = { "health", "power", "cast" }, tip = L["The health, power and cast bars."] },
     { label = L["Icons"], keys = { "quest", "questLoot", "raidIcon", "relationshipIcon", "pvpIcon", "classification", "combo",
-        "targetedBy", "actionIcon", "looseMark", "behindYou" }, tip = L["Built-in marks and icons."] },
+        "targetedBy", "actionIcon", "looseMark", "behindYou", "classIcon" }, tip = L["Built-in marks and icons."] },
     { label = L["Auras"], keys = { "buffs", "debuffs" }, tip = L["The rows of buff and debuff icons."] },
     { label = L["Boxes"], keys = { "backdrop" }, tip = L["The box behind an object's parts."] },
 }
@@ -883,10 +884,11 @@ ADD_MENU.TIPS = {
     actionIcon = L["The game's icon for what you can do with it: loot, talk, gather..."],
     looseMark = L["A mark while the mob is loose, for tanks."],
     behindYou = L["Marks your target's plate while the game says it is behind you."],
+    classIcon = L["The player's class emblem, on players' plates."],
     buffs = L["The unit's buffs."], debuffs = L["The unit's debuffs."], backdrop = L["A box behind the plate's parts."],
 }
--- New in 1.4.0: a tag after the entry's name.
-ADD_MENU.NEW = { range = true, behindYou = true }
+-- New in 1.4.0 and 1.4.1: a tag after the entry's name.
+ADD_MENU.NEW = { range = true, behindYou = true, classIcon = true }
 
 function Options:EditorAddMenuEntries()
     local newTag = L["New"]

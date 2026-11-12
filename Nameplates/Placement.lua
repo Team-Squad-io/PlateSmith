@@ -43,8 +43,6 @@ PS._CreatePlatePlacement = function(context)
         return ReadNumber(region, "GetStringWidth")
     end
 
-    -- A region's size without failing: the client can refuse to measure a restricted nameplate's
-    -- regions. Text is its rendered string with its font's height; an icon or bar its own size.
     -- A text's line: its font's size, else its string's or frame's height.
     local function TextHeight(region)
         if region.GetFont then
@@ -54,6 +52,8 @@ PS._CreatePlatePlacement = function(context)
         return ReadNumber(region, "GetStringHeight") or ReadNumber(region, "GetHeight")
     end
 
+    -- A region's size without failing: the client can refuse to measure a restricted nameplate's
+    -- regions. Text is its rendered string with its font's height; an icon or bar its own size.
     local function SafeSize(region, data)
         local width, height
         if IsText(region) then
@@ -80,6 +80,19 @@ PS._CreatePlatePlacement = function(context)
             end
         end
         return width, height
+    end
+
+    -- SafeSize, or for a text showing a protected value (a threat %, a restricted plate's name),
+    -- whose width cannot be read, its line's height alone: nil, height. Up or down stacks and the
+    -- spotlight's height need no more.
+    local function LineSize(region, data)
+        local width, height = SafeSize(region, data)
+        if width then return width, height end
+        if IsText(region) then
+            height = TextHeight(region)
+            if height then return nil, height end
+        end
+        return nil
     end
 
     -- Where each layout entry is drawn (Schema's LayoutTransforms). Without stacks the result is
@@ -114,16 +127,10 @@ PS._CreatePlatePlacement = function(context)
     local function MeasurePart(data, key)
         local region = PartRegion(data, key)
         if not region or not region.GetHeight then return nil end
-        local width, height = SafeSize(region, data)
-        local text = IsText(region)
-        if not width then
-            -- A text showing a protected value (the threat text) has no readable width, but its
-            -- line still takes its room in an up or down stack (Schema's StackOffsets).
-            height = text and TextHeight(region)
-            if not height then return nil end
-        elseif text then
-            data.measuredWidths[key] = width
-        end
+        -- A protected text has no width: its line still takes its room in an up or down stack.
+        local width, height = LineSize(region, data)
+        if not height then return nil end
+        if width and IsText(region) then data.measuredWidths[key] = width end
         -- Only what the plate shows right now takes space: a hidden power bar, an idle cast bar or
         -- a missing guild line closes up (it is still placed). Combo points on the health bar are not
         -- in their stack's flow, so they take none either.
@@ -672,6 +679,7 @@ PS._CreatePlatePlacement = function(context)
         if data.looseMark then data.looseMark:ClearAllPoints() end
         if data.range then data.range:ClearAllPoints() end
         if data.behindYou then data.behindYou:ClearAllPoints() end
+        if data.classIcon then data.classIcon:ClearAllPoints() end
         -- The Backdrop (Backdrop.lua) wraps parts placed here: let go and hidden until the visibility pass fits it again.
         if data.backdrop then
             data.backdrop:ClearAllPoints()
@@ -706,6 +714,8 @@ PS._CreatePlatePlacement = function(context)
         -- So are the Range and Behind you parts (Range.lua, Behind.lua).
         if data.range and data.layout.range then AnchorPart(data, data.range, "range") end
         if data.behindYou and data.layout.behindYou then AnchorPart(data, data.behindYou, "behindYou") end
+        -- And the Class icon (Identity.lua's ClassMark); only Enemies' and Players' layouts have the entry.
+        if data.classIcon and data.layout.classIcon then AnchorPart(data, data.classIcon, "classIcon") end
         -- The classification's icon is placed like its text, not centred on it: an empty text is
         -- 0 px wide, so an icon on its centre would sit half over the bar it is pinned to.
         if data.classificationIcon then AnchorPart(data, data.classificationIcon, "classification") end
@@ -814,7 +824,7 @@ PS._CreatePlatePlacement = function(context)
     end
 
     return {
-        PartRegions = PartRegions, SafeSize = SafeSize, AnchorPart = AnchorPart,
+        PartRegions = PartRegions, SafeSize = SafeSize, LineSize = LineSize, AnchorPart = AnchorPart,
         HasStacks = HasStacks, Transforms = Transforms, RestoreParentFaded = RestoreParentFaded, RegionAlpha = RegionAlpha,
         ApplyParentVisibility = ApplyParentVisibility, UpdateValueAnchors = UpdateValueAnchors,
         ApplyComponentLayout = ApplyComponentLayout, StackStateChanged = StackStateChanged, ReflowStacks = ReflowStacks,

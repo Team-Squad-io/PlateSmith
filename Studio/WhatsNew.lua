@@ -3,19 +3,23 @@ local Options = assert(PS.Options, "PlateSmith editor model missing")
 local L = PS.L
 
 -- The release What's new window: on the first login after PlateSmith's release changes (the release part of
--- PS.RUNTIME_BUILD, so a build's "+stamp" never counts), a release's highlights (Data/ReleaseNotes.lua) over a dimmed
--- screen: a large title over one card in Studio's panel look (the subtitle, then each section's heading and its
--- gold-dotted items, the reminder at its foot), then Don't show on startup, Open Studio and Close. The last release seen is
--- account state (releaseSeen), recorded at every login whether or not the window shows; a fresh install only records
--- it. Off (releaseNewsOff: the window's box and Settings › Studio › Notices alike), it never shows on login; Settings ›
--- Help › What's new... shows it any time. Never in combat (it waits for combat to end) and never before the loading
--- screen is gone; a failure stays quiet.
+-- PS.RUNTIME_BUILD, so a build's "+stamp" never counts), a release's highlights (Data/ReleaseNotes.lua) in the
+-- middle of the screen, which still takes clicks round it (only the window's own area does; 1.4.1: a dimmed,
+-- click-catching screen blocked the game until it closed): one window in Studio's panel look holding the title
+-- and close button, the notes (the subtitle, then each section's heading and its gold-dotted items, the reminder
+-- at their foot), then Don't show on startup, Open Studio and Close. The last release seen is account state
+-- (releaseSeen), recorded at every login whether or not the window shows; a fresh install only records it. Off
+-- (releaseNewsOff: the window's box and Settings › Studio › Notices alike), it never shows on login; Settings ›
+-- Help › What's new... shows it any time. Never in combat (it waits for combat to end) and never before the
+-- loading screen is gone; a failure stays quiet.
 local WhatsNew = {}
 Options.WhatsNew = WhatsNew
 
 local DELAY = 3
 -- The card: width, inner padding, the dot's column, the space between items and between sections.
 local CARD = { width = 600, pad = 28, dot = 16, itemGap = 7, sectionGap = 14 }
+-- The window round them: the title's distance from its top, the space under the buttons.
+local WINDOW = { top = 22, bottom = 22 }
 
 -- The release part of build (PS.RUNTIME_BUILD by default): "1.4.0" from "1.4.0+20261110.3"; nil when it has none.
 function WhatsNew.Release(build)
@@ -118,7 +122,8 @@ end
 local function FillCard(card, entry)
     local TextHeight = Options.LookUpdate.TextHeight
     card.subtitle:SetText(entry.subtitle or "")
-    local y = CARD.pad + TextHeight(card.subtitle) + 24
+    card.subtitle:SetShown(entry.subtitle ~= nil)
+    local y = entry.subtitle and CARD.pad + TextHeight(card.subtitle) + 24 or CARD.pad
     local used = { heading = 0, item = 0 }
     for index, section in ipairs(entry.sections) do
         if index > 1 then y = y + CARD.sectionGap end
@@ -157,40 +162,40 @@ end
 local function Dialog()
     if WhatsNew.dialog then return WhatsNew.dialog end
     local chrome = Options.studioChrome
-    -- The whole screen, dimmed; Escape closes it.
+    -- The whole screen as the frame Escape closes, taking no clicks and drawing nothing itself; the content (title,
+    -- card, box and buttons) takes the clicks on it.
     local dialog = CreateFrame("Frame", "PlateSmithWhatsNewDialog", UIParent)
     dialog:SetAllPoints(UIParent)
     dialog:SetFrameStrata("FULLSCREEN_DIALOG")
-    dialog:EnableMouse(true)
-    local dim = dialog:CreateTexture(nil, "BACKGROUND")
-    dim:SetAllPoints(dialog)
-    dim:SetColorTexture(0, 0, 0, 0.6)
-    dialog.dim = dim
+    dialog:EnableMouse(false)
     PS.UI.Window.CloseOnEscape("PlateSmithWhatsNewDialog", dialog)
+    -- One window in Studio's dialog look: the title and close button at its top, the notes, then the box and buttons.
     local content = CreateFrame("Frame", nil, dialog)
     content:SetPoint("CENTER", dialog, "CENTER", 0, 20)
     content:SetWidth(CARD.width)
+    content:EnableMouse(true)
+    chrome.DressStudioDialog(content)
     dialog.content = content
-    local title = Text(content, 30, chrome.GOLD)
-    title:SetPoint("TOP", content, "TOP", 0, 0)
+    local title = Text(content, 24, chrome.GOLD)
+    title:SetPoint("TOP", content, "TOP", 0, -WINDOW.top)
     title:SetShadowColor(0, 0, 0, 1)
     title:SetShadowOffset(2, -2)
     dialog.title = title
     local closeX = chrome.CreateCloseButton(content)
-    closeX:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, 4)
+    closeX:SetPoint("TOPRIGHT", content, "TOPRIGHT", -10, -10)
+    closeX:SetFrameLevel(content:GetFrameLevel() + 25)
     closeX:SetScript("OnClick", function() dialog:Hide() end)
     PS.UI.Controls.AttachTooltip(closeX, L["Close"], {})
     dialog.closeX = closeX
-    -- The one card: Studio's dark panel, the subtitle centred at its top, the sections, the reminder at its foot.
+    -- The notes: the subtitle centred at their top, the sections, the reminder at their foot.
     local card = CreateFrame("Frame", nil, content)
-    chrome.DressStudioDialog(card)
     card:SetWidth(CARD.width)
     card.pools = { heading = {}, item = {} }
     card.subtitle = Text(card, 14, LIGHT)
     card.subtitle:SetPoint("TOP", card, "TOP", 0, -CARD.pad)
     card.subtitle:SetWidth(CARD.width - 2 * CARD.pad)
     card.again = Text(card, 13, DIM)
-    card.again:SetText(L["Studio › Settings › Help › What's new... shows this again."])
+    card.again:SetText(L["You can open this again from Settings › Help › What's new..."])
     dialog.card, dialog.subtitle, dialog.again = card, card.subtitle, card.again
     local hide = chrome.KitCheckbox(content, L["Don't show on startup"], function(box)
         WhatsNew.SetEnabled(not box:GetChecked())
@@ -212,15 +217,15 @@ local function Dialog()
     return dialog
 end
 
--- Lays the window out for release's notes: the title, the card, then the box and the buttons under it.
+-- Lays the window out for release's notes: the title, the notes, then the box and the buttons, all inside it.
 local function Layout(dialog, entry, studioShown)
     local TextHeight = Options.LookUpdate.TextHeight
-    local top = TextHeight(dialog.title) + 18
+    local top = WINDOW.top + TextHeight(dialog.title) - 6
     local card = dialog.card
     card:SetHeight(math.floor(FillCard(card, entry) + 0.5))
     card:ClearAllPoints()
     card:SetPoint("TOP", dialog.content, "TOP", 0, -top)
-    local y = top + card:GetHeight() + 16
+    local y = top + card:GetHeight() - 6
     dialog.hide:ClearAllPoints()
     dialog.hide:SetPoint("TOP", dialog.content, "TOP", -78, -y)
     y = y + 36
@@ -229,7 +234,7 @@ local function Layout(dialog, entry, studioShown)
     dialog.open:SetPoint("TOP", dialog.content, "TOP", -94, -y)
     dialog.close:ClearAllPoints()
     dialog.close:SetPoint("TOP", dialog.content, "TOP", studioShown and 0 or 94, -y)
-    dialog.content:SetHeight(y + 32)
+    dialog.content:SetHeight(y + 32 + WINDOW.bottom)
 end
 
 -- The window for release (by default the newest with notes, WhatsNew.Latest); nil when there are none. Records

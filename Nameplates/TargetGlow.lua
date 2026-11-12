@@ -37,7 +37,7 @@ Glow.BODY_REACH = 12
 -- A plate without a bar (names-only) is lit round its name line: the name and, across, the level and icons
 -- pinned to it (NAME_LINE, directly or along a chain of pins), and down to the guild line under it while it
 -- is within BODY_REACH of the name (UNDER_NAME). Marks and auras placed further off stay out.
-Glow.NAME_LINE = { "level", "pvpIcon", "relationshipIcon" }
+Glow.NAME_LINE = { "level", "pvpIcon", "relationshipIcon", "classIcon" }
 Glow.UNDER_NAME = { "guild" }
 
 -- frame: anchored round the plate; body: its pieces and the pulse, so the pulse's alpha never replaces

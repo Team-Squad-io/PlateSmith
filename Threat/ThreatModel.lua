@@ -9,7 +9,10 @@ local Model = {}
 PS.ThreatModel = Model
 
 -- A form whose modifier multiplies all of the player's threat in it (ThreatService:ReadPlayerForm's form words).
-Model.FORMS = { bear = { mod = 2.15, label = L["Bear Form"] } }
+-- Cat Form: Classic's 0.71. On Forever one cat pull (2026-11-11, level 35, one mob) read the game's figure at 0.66 of
+-- the estimate without it, which fits 0.71 with Thorns and the hits after the last threat sample in it; to be
+-- confirmed on a few more cat pulls (TRACKING).
+Model.FORMS = { bear = { mod = 2.15, label = L["Bear Form"] }, cat = { mod = 0.71, label = L["Cat Form"] } }
 
 -- Abilities by their English name in lower case (the probe records Forever's spell IDs; names until then). mod: the
 -- damage's threat multiplier (false: not known yet, counted as 1 and flagged). flat: the threat of each cast, by a

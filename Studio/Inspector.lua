@@ -232,6 +232,8 @@ local SHOW_ON_PLATES = {
     { key = "title", label = L["Title"], part = "guild", plateType = "friendlyNPC", where = L["Friendly NPCs"] },
     { key = "range", label = L["Range"], part = "range", plateType = "enemy" },
     { key = "behindYou", label = L["Behind you"], part = "behindYou", plateType = "enemy" },
+    { key = "classIcon", label = L["Class icon"], part = "classIcon", plateType = "friendlyPlayer",
+        where = L["Players and Enemies"] },
     { key = "targetedBy", label = L["Targeted by"], part = "targetedBy", plateType = "enemy", where = L["Enemies"] },
     { key = "looseMark", label = L["Loose mark"], part = "looseMark", plateType = "enemy", where = L["Enemies"] },
 }
@@ -1537,6 +1539,15 @@ local function BuildTextContexts(page)
         K.AttachHelp(forRow, L["Target only: your target's plate. Target and focus: your focus's plate too."])
         ColourRow(section, L["Colour"], "behindColour", Behind.PART.COLOUR)
         TextRows(section, { context = "behindYou", autoText = L["Auto: follows the name size (the arrow too)"] })
+    end)
+
+    -- The Class icon (Identity.lua's ClassMark): what it shows and when; its place and size are Placement's.
+    CreateContext(page, "classIcon", function(context)
+        local section = K.Section(context, L["DISPLAY"])
+        K.Add(context, section)
+        K.Add(section, K.Help(section, L["The player's class, as its emblem, on players' plates only: an NPC never has "
+            .. "one. Where the game keeps a player's class hidden, nothing shows, so it never guesses. It sits left of the "
+            .. "PvP icon and the level, taking their place while they show nothing. Test values: Player."]))
     end)
 
     -- Parts with nothing of their own beyond Placement, Style and Rules.

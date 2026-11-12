@@ -86,7 +86,7 @@ end
 -- They stay in the layout (the All NPCs look's), on the plates as empty as ever.
 local NEVER_ON_TOTEM = { cast = true, power = true, buffs = true, debuffs = true, quest = true, questLoot = true,
     classification = true, tagged = true, threat = true, combo = true, targetName = true, targetedBy = true,
-    guild = true, behindYou = true }
+    guild = true, behindYou = true, classIcon = true }
 Options.editorNeverOnTotem = NEVER_ON_TOTEM
 -- The custom part sources a totem never fills either (no power, no threat table): + Add lists them off under Totems.
 Options.editorNeverOnTotemSource = { powerPercent = true, powerCurrent = true, powerValue = true, threatPercent = true,
@@ -113,6 +113,11 @@ function Options:IsEditorComponentRelevant(key, settings, includeRemoved)
     -- as their other parts are. The Behind you part (Behind.lua): the same, but not on Objects.
     if key == "range" and position == nil then return false end
     if key == "behindYou" and (position == nil or self:IsEditorObject()) then return false end
+    -- The Class icon (Identity.lua's ClassMark): Enemies (their players) and Players, not in Blizzard's dungeon names.
+    if key == "classIcon" and (position == nil or not (self:IsEditorEnemy() or self.editorProfile == "friendlyPlayer")
+        or (self.editorProfile == "friendlyPlayer" and self.editorDesign == "dungeon")) then
+        return false
+    end
     -- Objects: the name, the quest mark, the Action icon, Range, the Status text and the Backdrop (no custom parts).
     if self:IsEditorObject() then return key == "name" or key == "quest" or key == "actionIcon" or key == "range" end
     if NEVER_ON_TOTEM[key] and self:IsEditorTotem() then return false end

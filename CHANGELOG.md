@@ -2,6 +2,43 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.4.1
+
+### New
+
+- **Class icon.** A player's class emblem on their plate. Add it in Studio › **+ Add › Icons › Class icon**, on the
+  **Players** tab, the **Enemies** tab or both: on Enemies it shows on enemy players only, never on NPCs. It sits left
+  of the level (and of the PvP icon on Players) and can be moved, sized and hidden like any part. Where the game keeps
+  a player's class hidden from addons, no icon shows. It is off until you add it, so your plates look as they did.
+
+### Changed
+
+- **Threat breakdown, pull by pull.** The window now lists your last ten pulls down its left side, each named by the
+  mob you had the most threat on (with "+2" for two more), its length, estimated threat and threat per second; click
+  one to see it. Each ability is a bar sized by its threat, with its threat, share and threat per second; hover a bar
+  for the working (damage times modifier, casts, threat per cast). An ability whose modifier or formula is not known
+  yet shows in red.
+- **Threat breakdown counts Cat Form.** Your threat in Cat Form is now counted at x0.71 (Classic's figure); before,
+  the estimate ran about 1.5 times the game's own.
+- **Threat breakdown: group replay.** A second tab, **Group replay**, plays back the whole group's threat on your
+  target through the pull: a graph with a line per member in class colours (click or drag it to move through the
+  pull, or press Play, at up to 8x), the group at that moment as bars (who has aggro, and everyone else's share of
+  their threat), and a list of each time aggro changed hands (click one to jump there). It is recorded while you fight,
+  on whatever you have targeted, where the game lets addons read the group's threat (not in some instances).
+
+### Fixed
+
+- **Cast bar time left shows on Forever.** With **Show time left** on, enemy cast bars showed the spell's name but
+  never the time left while fighting (Studio's preview showed it): the game hands the time over in a form PlateSmith
+  turned away. Reported, with the fix, on GitHub (issue #1).
+- **What's new no longer blocks the game.** The window that shows once after an update dimmed the whole screen and
+  caught every click until you closed it; now only the window itself takes clicks and the game stays usable round it.
+- **Objects that appear in combat get their plate back.** An object that turned up mid-fight (a dropped pouch, say)
+  showed an empty plate with no name until you walked away and back: in combat the game hides that it is an object,
+  so it was drawn as a creature. When combat ends, PlateSmith now checks every plate again and draws it properly.
+- **Spotlight box covers a hidden name.** When the game keeps a plate's name hidden from addons, the target spotlight
+  box now still reaches the name's top instead of stopping at the health bar.
+
 ## 1.4.0
 
 ### New

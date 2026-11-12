@@ -907,6 +907,25 @@ PS.RegisterEditorComponent("pvpIcon", {
     refresh = function(component, settings) MarkerSize(component, settings, 4, 14) end,
 })
 
+-- The Class icon as the plates draw it (Identity.lua's ClassMark.Apply), at the plates' mark size: the sample's class
+-- while Test values' Player is ticked (yours: the player samples are you). An NPC sample has none on the plates: your
+-- class faint, so it can still be found and placed.
+PS.RegisterEditorComponent("classIcon", {
+    label = L["Class icon"], x = -88, y = 16, width = 16, height = 16, visible = false,
+    create = function(component)
+        component.previewIcon = component:CreateTexture(nil, "OVERLAY")
+        component.previewIcon:SetAllPoints()
+    end,
+    refresh = function(component, profile)
+        MarkerSize(component, profile, 4, 14)
+        local ClassMark, icon = PS.ClassMark, component.previewIcon
+        local samples = (component.previewOwner or Options).templateSamples or TEMPLATE_SAMPLES
+        local shown = samples["unit.player"] == true and ClassMark.Apply(icon, (Options.SampleClassFile(samples)))
+        if not shown and not ClassMark.Apply(icon, (PS.Secret.ClassFile("player"))) then ClassMark.Apply(icon, "WARRIOR") end
+        icon:SetAlpha(shown and 1 or 0.3)
+    end,
+})
+
 PS.RegisterEditorComponent("classification", {
     label = L["Elite / rare mark"], x = -94, y = 0, width = 18, height = 18,
     create = function(component)

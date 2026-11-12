@@ -272,8 +272,10 @@ local function Remove(layout, key)
             return
         end
     end
+    -- (A part off the plate until added keeps its default pin, as the Class icon on the PvP mark: drawn nowhere, so
+    -- the look's layout keeps it as the defaults have it.)
     for childKey, child in pairs(layout) do
-        if child.parent == key then
+        if child.parent == key and not child.removed then
             if childKey == "questLoot" then child.removed, child.visible = true, false
             else child.parent = position.parent end
         end

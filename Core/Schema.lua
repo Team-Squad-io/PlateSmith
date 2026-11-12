@@ -516,6 +516,10 @@ profileDefaults.enemy.layout.looseMark = { x = 3, y = 0, visible = false, parent
 -- mark (right of the name on names-only plates); Behind you right of the name (after the Loose mark, taking its place
 -- while it is off), above it on names-only plates. Their parents are parts no look moves or deletes, so every look's
 -- layouts keep them as the defaults have them. (A function, so the main chunk gains no locals.)
+-- The Class icon part (Identity.lua's ClassMark, 1.4.1): a player's class emblem, on Enemies (their players only) and
+-- Players, off the plate until + Add puts it on (removed), like Range and Behind you. Left of the PvP mark, which sits
+-- left of the level: while the mark shows nothing (or is off, as on Enemies) it takes its place, and the level's while
+-- that is off. Friendly NPCs and Objects have no entry.
 ;(function()
     for _, plateType in ipairs({ "enemy", "friendlyPlayer", "friendlyNPC" }) do
         local profile = profileDefaults[plateType]
@@ -525,6 +529,14 @@ profileDefaults.enemy.layout.looseMark = { x = 3, y = 0, visible = false, parent
         if profile.namesLayout then
             profile.namesLayout.range = { x = 3, y = 0, visible = false, removed = true, parent = "name", attach = "right" }
             profile.namesLayout.behindYou = { x = 0, y = 2, visible = false, removed = true, parent = "name", attach = "top" }
+        end
+        if plateType ~= "friendlyNPC" then
+            for _, field in ipairs({ "layout", "namesLayout" }) do
+                if profile[field] then
+                    profile[field].classIcon = { x = -2, y = 0, visible = false, removed = true, parent = "pvpIcon",
+                        attach = "left" }
+                end
+            end
         end
     end
 end)()
@@ -569,10 +581,11 @@ for profileKey, profile in pairs(profileDefaults) do
     profile.valueSlots = DefaultValueSlots()
     profile.auraLayouts = NormalizeAuraLayouts(nil)
 end
--- Blizzard draws friendly names in dungeons: no Action icon, Range or Behind you there.
+-- Blizzard draws friendly names in dungeons: no Action icon, Range, Behind you or Class icon there.
 profileDefaults.friendlyNPC.dungeonNamesLayout.actionIcon = nil
 profileDefaults.friendlyNPC.dungeonNamesLayout.range, profileDefaults.friendlyNPC.dungeonNamesLayout.behindYou = nil, nil
 profileDefaults.friendlyPlayer.dungeonNamesLayout.range, profileDefaults.friendlyPlayer.dungeonNamesLayout.behindYou = nil, nil
+profileDefaults.friendlyPlayer.dungeonNamesLayout.classIcon = nil
 
 local defaultRelationshipColours = {
     group = { r = 0.25, g = 1, b = 0.45 },
@@ -1073,9 +1086,10 @@ do
         -- Dynamic: pinned to an edge of its parent part. (x, y) is then the gap from the parent's
         -- edge to the part's facing edge, so it follows the parent's size (a longer name moves a
         -- level pinned to its left). Needs sizes; a group parent has none, so it stays static.
-        -- A turned-off parent passes its place on (PinTarget); the gap stays in the parent's units.
+        -- A turned-off parent passes its place on (PinTarget); the gap stays in the parent's units. A part off the plate
+        -- (removed: drawn nowhere, and nothing is placed on it) is not measured.
         local edge = ATTACH_EDGES[position.attach]
-        local target = edge and measure and PinTarget(layout, key, st.absent)
+        local target = edge and measure and position.removed ~= true and PinTarget(layout, key, st.absent)
         if target then
             local base = parent
             if target ~= position.parent then
@@ -2518,6 +2532,7 @@ do
         { key = "title", parts = { "guild" }, plates = { friendlyNPC = true } },
         { key = "range", parts = { "range" }, plates = withObjects },
         { key = "behindYou", parts = { "behindYou" }, plates = units },
+        { key = "classIcon", parts = { "classIcon" }, plates = { enemy = true, enemyPlayer = true, friendlyPlayer = true } },
         { key = "targetedBy", parts = { "targetedBy" }, plates = ENEMY_PLATES },
         { key = "looseMark", parts = { "looseMark" }, plates = ENEMY_PLATES },
     }) do partSwitches[switch.key] = switch end

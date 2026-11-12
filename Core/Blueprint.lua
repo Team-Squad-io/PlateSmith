@@ -155,14 +155,15 @@ local NEW_TEXTURES = Set("modern")
 -- (worked out on first use, in place of true), and then the export is version 4.
 local NEW_PLATE_TYPES = Set("object")
 -- Layout entries new since 1.1.1 in its plate types' layouts (the Action icon on Friendly NPCs, the Loose mark on
--- Enemies, the Objects' Backdrop, which Studio's copy of any layout holds, and 1.4.0's Range and Behind you parts): one
--- as the default has it (off) is left out, as 1.1.1 wrote that layout, and an import gives it the default; one changed,
--- or one another entry is pinned to, is kept and the export is version 4. NEW_LAYOUT_PLATES: the plate types each is
--- drawn on. NEW_LAYOUT_DEFAULTS: each type's exported defaults.
-local NEW_LAYOUT_ENTRIES, NEW_LAYOUT_DEFAULTS = { "actionIcon", "looseMark", "backdrop", "range", "behindYou" }, {}
+-- Enemies, the Objects' Backdrop, which Studio's copy of any layout holds, 1.4.0's Range and Behind you parts and
+-- 1.4.1's Class icon): one as the default has it (off) is left out, as 1.1.1 wrote that layout, and an import gives it
+-- the default; one changed, or one another entry is pinned to, is kept and the export is version 4. NEW_LAYOUT_PLATES:
+-- the plate types each is drawn on. NEW_LAYOUT_DEFAULTS: each type's exported defaults.
+local NEW_LAYOUT_ENTRIES, NEW_LAYOUT_DEFAULTS = { "actionIcon", "looseMark", "backdrop", "range", "behindYou", "classIcon" },
+    {}
 local NEW_LAYOUT_PLATES = { actionIcon = S.ACTION_PLATES, looseMark = { enemy = true }, backdrop = { object = true },
     range = { enemy = true, friendlyPlayer = true, friendlyNPC = true, object = true },
-    behindYou = { enemy = true, friendlyPlayer = true, friendlyNPC = true } }
+    behindYou = { enemy = true, friendlyPlayer = true, friendlyNPC = true }, classIcon = { enemy = true, friendlyPlayer = true } }
 -- The Objects' Action icon as 1.3.1's defaults placed it (beside the name, inside the box), for its older Blueprints.
 local OBJECT_ICON_131 = { x = 4, y = 0, visible = true, scale = 1, parent = "name", attach = "right" }
 -- The general settings that are part of a plate type's look, imported with an import limited to it (selection.plates:
@@ -1332,12 +1333,12 @@ local function TrimNewEntries(exported, plateType)
         local layout, default = exported[field], defaults[field]
         for _, key in ipairs(type(layout) == "table" and NEW_LAYOUT_ENTRIES or {}) do
             if layout[key] ~= nil then
-                -- (The Range or Behind you part off the plate, as Behind you's default sits on the Loose mark, pins
-                -- nothing: an import gives the entry its default all the same.)
+                -- (The Range, Behind you or Class icon part off the plate, as Behind you's default sits on the Loose
+                -- mark, pins nothing: an import gives the entry its default all the same.)
                 local pinned = false
                 for child, position in pairs(layout) do
                     pinned = pinned or (position.parent == key
-                        and not (position.removed and (child == "range" or child == "behindYou")))
+                        and not (position.removed and (child == "range" or child == "behindYou" or child == "classIcon")))
                 end
                 -- A plate type without the part, or Blizzard's dungeon names (Studio's copy of a layout holds every
                 -- part), never draws it.

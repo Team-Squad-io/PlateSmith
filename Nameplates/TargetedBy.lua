@@ -6,7 +6,8 @@
 -- Count only (the part's style badgeShow "count") shows one number instead, and targeted.count reads it: how many of
 -- the whole group (party1..party4, or raid1..raid40 but you) target the unit, by the same UnitIsUnit question, counting
 -- readable answers only (none readable: unknown). The whole group is asked only while something counts (SetWanted's
--- counting), each member once per plate on its UNIT_TARGET, and the backstop's budget is in questions, not plates.
+-- counting), each member once per plate on its UNIT_TARGET (a plate whose answer changed counts again), and the
+-- backstop's budget is in questions, not plates.
 local _, PS = ...
 local Secret = assert(PS.Secret, "PlateSmith Secret missing")
 local S = assert(PS.ProfileSchema, "PlateSmith ProfileSchema missing")
@@ -493,9 +494,13 @@ PS._CreatePlateTargetedBy = function(context)
             for row = 1, #rows do
                 local data = rows[row]
                 if index and data.targetedByBadgesShown then RefreshBadge(data, index) end
+                -- One member's new target changes the answer on two plates at most: only those count again.
                 if counted and data.targetedCounting then
-                    data.targetedHits[counted] = ReadHit(countMembers[counted], data.unit)
-                    SetCount(data)
+                    local hit = ReadHit(countMembers[counted], data.unit)
+                    if hit ~= data.targetedHits[counted] then
+                        data.targetedHits[counted] = hit
+                        SetCount(data)
+                    end
                 end
             end
             return

@@ -236,6 +236,7 @@ local function MeasureText(fontString, width, text)
     end
     return lines * (size + 2)
 end
+Window.MeasureText = MeasureText
 
 -- Sizes the scroll child to its content (plus a small bottom padding, never a minimum), with
 -- the bar's width reserved only when the content is taller than the view, then syncs the bar.

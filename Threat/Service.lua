@@ -1961,9 +1961,13 @@ function ThreatService:GetGroupThreat()
     return record, self.groupThreatCount, self.groupThreat, self.groupThreatCount == 0 and self.groupThreatNone == true
 end
 
--- Windows in threat meter mode ask for the group read; nobody else pays for it.
-function ThreatService:SetGroupThreatWanted(wanted)
-    wanted = wanted and true or false
+-- Windows in threat meter mode ("windows", the default) and the threat breakdown while fighting ("breakdown") ask
+-- for the group read; nobody else pays for it. It runs while any of them wants it.
+function ThreatService:SetGroupThreatWanted(wanted, who)
+    local wanters = self.groupThreatWanters or {}
+    self.groupThreatWanters = wanters
+    wanters[who or "windows"] = wanted and true or nil
+    wanted = next(wanters) ~= nil
     if wanted == self.groupThreatWanted then return end
     self.groupThreatWanted = wanted
     if wanted then
@@ -2955,7 +2959,7 @@ function ThreatService:OnInitialize()
         self.attackerTargetPool[index] = { names = {}, units = {}, count = 0 }
     end
     self.snapshot = {}
-    self.groupThreat, self.groupThreatScratch = {}, {}
+    self.groupThreat, self.groupThreatScratch, self.groupThreatWanters = {}, {}, {}
     -- The meter's enemy read through "target" alone (ReadTargetScope): never tracked, no plate.
     self.targetScope = { unit = "target", serial = 0, targetScoped = true, threatMobSource = "target" }
     for index = 1, MAX_ROSTER_UNITS do self.groupThreat[index] = {} end
