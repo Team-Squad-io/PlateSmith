@@ -52,6 +52,17 @@ PS._CreateTemplateReaders = function(context)
         local reaction = Call(UnitReaction, unit, "player")
         if IsReadable(reaction) and type(reaction) == "number" then return reaction end
     end
+    local function ReadMinion(unit)
+        local isOtherPlayersPet = Secret.ReadBoolean(UnitIsOtherPlayersPet, unit)
+        local isOwnPet = Secret.ReadBoolean(UnitIsUnit, unit, "pet")
+        if isOtherPlayersPet ~= true and isOwnPet ~= true then
+            if isOtherPlayersPet == false and isOwnPet == false then return false end
+            return nil
+        end
+        local creatureType, _, answered = Secret.CreatureType(unit)
+        if not answered then return nil end
+        return creatureType == "beast" or creatureType == "demon"
+    end
     local function EngagedThreat(data)
         local info = data.threatInfo
         if info and info.engaged == true then return info end
@@ -149,6 +160,8 @@ PS._CreateTemplateReaders = function(context)
         ["you.combat"] = function() return Call(UnitAffectingCombat, "player") end,
         ["unit.target"] = function(_, unit) return Call(UnitIsUnit, unit, "target") end,
         ["unit.player"] = function(_, unit) return Call(UnitIsPlayer, unit) end,
+        ["unit.incombat"] = function(_, unit) return Call(UnitAffectingCombat, unit) end,
+        ["unit.isminion"] = function(_, unit) return ReadMinion(unit) end,
         ["unit.focus"] = function(_, unit) return Call(UnitIsUnit, unit, "focus") end,
         -- The mark's letters after the level (the Elite / rare mark's Level suffix draws the same letters).
         ["level.smart"] = function(_, unit, read)

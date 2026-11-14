@@ -34,6 +34,7 @@ local TEMPLATE_SAMPLES = {
     ["level"] = 14, ["name"] = L["Training Raider"], ["target"] = L["Target Name"],
     ["unit.tagged"] = false, ["unit.elite"] = true, ["unit.rare"] = false, ["unit.boss"] = false, ["cast.active"] = true,
     ["you.combat"] = true, ["unit.target"] = true, ["unit.player"] = false,
+    ["unit.incombat"] = true, ["unit.isminion"] = false,
     ["unit.focus"] = false, ["quest.needed"] = true, ["unit.friendly"] = false, ["level.smart"] = "14+", ["level.diff"] = -3,
     ["classification"] = L["Elite"], ["guild"] = L["Guild Name"], ["cast.name"] = L["Fireball"], ["threat.hold"] = L["TANK"],
     ["unit.hostile"] = true, ["unit.neutral"] = false, ["cast.interruptible"] = true, ["cast.interruptready"] = true,
