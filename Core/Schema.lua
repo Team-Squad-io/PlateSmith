@@ -471,7 +471,7 @@ local profileDefaults = {
             level = true, guild = true }),
     },
     friendlyNPC = {
-        scale = 1, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 14,
+        scale = 1, petScale = 1.5, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 14,
         healthTexture = "blizzard", healthColourMode = "automatic",
         healthColour = { r = 0.35, g = 0.9, b = 1 },
         layout = FullLayout({ name = true, health = true, cast = true, quest = true, raidIcon = true,
@@ -672,7 +672,7 @@ THREAT_COLOURS.roles = { auto = true, tank = true, dps = true }
 
 -- Numeric bounds shared by normalization and Blueprint validation; true = whole number.
 local profileRanges = {
-    scale = { 0.7, 1.5 }, width = { 80, 200, true }, healthHeight = { 6, 20, true },
+    scale = { 0.7, 1.5 }, petScale = { 0.1, 2 }, width = { 80, 200, true }, healthHeight = { 6, 20, true },
     powerHeight = { 3, 14, true }, nameFontSize = { 9, 20, true },
 }
 -- A bar's own size: nil widths follow the health bar; the cast bar's height starts 3 px under

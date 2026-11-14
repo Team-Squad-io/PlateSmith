@@ -152,6 +152,19 @@ function Secret.CreatureType(unit)
     return found and Secret.CREATURE_TYPES[found] or nil, name, true
 end
 
+-- Hunter pets and warlock summons, including the player's own. Unknown ownership or creature type stays unknown.
+function Secret.IsMinion(unit)
+    local otherPet = Secret.ReadBoolean(UnitIsOtherPlayersPet, unit)
+    local ownPet = Secret.ReadBoolean(UnitIsUnit, unit, "pet")
+    if otherPet ~= true and ownPet ~= true then
+        if otherPet == false and ownPet == false then return false end
+        return nil
+    end
+    local creatureType, _, answered = Secret.CreatureType(unit)
+    if not answered then return nil end
+    return creatureType == "beast" or creatureType == "demon"
+end
+
 function Secret.ReadGUID(unit)
     if type(UnitGUID) ~= "function" then return nil end
     local ok, guid = pcall(UnitGUID, unit)
