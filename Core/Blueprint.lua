@@ -417,7 +417,7 @@ local function CheckValueSlots(value, path)
     return slots
 end
 
-local profileFields = Set("scale", "petScale", "width", "healthHeight", "powerHeight", "powerWidth", "castWidth", "castHeight",
+local profileFields = Set("scale", "width", "healthHeight", "powerHeight", "powerWidth", "castWidth", "castHeight",
     "castIcon", "castTime", "castName", "castInterruptColours", "castOnTop", "castColours", "layoutVersion",
     "questProgress", "questProgressFormat",
     "nameFontSize", "healthTexture",
@@ -885,7 +885,7 @@ local flavors = Set("forever", "retail")
 local documentFields = Set("format", "version", "readableFrom", "addon", "client", "flavor", "settings", "profiles",
     "dungeonEnemy", "contexts", "enemyPlayers", "objectTypes", "npcTypes", "modules")
 -- The plate types with types of their own besides the Objects (DESIGN.TYPES_OF: the Enemies' and Friendly NPCs'
--- Totems), carried as npcTypes.<plate type>.<type> (version 4, new in 1.4.0), in profile order.
+-- Totems and Pets), carried as npcTypes.<plate type>.<type> (version 4, new in 1.4.0), in profile order.
 local NPC_TYPED, NPC_TYPED_ORDER = {}, {}
 for _, plateType in ipairs(profileOrder) do
     if DESIGN.TYPES_OF[plateType] and plateType ~= "object" then
@@ -1106,7 +1106,7 @@ local function BuildCandidate(document)
             PS.Designs.SetType(candidate.plateProfiles.object, objectType, CheckDesign(record, path, "object", true))
         end
     end
-    -- The Enemies' and Friendly NPCs' types (version 4, new in 1.4.0: their Totems), each a sparse layer as above.
+    -- The Enemies' and Friendly NPCs' types (version 4, new in 1.4.0: their Totems and Pets), each a sparse layer as above.
     if document.npcTypes ~= nil then
         CheckObject(document.npcTypes, "npcTypes", NPC_TYPED)
         for plateType, map in pairs(document.npcTypes) do
@@ -1217,7 +1217,6 @@ local function ExportProfile(profile, includeNames)
         valueSlots = {},
         auraLayouts = {},
     }
-    if profile.petScale ~= profileDefaults.enemy.petScale then result.petScale = profile.petScale end
     if profile.castColours then
         result.castColours = {}
         for _, key in ipairs(S.CAST_COLOUR_KEYS) do

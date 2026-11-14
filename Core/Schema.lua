@@ -471,7 +471,7 @@ local profileDefaults = {
             level = true, guild = true }),
     },
     friendlyNPC = {
-        scale = 1, petScale = 1.5, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 14,
+        scale = 1, width = 112, healthHeight = 10, powerHeight = 5, nameFontSize = 14,
         healthTexture = "blizzard", healthColourMode = "automatic",
         healthColour = { r = 0.35, g = 0.9, b = 1 },
         layout = FullLayout({ name = true, health = true, cast = true, quest = true, raidIcon = true,
@@ -672,7 +672,7 @@ THREAT_COLOURS.roles = { auto = true, tank = true, dps = true }
 
 -- Numeric bounds shared by normalization and Blueprint validation; true = whole number.
 local profileRanges = {
-    scale = { 0.7, 1.5 }, petScale = { 0.1, 2 }, width = { 80, 200, true }, healthHeight = { 6, 20, true },
+    scale = { 0.5, 1.5 }, width = { 80, 200, true }, healthHeight = { 6, 20, true },
     powerHeight = { 3, 14, true }, nameFontSize = { 9, 20, true },
 }
 -- A bar's own size: nil widths follow the health bar; the cast bar's height starts 3 px under
@@ -2221,9 +2221,9 @@ for _, key in ipairs(DESIGN.FROM_GENERAL) do
     DESIGN.DRAWN_ON[key] = key:find("Source$") and { enemy = true, friendlyPlayer = true, friendlyNPC = true } or { enemy = true }
 end
 -- Each plate type's types (plateProfiles.<type>.types.<key>, the same sparse layers): the Objects' above, and on the
--- Enemies and Friendly NPCs Totems (a totem by its creature type: Nameplates/Totems.lua), each tab its own layer.
+-- Enemies and Friendly NPCs Totems and Pets (Nameplates/Totems.lua, Nameplates/Pets.lua), each tab its own layer.
 -- TYPE_SETS per plate type; ANY_TYPE every type key (none is a context's or "players"); TYPE_SET the Objects'.
-DESIGN.TYPES_OF = { object = DESIGN.TYPES, enemy = { "totem" }, friendlyNPC = { "totem" } }
+DESIGN.TYPES_OF = { object = DESIGN.TYPES, enemy = { "totem", "pet" }, friendlyNPC = { "totem", "pet" } }
 DESIGN.TYPE_SETS, DESIGN.ANY_TYPE = {}, {}
 for plateType, list in pairs(DESIGN.TYPES_OF) do
     local set = {}
@@ -2452,7 +2452,7 @@ local function NormalizeProfiles(profiles, legacy, fresh, claimed)
     -- The Enemy players layer (Designs.lua): a sparse design over the Enemies'; an empty one stays
     -- (made in Studio, it changes nothing yet).
     profiles.enemy.players = NormalizeDesign(profiles.enemy.players, "enemy")
-    -- Types (DESIGN.TYPES_OF: the Objects' object types, the Enemies' and Friendly NPCs' Totems): sparse layers over
+    -- Types (DESIGN.TYPES_OF: the Objects' object types, the Enemies' and Friendly NPCs' Totems and Pets): sparse layers over
     -- the plate type's designs; an empty one goes (no type has a record until it changes something). A table under an
     -- unknown key (a newer version's type) is kept as it is.
     for plateType, set in pairs(DESIGN.TYPE_SETS) do

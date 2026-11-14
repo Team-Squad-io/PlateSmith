@@ -2194,12 +2194,10 @@ local function ApplyLayout(data)
     data.design = PS.PlateContext.DesignFor(data.profileKey)
     -- An object draws with its type's layer over that design (Designs' object types), the type from the game's cursor
     -- icon (ActionIcon.TYPE_OF); unknown, or no type read: All objects. A totem on the Enemies or Friendly NPCs draws
-    -- with that tab's Totems layer (Totems.TypeFor; unknown: All NPCs).
+    -- with that tab's Totems or Pets layer (unknown: All NPCs).
     if object then data.objectType = rounds.actionIcon.TypeFor(data)
-    else data.objectType = PS.Totems.TypeFor(db, data) end
-    data.profile = PlateParts.ProfileForUnit(
-        PS.Designs.For(db, data.profileKey, data.design, data.objectType) or db.plateProfiles.enemy, data.unit,
-        settingsRevision)
+    else data.objectType = PS.Totems.TypeFor(db, data) or PS.Pets.TypeFor(db, data) end
+    data.profile = PS.Designs.For(db, data.profileKey, data.design, data.objectType) or db.plateProfiles.enemy
     -- An object is the Objects plate type's names-only plate (its one layout), or Blizzard's own while
     -- Draw object plates says so (objectPlates: drawn as a friendly type's Blizzard plates, "off").
     local showAs

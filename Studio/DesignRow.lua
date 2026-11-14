@@ -28,10 +28,10 @@ local DESIGN_WIDTH = 136
 local TYPE_TIPS = {
     object = L["All objects, or one type of object (herbs, ore, chests, quest objects, books...), as the game's own icon "
         .. "says. A type looks like All objects except what you change while it is open, in every place."],
-    enemy = L["All NPCs, or Totems: enemy shamans' totems. Totems look like All NPCs except what you change while they "
-        .. "are open (and their Display: icon, name or hidden), in every place."],
-    friendlyNPC = L["All NPCs, or Totems: your group's totems. Totems look like All NPCs except what you change while they "
-        .. "are open (and their Display: icon, name or hidden), in every place."],
+    enemy = L["All NPCs, Totems or Pets: enemy shamans' totems, and hunter pets or warlock summons. Each type looks like "
+        .. "All NPCs except what you change while it is open; Totems also have their own Display."],
+    friendlyNPC = L["All NPCs, Totems or Pets: your group's totems, and hunter pets or warlock summons. Each type looks "
+        .. "like All NPCs except what you change while it is open; Totems also have their own Display."],
 }
 
 local function Settings() return type(PS.GetSettings) == "function" and PS.GetSettings() or nil end
@@ -420,7 +420,7 @@ function Options:RefreshEditorPlayersGate(settings)
     end
 end
 
--- Studio's Type (Objects: All objects or one object type; Enemies and Friendly NPCs: All NPCs or Totems): the design
+-- Studio's Type (Objects: All objects or one object type; Enemies and Friendly NPCs: All NPCs, Totems or Pets): the design
 -- itself or one type, whose changes sit on the open design (Core/Designs.lua), each tab its own. On the Objects the
 -- preview's sample becomes that type (Test values' Object), so its icon and Status text show; Totems preview a totem.
 function Options:SetEditorObjectType(objectType)
@@ -538,7 +538,7 @@ function Options:RefreshEditorDesignRow(settings)
     row.dropdown:SetShown(not players)
     -- The field names the place only; its menu and the chip say Blizzard draws it.
     row.dropdown:SetText(Designs.LABELS[self.editorDesign] or L["World"])
-    -- A tab with types (Objects; Enemies and Friendly NPCs: Totems): Type beside it (the design itself, or one type's
+    -- A tab with types (Objects; Enemies and Friendly NPCs: Totems and Pets): Type beside it (the design itself, or one type's
     -- changes over the open design). The field is the same width on every tab (DESIGN_WIDTH), leaving Type's room.
     local typed = not players and #Designs.TypesOf(self.editorProfile) > 0
     row.typeLabel:SetShown(typed)

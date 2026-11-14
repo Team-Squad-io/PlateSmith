@@ -60,8 +60,9 @@ PS._CreatePlateSettings = function(context)
     -- Returns the plate type and the context (nil: World), or nil when target is not one: an
     -- unknown name must not fall back to editing the enemy profile. Friendly plates' "dungeon" is
     -- their Dungeons & raids design, Blizzard's: World's dungeonNamesLayout.
-    -- A type's layer (Designs.TypesOf: an object type, the Enemies' or Friendly NPCs' Totems) is "<plate type>/<type>"
-    -- or "<plate type>@<context>/<type>" ("object/herb", "enemy@pvp/totem"): edited as that layer over that place's
+    -- A type's layer (Designs.TypesOf: an object type, the Enemies' or Friendly NPCs' Totems or Pets)
+    -- is "<plate type>/<type>" or "<plate type>@<context>/<type>" ("object/herb", "enemy@pvp/totem"):
+    -- edited as that layer over that place's
     -- design (the third result), its differences stored against that place's design.
     local function ResolveProfileKey(target)
         if target == nil then return "enemy" end

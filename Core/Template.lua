@@ -39,7 +39,7 @@ Template.tokens = {
     ["level"] = "number", ["name"] = "text", ["target"] = "text",
     ["unit.tagged"] = "flag", ["unit.elite"] = "flag", ["unit.rare"] = "flag", ["unit.boss"] = "flag",
     ["cast.active"] = "flag", ["you.combat"] = "flag", ["unit.target"] = "flag", ["unit.player"] = "flag",
-    ["unit.incombat"] = "flag", ["unit.isminion"] = "flag",
+    ["unit.incombat"] = "flag",
     ["unit.focus"] = "flag", ["quest.needed"] = "flag", ["unit.friendly"] = "flag",
     ["level.smart"] = "text", ["level.diff"] = "signed", ["classification"] = "text", ["guild"] = "text",
     ["cast.name"] = "text", ["threat.hold"] = "text",
@@ -574,7 +574,7 @@ for _, name in pairs(Template.FORMER_NAMES) do
 end
 -- And 1.4.0's words: a reader before it refuses them as "not a condition", where a version 4 code says it is newer.
 for _, name in ipairs({ "range.known", "range.band", "range", "unit.behind", "pvp.sanctuary", "pvp.you", "targeted.count",
-    "unit.creature", "creature", "unit.incombat", "unit.isminion" }) do
+    "unit.creature", "creature", "unit.incombat" }) do
     SINCE_132[name] = true
 end
 local function ConditionUsesNewWords(text)

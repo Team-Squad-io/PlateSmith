@@ -34,20 +34,6 @@ local EdgeFrame = PS.EdgeFrame
 PS._CreatePlateFactory = function(context)
     local CreateAuraRow = context.CreateAuraRow
     local GetSettings = context.GetSettings
-    local petProfileCache
-
-    local function ProfileForUnit(profile, unit, revision)
-        if PS.Secret.IsMinion(unit) ~= true then return profile end
-        if petProfileCache and petProfileCache.revision == revision then
-            return petProfileCache.profile
-        end
-        local petProfile = {}
-        petProfileCache = { profile = petProfile, revision = revision }
-        for key, value in pairs(profile) do petProfile[key] = value end
-        local factor = tonumber(profile.petScale) or 1.5
-        petProfile.scale = (tonumber(profile.scale) or 1) * math.max(0.1, factor)
-        return petProfile
-    end
 
     local function CreateBorder(parent)
         local border = EdgeFrame(parent, 1)
@@ -455,7 +441,6 @@ PS._CreatePlateFactory = function(context)
     return {
         CreatePlate = CreatePlate, StartPlate = StartPlate, FinishPlate = FinishPlate, AttachPlate = AttachPlate,
         ApplyNameplateFont = ApplyNameplateFont, ApplyChevronFont = ApplyChevronFont,
-        ProfileForUnit = ProfileForUnit,
         EnsureValueSlot = EnsureValueSlot, EnsureTargetGlows = EnsureTargetGlows, EnsureBeacon = EnsureBeacon,
     }
 end

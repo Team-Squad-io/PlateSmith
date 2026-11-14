@@ -375,7 +375,6 @@ local function BuildTestPanel(canvas)
         { "threat.loose", L["Loose"], slot = 24 },
         { "unit.behind", L["Behind you"], slot = 23 },
         { "unit.incombat", L["Unit in combat"], slot = 25 },
-        { "unit.isminion", L["Minion"], slot = 26 },
     }
     -- slot: where the box goes, two to a row 20 px apart (a built-in flag may name its own).
     local function FlagBox(slot, flag, label, module)

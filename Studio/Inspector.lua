@@ -4030,27 +4030,6 @@ local function BuildPlateContext(page)
         Mark(row, Area.Option("scale"))
         K.Add(section, row)
         K.Add(section, K.Help(section, L["Scales the whole plate. Bar sizes are set on each bar, text sizes on each text."]))
-        local petRange = profileRanges.petScale
-        local petRow, petSlider = K.SliderRow(section, L["Pet adjustment"], {
-            min = petRange[1], max = petRange[2], step = 0.05, format = PercentText,
-            name = WidgetName("editor_profile_petScale", "Slider"),
-            get = ProfileValue("petScale"),
-            drag = function(value)
-                local ok = PS.SetPlateProfileOption(Options:EditorTarget(), "petScale", value)
-                Options:QueueRefresh()
-                return ok
-            end,
-            set = function(value)
-                local ok = PS.SetPlateProfileOption(Options:EditorTarget(), "petScale", value)
-                Options:Refresh(true)
-                return ok
-            end,
-        })
-        Register(petSlider)
-        Mark(petRow, Area.Option("petScale"))
-        local friendlyNPC = function() return Options.editorProfile == "friendlyNPC" end
-        K.Add(section, petRow, friendlyNPC)
-        K.Add(section, K.Help(section, L["Scales hunter pets and warlock summons relative to their regular plate size."]), friendlyNPC)
         BuildTargetHighlightSection(context)
     end)
 end

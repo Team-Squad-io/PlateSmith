@@ -83,6 +83,7 @@ Nameplates\Backdrop.lua
 Nameplates\HealPrediction.lua
 Data\Totems.lua
 Nameplates\Totems.lua
+Nameplates\Pets.lua
 Nameplates\Extras.lua
 Nameplates\Lifecycle.lua
 Core\Blueprint.lua
