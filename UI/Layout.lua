@@ -1188,8 +1188,8 @@ function Layout.New(config)
     end
 
     -- Offset X and Y on one row: two value boxes, each half the control column, that commit together.
-    function K.OffsetRow(parent, label, onCommit)
-        local row = K.Row(parent, label)
+    function K.OffsetRow(parent, label, onCommit, pad)
+        local row = K.Row(parent, label, pad)
         local axes = {}
         for index, axis in ipairs({ "X", "Y" }) do
             axes[index] = K.Text(row, axis, "label")

@@ -1343,7 +1343,7 @@ rounds.classMark = assert(PS._CreatePlateClassMark, "PlateSmith PlateClassMark m
 -- The Objects' Backdrop (Backdrop.lua): placed in the flush's visibility pass, after what it wraps.
 rounds.backdrop = assert(PS._CreatePlateBackdrop, "PlateSmith PlateBackdrop missing")({
     Transforms = Placement.Transforms, SafeSize = Placement.SafeSize, AnchorPart = Placement.AnchorPart,
-    RegionAlpha = Placement.RegionAlpha,
+    RuleOffset = Placement.RuleOffset, RegionAlpha = Placement.RegionAlpha,
 })
 -- Incoming heals and absorbs on the health bar (HealPrediction.lua).
 rounds.heals = assert(PS._CreatePlateHealPrediction, "PlateSmith PlateHealPrediction missing")()
@@ -1903,6 +1903,38 @@ end
 -- leaves the part's own colour.
 local StyleRules = PS.StyleRules
 
+function StyleRules.ApplyOffsets(data, rules, applyLayout)
+    local offsets = data.ruleOffsets or {}
+    data.ruleOffsets = offsets
+    local changed, read = false, nil
+    if data.own and data.layout then
+        for key, list in pairs(rules or EMPTY) do
+            if data.layout[key] then
+                read = read or Readers.Get(data)
+                local x, y = StyleRules.Offset(list, read)
+                local previous = offsets[key]
+                if x ~= 0 or y ~= 0 then
+                    if not previous or previous.x ~= x or previous.y ~= y then changed = true end
+                    previous = previous or {}
+                    previous.x, previous.y = x, y
+                    offsets[key] = previous
+                elseif previous then
+                    offsets[key] = nil
+                    changed = true
+                end
+            end
+        end
+    end
+    for key in pairs(offsets) do
+        if not (data.own and data.layout and data.layout[key] and rules and rules[key]) then
+            offsets[key] = nil
+            changed = true
+        end
+    end
+    if changed and data.own and data.layout and applyLayout then applyLayout(data) end
+    return changed
+end
+
 -- One part's rules onto its regions (marked in now).
 local function ApplyPartRules(data, key, list, now)
     if not (data.own and data.layout and data.layout[key]) then return end
@@ -1963,7 +1995,9 @@ local function ApplyRules(data)
     local ThreatColours = PS.ThreatColours
     local threat, grey, far = ThreatColours.Wanted(data), data.taggedGrey == true, data.reachCue == "grey"
     local difficulty = data.levelDifficulty ~= nil
-    if not touched and not (rules and next(rules)) and not threat and not grey and not far and not difficulty then return end
+    local offsetChanged = StyleRules.ApplyOffsets(data, rules, ApplyComponentLayout)
+    if not touched and not (rules and next(rules)) and not threat and not grey and not far and not difficulty
+        and not offsetChanged then return end
     -- The regions ruled this time go into the plate's spare table; the two swap each call.
     local now = data.ruleSpare or {}
     data.ruleSpare = nil

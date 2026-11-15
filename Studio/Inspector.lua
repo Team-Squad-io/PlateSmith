@@ -2682,12 +2682,12 @@ local function RuleCard(parent, index)
     whenRow.labelX = pad + (enabled:GetWidth() or K.CHECK_W) + K.SWATCH_GAP
     whenRow.labelRoom = K.CONTROL_X - K.CONTROL_GAP - whenRow.labelX
     whenRow.kitSearchLabel = L["When"]
-    -- The box, then + Word, then the remove.
-    local RULE_WORD_W = 64
+    -- The box, then '+', then the remove
+    local RULE_WORD_W = 28
     local besides = K.SWATCH + K.CONTROL_GAP + RULE_WORD_W + K.CONTROL_GAP
     local when = FieldBox(whenRow, K.CONTROL_X, whenRow.right - besides - K.CONTROL_X, Schema.TEMPLATE_LENGTH)
     K.OnWidth(whenRow, function(width) when:SetWidth(width - pad - besides - K.CONTROL_X) end)
-    local word = CreateStudioButton(whenRow, L["+ Word"], RULE_WORD_W, K.CONTROL_H)
+    local word = CreateStudioButton(whenRow, "+", RULE_WORD_W, K.CONTROL_H)
     word:SetPoint("LEFT", when, "RIGHT", K.CONTROL_GAP, 0)
     -- Empty holds always: the box says so, dimmed, until something is typed.
     local placeholder = K.Text(when, L["always"], "hint")
@@ -2743,6 +2743,8 @@ local function RuleCard(parent, index)
             choices[#choices + 1] = { value = "blend", label = L["Blend by health"] }
         end
         choices[#choices + 1] = { value = "alpha", label = L["Set opacity"] }
+        choices[#choices + 1] = { value = "offset", label = L["Move part"],
+            help = L["Moves this part by X and Y offset. Offset rules on the same part add together."] }
         choices[#choices + 1] = { value = "hide", label = L["Hide it"] }
         return choices
     end
@@ -2764,6 +2766,7 @@ local function RuleCard(parent, index)
             if value == "colour" and not rule.colour then rule.colour = { r = 0.5, g = 0.5, b = 0.5 } end
             if value == "alpha" and not rule.alpha then rule.alpha = 0.5 end
             if value == "blend" and not rule.stops then rule.stops = PresetStops("healthBlend") end
+            if value == "offset" then rule.offsetX, rule.offsetY = rule.offsetX or 0, rule.offsetY or 0 end
             WriteRules(list)
         end,
     }, K.CONTROL_X, thenRow.right - K.SWATCH - K.CONTROL_GAP)
@@ -2799,6 +2802,19 @@ local function RuleCard(parent, index)
         end,
         drag = function(value) return WriteAlpha(value, true) end, set = WriteAlpha,
     })
+    local offsetRow
+    offsetRow = K.OffsetRow(card, L["Part offset"], function()
+        local rule, list = Rule()
+        local x, y = tonumber(offsetRow.x:GetText()), tonumber(offsetRow.y:GetText())
+        if not (rule and x and y and x == x and y == y and x ~= math.huge and x ~= -math.huge
+            and y ~= math.huge and y ~= -math.huge) then
+            Options:RefreshEditorInspectorContext()
+            return
+        end
+        rule.offsetX, rule.offsetY = x, y
+        WriteRules(list)
+    end, pad)
+    K.Add(card, offsetRow, function() return card.rule and card.rule.set == "offset" or false end)
     -- Blend: each stop as [swatch] [at] % (x), then + stop.
     local stopRows = {}
     local function Stops()
@@ -2907,14 +2923,14 @@ local function RuleCard(parent, index)
         if had ~= (card.statusText ~= nil) then Options:LayoutEditorInspector() end
     end)
     when:SetScript("OnEditFocusGained", function() placeholder:Hide() end)
-    -- Where the cursor was, for + Word, while the text stays as it was left.
+    -- Where the cursor was, for '+', while the text stays as it was left.
     when:SetScript("OnEditFocusLost", function(edit)
         placeholder:SetShown((edit:GetText() or "") == "")
         edit.wordText, edit.wordCursor = edit:GetText(), edit.GetCursorPosition and edit:GetCursorPosition() or nil
     end)
     when:SetScript("OnEnterPressed", function(edit) edit:ClearFocus() end)
     when:SetScript("OnEscapePressed", function(edit) edit:ClearFocus() end)
-    -- + Word: the words a condition can use on this plate type, by topic as Help's rule words list them (Core/RuleWords.lua,
+    -- +: the words a condition can use on this plate type, by topic as Help's rule words list them (Core/RuleWords.lua,
     -- the one source), each's meaning on hover; choosing one adds a condition on it that compiles (RuleWords.Starter) at
     -- the cursor where a condition can start there, else after " and " (RuleWords.InsertCondition).
     local function AddWord(starter, cursor)
@@ -2975,6 +2991,11 @@ local function RuleCard(parent, index)
         if picked then swatch:Refresh() end
         alpha:SetShown(rule.set == "alpha")
         if rule.set == "alpha" then alpha:Refresh() end
+        offsetRow:SetShown(rule.set == "offset")
+        if rule.set == "offset" then
+            offsetRow.x:SetText(rule.offsetX or 0)
+            offsetRow.y:SetText(rule.offsetY or 0)
+        end
         local stops = rule.set == "blend" and rule.stops or {}
         for stopIndex, row in ipairs(stopRows) do
             local stop = stops[stopIndex]
@@ -3000,10 +3021,11 @@ local function BuildRules(page)
     end })
     Options.editorRulesBlock = section
     local help = HelpButton(section.band, L["Rules"], {
-        L["When its condition holds, a rule sets this part's colour, blends it by health, sets its opacity or "
-            .. "hides it. An empty condition always holds."],
+        L["When its condition holds, a rule sets this part's colour, blends it by health, sets its opacity, moves this "
+            .. "part or hides it. An empty condition always holds."],
         L["Rules are read top to bottom: the last colour or opacity rule that holds wins, and any hide rule "
-            .. "hides. With none, the part keeps its own style. Presets add ready-made sets."],
+            .. "hides. Offset rules on this part that hold add together. With none, the part keeps its own style. "
+            .. "Presets add ready-made sets."],
         L["Conditions are the same as in Custom text: health.percent < 35, unit.elite and unit.tagged = false, "
             .. "pvp.flagged = false, role.tank and threat.losing. What can I use? (under the rules) lists every word "
             .. "by topic, with its old name, what it means and an example."],

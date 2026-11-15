@@ -222,14 +222,14 @@ local function NormalizeValueTemplate(text)
     return text
 end
 
--- Rules: per part, an ordered list of { when = condition, set = what, colour | alpha | stops[, enabled] },
+-- Rules: per part, an ordered list of { when = condition, set = what, colour | alpha | stops | offset[, enabled] },
 -- read top to bottom: the last rule that holds sets each property (Core/Template.lua compiles
 -- the conditions). "blend" colours the part by health %, between its stops ({ at = 0-100,
 -- colour }, 2-5 of them, sorted); an empty condition always holds. A colour rule's colourSource "class" (1.3.2) sets
 -- the unit's class colour instead of its colour, "difficulty" (1.4.0) the game's colour for its level against yours
 -- (kept, so the picked colour comes back with Set colour and an older reader of a Blueprint draws it); absent, the
 -- picked colour.
-local RULE_SETS = { colour = true, alpha = true, hide = true, blend = true }
+local RULE_SETS = { colour = true, alpha = true, hide = true, blend = true, offset = true }
 local MAX_RULES_PER_PART, MAX_RULES = 8, 64
 local MIN_BLEND_STOPS, MAX_BLEND_STOPS = 2, 5
 local function PartKey(key) return type(key) == "string" and key:match("^[%a][%w_%.]*$") ~= nil end
@@ -285,6 +285,11 @@ local function NormalizeRules(rules, limit)
                     entry.alpha = Format.Unit(rule.alpha, 0.5)
                 elseif rule.set == "blend" then
                     entry.stops = NormalizeBlendStops(rule.stops)
+                elseif rule.set == "offset" then
+                    local x, y = tonumber(rule.offsetX), tonumber(rule.offsetY)
+                    if not x or x ~= x or x == math.huge or x == -math.huge then x = 0 end
+                    if not y or y ~= y or y == math.huge or y == -math.huge then y = 0 end
+                    entry.offsetX, entry.offsetY = x, y
                 end
                 if rule.set ~= "blend" or entry.stops then
                     list[#list + 1] = entry

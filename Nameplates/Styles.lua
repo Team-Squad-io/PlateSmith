@@ -71,6 +71,16 @@ function Rules.Resolve(list, read, forced)
     return colourRule, alpha, hide, after
 end
 
+function Rules.Offset(list, read, forced)
+    local x, y = 0, 0
+    for _, rule in ipairs(list) do
+        if rule.set == "offset" and rule.enabled ~= false and Rules.Holds(rule.when, read, forced) then
+            x, y = x + (rule.offsetX or 0), y + (rule.offsetY or 0)
+        end
+    end
+    return x, y
+end
+
 -- A colour rule's r, g, b: its colour, or its blend at read's health %; nothing for a protected or missing %.
 -- A Class colour rule (colourSource "class") asks class(owner) for the unit's class colour: r, g, b and whether
 -- they were picked inside the client (folded: possibly protected, for a setter only); nothing without one. A Set

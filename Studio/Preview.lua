@@ -374,11 +374,15 @@ end
 function Options:ApplyEditorPreviewPartRules(profile)
     local rules = profile and profile.rules
     local ruled = {}
+    local samples, forced = self.templateSamples or {}, self.editorRulesPreviewTrue
+    local layout = self:EditorDrawnLayout()
+    local offsets = self.editorRuleOffsets or {}
+    self.editorRuleOffsets = offsets
+    for key in pairs(offsets) do offsets[key] = nil end
     if not rules or not PS.Template then
         self:ApplyEditorPreviewThreat(ruled)
         return
     end
-    local samples, forced = self.templateSamples or {}, self.editorRulesPreviewTrue
     local function read(token) return samples[token] end
     -- A Class colour rule: the sample's class colour, as the plates take it (PlateColours.ClassChannels).
     local function class()
@@ -387,6 +391,10 @@ function Options:ApplyEditorPreviewPartRules(profile)
     end
     for key, list in pairs(rules) do
         local component = self.editorComponents and self.editorComponents[key]
+        if layout[key] then
+            local x, y = PS.StyleRules.Offset(list, read, forced)
+            if x ~= 0 or y ~= 0 then offsets[key] = { x = x, y = y } end
+        end
         if component and component:IsShown() and not component.previewNative then
             -- The plates' own answer (PS.StyleRules), from Test values; forced: as if every condition held (a rule
             -- turned off still never applies).

@@ -124,8 +124,8 @@ end
 -- a plate's layout shows the part, on the plate's overlay just under every part, and placed again in the plate's
 -- visibility pass (Lifecycle's RunFlush), which follows the parts showing, hiding and changing text.
 PS._CreatePlateBackdrop = function(context)
-    local Transforms, SafeSize, AnchorPart, RegionAlpha = context.Transforms, context.SafeSize, context.AnchorPart,
-        context.RegionAlpha
+    local Transforms, SafeSize, AnchorPart, RuleOffset, RegionAlpha = context.Transforms, context.SafeSize,
+        context.AnchorPart, context.RuleOffset, context.RegionAlpha
     local Pass = {}
     local entries = {}
     for index = 1, #BACKDROP.PARTS do entries[index] = {} end
@@ -190,13 +190,16 @@ PS._CreatePlateBackdrop = function(context)
         box:SetScale(1)
         local parts, count = Backdrop.Parts(style), 0
         local transforms = Transforms(data.layout, data)
+        local backdropX, backdropY = RuleOffset(data, "backdrop", true)
         for _, key in ipairs(BACKDROP.PARTS) do
             local region = Backdrop.Wraps(parts, data.layout, key) and Drawn(data, key)
             local at = region and transforms[key]
             if at then
                 count = count + 1
                 local width, height = SafeSize(region, data)
-                Backdrop.Entry(entries[count], region, at.x, at.y, at.scale > 0 and at.scale or 1, width, height)
+                local offsetX, offsetY = RuleOffset(data, key, true)
+                Backdrop.Entry(entries[count], region, at.x + offsetX + backdropX, at.y + offsetY + backdropY,
+                    at.scale > 0 and at.scale or 1, width, height)
             end
         end
         Backdrop.Fit(box, entries, count, Backdrop.Padding(style))

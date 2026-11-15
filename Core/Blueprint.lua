@@ -224,6 +224,13 @@ local function CheckRange(value, path, range)
     return value
 end
 
+local function CheckNumber(value, path)
+    if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge then
+        Reject(path, "must be a finite number")
+    end
+    return value
+end
+
 local function CheckEnum(value, path, allowed)
     if type(value) ~= "string" or not allowed[value] then Reject(path, "has an unsupported value") end
     return value
@@ -500,9 +507,10 @@ local function CheckAuraLayouts(value, path, target, sparse)
     end
 end
 
-local ruleFields, stopFields = Set("when", "set", "colour", "alpha", "stops", "enabled", "colourSource"), Set("at", "colour")
+local ruleFields, stopFields = Set("when", "set", "colour", "alpha", "stops", "enabled", "colourSource",
+    "offsetX", "offsetY"), Set("at", "colour")
 
--- Rules: part -> ordered list of { when, set, colour (hex) | alpha | stops[, enabled] }. A blend's
+-- Rules: part -> ordered list of { when, set, colour (hex) | alpha | stops | offset[, enabled] }. A blend's
 -- condition may be empty (always); its stops are { at (0-100), colour (hex) }. Returns them checked
 -- (colours as tables), not yet normalised; an empty list stays an empty list.
 local function CheckRules(value, path)
@@ -531,6 +539,8 @@ local function CheckRules(value, path)
                 entry.colourSource = CheckEnum(rule.colourSource, rulePath .. ".colourSource", S.RULE_COLOUR_SOURCES)
             end
             if rule.alpha ~= nil then entry.alpha = CheckRange(rule.alpha, rulePath .. ".alpha", { 0, 1 }) end
+            if rule.offsetX ~= nil then entry.offsetX = CheckNumber(rule.offsetX, rulePath .. ".offsetX") end
+            if rule.offsetY ~= nil then entry.offsetY = CheckNumber(rule.offsetY, rulePath .. ".offsetY") end
             if entry.set == "blend" or rule.stops ~= nil then
                 local stops = rule.stops
                 if type(stops) ~= "table" or not Json.IsArray(stops) or #stops < S.MIN_BLEND_STOPS
@@ -1173,7 +1183,8 @@ local function ExportRuleList(list)
                 stops[stopIndex] = { at = stop.at, colour = ColourToHex(stop.colour) }
             end
             local shared = { when = rule.when, set = rule.set, alpha = rule.alpha,
-                colour = rule.colour and ColourToHex(rule.colour) or nil, stops = stops, colourSource = rule.colourSource }
+                colour = rule.colour and ColourToHex(rule.colour) or nil, stops = stops, colourSource = rule.colourSource,
+                offsetX = rule.offsetX, offsetY = rule.offsetY }
             -- Only a rule turned off says so (false must survive, so not an and/or).
             if rule.enabled == false then shared.enabled = false end
             result[#result + 1] = shared
