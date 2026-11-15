@@ -222,14 +222,14 @@ local function NormalizeValueTemplate(text)
     return text
 end
 
--- Rules: per part, an ordered list of { when = condition, set = what, colour | alpha | stops[, enabled] },
+-- Rules: per part, an ordered list of { when = condition, set = what, colour | alpha | stops | offset[, enabled] },
 -- read top to bottom: the last rule that holds sets each property (Core/Template.lua compiles
 -- the conditions). "blend" colours the part by health %, between its stops ({ at = 0-100,
 -- colour }, 2-5 of them, sorted); an empty condition always holds. A colour rule's colourSource "class" (1.3.2) sets
 -- the unit's class colour instead of its colour, "difficulty" (1.4.0) the game's colour for its level against yours
 -- (kept, so the picked colour comes back with Set colour and an older reader of a Blueprint draws it); absent, the
 -- picked colour.
-local RULE_SETS = { colour = true, alpha = true, hide = true, blend = true }
+local RULE_SETS = { colour = true, alpha = true, hide = true, blend = true, offset = true }
 local MAX_RULES_PER_PART, MAX_RULES = 8, 64
 local MIN_BLEND_STOPS, MAX_BLEND_STOPS = 2, 5
 local function PartKey(key) return type(key) == "string" and key:match("^[%a][%w_%.]*$") ~= nil end
@@ -285,6 +285,11 @@ local function NormalizeRules(rules, limit)
                     entry.alpha = Format.Unit(rule.alpha, 0.5)
                 elseif rule.set == "blend" then
                     entry.stops = NormalizeBlendStops(rule.stops)
+                elseif rule.set == "offset" then
+                    local x, y = tonumber(rule.offsetX), tonumber(rule.offsetY)
+                    if not x or x ~= x or x == math.huge or x == -math.huge then x = 0 end
+                    if not y or y ~= y or y == math.huge or y == -math.huge then y = 0 end
+                    entry.offsetX, entry.offsetY = x, y
                 end
                 if rule.set ~= "blend" or entry.stops then
                     list[#list + 1] = entry
@@ -667,7 +672,7 @@ THREAT_COLOURS.roles = { auto = true, tank = true, dps = true }
 
 -- Numeric bounds shared by normalization and Blueprint validation; true = whole number.
 local profileRanges = {
-    scale = { 0.7, 1.5 }, width = { 80, 200, true }, healthHeight = { 6, 20, true },
+    scale = { 0.5, 1.5 }, width = { 80, 200, true }, healthHeight = { 6, 20, true },
     powerHeight = { 3, 14, true }, nameFontSize = { 9, 20, true },
 }
 -- A bar's own size: nil widths follow the health bar; the cast bar's height starts 3 px under
@@ -2216,9 +2221,9 @@ for _, key in ipairs(DESIGN.FROM_GENERAL) do
     DESIGN.DRAWN_ON[key] = key:find("Source$") and { enemy = true, friendlyPlayer = true, friendlyNPC = true } or { enemy = true }
 end
 -- Each plate type's types (plateProfiles.<type>.types.<key>, the same sparse layers): the Objects' above, and on the
--- Enemies and Friendly NPCs Totems (a totem by its creature type: Nameplates/Totems.lua), each tab its own layer.
+-- Enemies and Friendly NPCs Totems and Pets (Nameplates/Totems.lua, Nameplates/Pets.lua), each tab its own layer.
 -- TYPE_SETS per plate type; ANY_TYPE every type key (none is a context's or "players"); TYPE_SET the Objects'.
-DESIGN.TYPES_OF = { object = DESIGN.TYPES, enemy = { "totem" }, friendlyNPC = { "totem" } }
+DESIGN.TYPES_OF = { object = DESIGN.TYPES, enemy = { "totem", "pet" }, friendlyNPC = { "totem", "pet" } }
 DESIGN.TYPE_SETS, DESIGN.ANY_TYPE = {}, {}
 for plateType, list in pairs(DESIGN.TYPES_OF) do
     local set = {}
@@ -2447,7 +2452,7 @@ local function NormalizeProfiles(profiles, legacy, fresh, claimed)
     -- The Enemy players layer (Designs.lua): a sparse design over the Enemies'; an empty one stays
     -- (made in Studio, it changes nothing yet).
     profiles.enemy.players = NormalizeDesign(profiles.enemy.players, "enemy")
-    -- Types (DESIGN.TYPES_OF: the Objects' object types, the Enemies' and Friendly NPCs' Totems): sparse layers over
+    -- Types (DESIGN.TYPES_OF: the Objects' object types, the Enemies' and Friendly NPCs' Totems and Pets): sparse layers over
     -- the plate type's designs; an empty one goes (no type has a record until it changes something). A table under an
     -- unknown key (a newer version's type) is kept as it is.
     for plateType, set in pairs(DESIGN.TYPE_SETS) do

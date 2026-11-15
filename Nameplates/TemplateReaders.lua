@@ -149,6 +149,7 @@ PS._CreateTemplateReaders = function(context)
         ["you.combat"] = function() return Call(UnitAffectingCombat, "player") end,
         ["unit.target"] = function(_, unit) return Call(UnitIsUnit, unit, "target") end,
         ["unit.player"] = function(_, unit) return Call(UnitIsPlayer, unit) end,
+        ["unit.incombat"] = function(_, unit) return Call(UnitAffectingCombat, unit) end,
         ["unit.focus"] = function(_, unit) return Call(UnitIsUnit, unit, "focus") end,
         -- The mark's letters after the level (the Elite / rare mark's Level suffix draws the same letters).
         ["level.smart"] = function(_, unit, read)

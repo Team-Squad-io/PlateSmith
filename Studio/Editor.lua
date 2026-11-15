@@ -1720,6 +1720,22 @@ function Options:EditorPinTarget(key)
     return Schema.PinTarget(self:EditorDrawnLayout(), key, self.editorAbsentFunction)
 end
 
+function Options:EditorRuleOffset(key, includeParents)
+    local offsets, layout = self.editorRuleOffsets, self:EditorDrawnLayout()
+    local position, offset = layout[key], offsets and offsets[key]
+    local x, y = offset and offset.x or 0, offset and offset.y or 0
+    if includeParents and position then
+        local parent = position.parent
+        for _ = 1, Schema.MAX_DEPTH do
+            if type(parent) ~= "string" or Schema.IsGroupKey(parent) or not layout[parent] then break end
+            offset = offsets and offsets[parent]
+            if offset then x, y = x + offset.x, y + offset.y end
+            parent = layout[parent].parent
+        end
+    end
+    return x, y
+end
+
 function Options:InvalidateEditorTransforms()
     self.editorTransforms, self.editorDrawn = nil, nil
 end
@@ -2400,6 +2416,7 @@ function Options:PlaceEditorBackdrop()
     local style = self:EditorBackdropStyle()
     local scale = (self:EditorProfileSettings() or {}).scale or 1
     local parts, transforms, count = Backdrop.Parts(style), self:EditorTransforms(), 0
+    local offsetX, offsetY = self:EditorRuleOffset("backdrop")
     local layout = self:EditorDrawnLayout()
     for _, key in ipairs(Schema.BACKDROP.PARTS) do
         local part = components[key]
@@ -2412,7 +2429,9 @@ function Options:PlaceEditorBackdrop()
             local width = text and ReadNumber(text, "GetStringWidth") or ReadNumber(part, "GetWidth")
             local height = text and (ReadNumber(text, "GetStringHeight") or ReadNumber(text, "GetHeight"))
                 or ReadNumber(part, "GetHeight")
-            Backdrop.Entry(entry, part, at.x, at.y, part.GetScale and part:GetScale() or 1, width, height)
+            local partOffsetX, partOffsetY = self:EditorRuleOffset(key, true)
+            Backdrop.Entry(entry, part, at.x + partOffsetX + offsetX, at.y + partOffsetY + offsetY,
+                part.GetScale and part:GetScale() or 1, width, height)
         end
     end
     component:SetScale(1)
@@ -2422,7 +2441,8 @@ function Options:PlaceEditorBackdrop()
         local width, height = Backdrop.Size(style)
         local at = transforms.backdrop
         component:ClearAllPoints()
-        component:SetPoint("CENTER", self.editorPreviewStage or self.editorCanvas, "CENTER", at and at.x or 0, at and at.y or 0)
+        component:SetPoint("CENTER", self.editorPreviewStage or self.editorCanvas, "CENTER",
+            (at and at.x or 0) + offsetX, (at and at.y or 0) + offsetY)
         component:SetSize(width * scale, height * scale)
         component:Show()
     end
@@ -2449,12 +2469,17 @@ function Options:PlaceEditorDragon(key, component)
     local dragon = mark and mark.previewDragon
     if not dragon or (key ~= "level" and key ~= "classification") or self:EditorMarkStyle() ~= "dragon" then return false end
     local D = PS.ClassificationMark.DRAGON
+    local offsetX, offsetY = self:EditorRuleOffset(key)
+    local scale = self:EditorDrawnScale(key)
+    offsetX, offsetY = offsetX / scale, offsetY / scale
     if key == "level" then
         return components.health ~= nil
-            and pcall(component.SetPoint, component, "CENTER", components.health, "RIGHT", D.GAP + D.CURL_X * dragon, 0)
+            and pcall(component.SetPoint, component, "CENTER", components.health, "RIGHT",
+                D.GAP + D.CURL_X * dragon + offsetX, offsetY)
     end
     return components.level ~= nil
-        and pcall(component.SetPoint, component, "TOPLEFT", components.level, "CENTER", -D.CURL_X * dragon, D.CURL_Y * dragon)
+        and pcall(component.SetPoint, component, "TOPLEFT", components.level, "CENTER",
+            -D.CURL_X * dragon + offsetX, D.CURL_Y * dragon + offsetY)
 end
 
 -- The preview's custom part riding a bar's fill (Schema's FILL), as Placement's PlaceOnFill on the plates: anchored to
@@ -2496,10 +2521,12 @@ function Options:PlaceEditorFitted(key, component, position, scale)
     local ratio = self:EditorDrawnScale(parentKey) / scale
     local _, _, parentScale = self:EditorPlacement(key)
     local outset = (slot.outset or 0) * parentScale / scale
+    local offsetX, offsetY = self:EditorRuleOffset(key)
     component:SetSize(math.max(1, (parent:GetWidth() or 0) * ratio + 2 * outset),
         math.max(1, (parent:GetHeight() or 0) * ratio + 2 * outset))
-    return pcall(component.SetPoint, component, "CENTER", parent, "CENTER", (position.x or 0) * parentScale / scale,
-        (position.y or 0) * parentScale / scale)
+    return pcall(component.SetPoint, component, "CENTER", parent, "CENTER",
+        (position.x or 0) * parentScale / scale + offsetX / scale,
+        (position.y or 0) * parentScale / scale + offsetY / scale)
 end
 
 function Options:PositionEditorComponent(key)
@@ -2516,8 +2543,10 @@ function Options:PositionEditorComponent(key)
     component:SetScale(scale)
     -- Combo points on the health bar (their style's pipAnchor), as Placement puts them on the plates.
     local onBar = key == "combo" and self:EditorComboOnBar()
-    if onBar and pcall(component.SetPoint, component, onBar[1], self.editorComponents.health, onBar[2], 0, onBar[3]) then
-        return
+    if onBar then
+        local offsetX, offsetY = self:EditorRuleOffset(key)
+        if pcall(component.SetPoint, component, onBar[1], self.editorComponents.health, onBar[2], offsetX / scale,
+            onBar[3] + offsetY / scale) then return end
     end
     if self:PlaceEditorDragon(key, component) then return end
     component:ClearAllPoints()
@@ -2529,9 +2558,11 @@ function Options:PositionEditorComponent(key)
     local parentComponent = pinTarget and self.editorComponents and self.editorComponents[pinTarget]
     if parentComponent then
         local _, _, parentScale = self:EditorPlacement(key)
+        local offsetX, offsetY = self:EditorRuleOffset(key)
         -- A custom part riding a bar's fill meets the preview bar's fill, as Placement's does on the plates.
-        if position.fill and self:PlaceEditorOnFill(component, position, pinTarget, ((position.x or 0) * parentScale) / scale,
-            ((position.y or 0) * parentScale) / scale) then
+        if position.fill and self:PlaceEditorOnFill(component, position, pinTarget,
+            ((position.x or 0) * parentScale + offsetX) / scale,
+            ((position.y or 0) * parentScale + offsetY) / scale) then
             return
         end
         -- Parts meet with what they draw (a text's measured string, not its wider frame), as on
@@ -2542,8 +2573,8 @@ function Options:PositionEditorComponent(key)
         -- The parent may still hang off this part from an earlier layout (a caller placing one
         -- part alone): the client refuses that anchor, so the part falls back to its place below.
         if pcall(component.SetPoint, component, edge[3], parentComponent, edge[4],
-            ((position.x or 0) * parentScale) / scale - edge[1] * (ownX + targetX * targetScale),
-            ((position.y or 0) * parentScale) / scale - edge[2] * (ownY + targetY * targetScale)) then
+            ((position.x or 0) * parentScale + offsetX) / scale - edge[1] * (ownX + targetX * targetScale),
+            ((position.y or 0) * parentScale + offsetY) / scale - edge[2] * (ownY + targetY * targetScale)) then
             return
         end
         component:ClearAllPoints()
@@ -2552,7 +2583,9 @@ function Options:PositionEditorComponent(key)
     local transform = self:EditorTransforms()[key]
     local x = transform and transform.x or originX + position.x * positionScale
     local y = transform and transform.y or originY + position.y * positionScale
-    component:SetPoint("CENTER", self.editorPreviewStage or self.editorCanvas, "CENTER", x / scale, y / scale)
+    local offsetX, offsetY = self:EditorRuleOffset(key, true)
+    component:SetPoint("CENTER", self.editorPreviewStage or self.editorCanvas, "CENTER",
+        (x + offsetX) / scale, (y + offsetY) / scale)
 end
 
 -- This layout's groups, in tree order: { key, name, members (what sits directly under it and is

@@ -279,6 +279,24 @@ PS._CreatePlatePlacement = function(context)
         return pcall(region.SetPoint, region, point, fill, relative, x, y)
     end
 
+    local function RuleOffset(data, key, includeParents)
+        local x, y = 0, 0
+        local offsets, layout = data.ruleOffsets, data.layout
+        local position = layout and layout[key]
+        local offset = offsets and offsets[key]
+        if offset then x, y = offset.x, offset.y end
+        if includeParents and position then
+            local parent = position.parent
+            for _ = 1, S.MAX_DEPTH do
+                if type(parent) ~= "string" or S.IsGroupKey(parent) or not layout[parent] then break end
+                offset = offsets and offsets[parent]
+                if offset then x, y = x + offset.x, y + offset.y end
+                parent = layout[parent].parent
+            end
+        end
+        return x, y
+    end
+
     -- Places region at key's drawn centre and scale. Offsets are in the region's own scaled units.
     -- A Dynamic part is pinned to its parent part's edge with a real anchor, so it follows that
     -- part live (a name's width as the text changes); to the part it takes the place of while its
@@ -291,10 +309,12 @@ PS._CreatePlatePlacement = function(context)
         local edge = position and S.ATTACH_EDGES[position.attach]
         local target = edge and data and S.PinTarget(layout, key, data.absent)
         local parentRegion = target and PartRegion(data, target)
+        local offsetX, offsetY = RuleOffset(data, key, false)
         if parentRegion then
             local parentTransform = Transforms(layout, data)[position.parent]
             local parentScale = parentTransform and parentTransform.scale or 1
-            local x, y = (position.x or 0) * parentScale / scale, (position.y or 0) * parentScale / scale
+            local x, y = ((position.x or 0) * parentScale + offsetX) / scale,
+                ((position.y or 0) * parentScale + offsetY) / scale
             -- ApplyComponentLayout lets every part go first, so the parent cannot still hang off this
             -- part from another layout; should the client refuse anyway, the part keeps its place.
             if (position.fill and PlaceOnFill(region, data, key, target, x, y))
@@ -304,7 +324,9 @@ PS._CreatePlatePlacement = function(context)
             end
             region:ClearAllPoints()
         end
-        region:SetPoint("CENTER", region.plateSmithOverlay or region:GetParent(), "CENTER", transform.x / scale, transform.y / scale)
+        offsetX, offsetY = RuleOffset(data, key, true)
+        region:SetPoint("CENTER", region.plateSmithOverlay or region:GetParent(), "CENTER",
+            (transform.x + offsetX) / scale, (transform.y + offsetY) / scale)
         if region.SetScale then region:SetScale(scale) end
     end
 
@@ -316,14 +338,20 @@ PS._CreatePlatePlacement = function(context)
         local scale = data.markStyle == "dragon" and data.markDragon
         if not scale then return end
         local D = PS.ClassificationMark.DRAGON
+        local transform = Transforms(data.layout, data)[key]
+        local partScale = transform and transform.scale > 0 and transform.scale or 1
         if key == "level" then
             region:ClearAllPoints()
-            if not pcall(region.SetPoint, region, "CENTER", data.health, "RIGHT", D.GAP + D.CURL_X * scale, 0) then
+            local offsetX, offsetY = RuleOffset(data, key, false)
+            if not pcall(region.SetPoint, region, "CENTER", data.health, "RIGHT",
+                D.GAP + D.CURL_X * scale + offsetX / partScale, offsetY / partScale) then
                 PlaceRegion(region, data.layout, key, data)
             end
         elseif key == "classification" and region == data.classificationIcon then
             region:ClearAllPoints()
-            if not pcall(region.SetPoint, region, "TOPLEFT", data.level, "CENTER", -D.CURL_X * scale, D.CURL_Y * scale) then
+            local offsetX, offsetY = RuleOffset(data, key, false)
+            if not pcall(region.SetPoint, region, "TOPLEFT", data.level, "CENTER",
+                -D.CURL_X * scale + offsetX / partScale, D.CURL_Y * scale + offsetY / partScale) then
                 PlaceRegion(region, data.layout, key, data)
             end
         end
@@ -343,7 +371,9 @@ PS._CreatePlatePlacement = function(context)
         local own, above = transforms[key], transforms[parentKey]
         local scale = own and own.scale > 0 and own.scale or 1
         local factor = (above and above.scale or 1) / scale
-        local x, y, outset = (position.x or 0) * factor, (position.y or 0) * factor, (slot.outset or 0) * factor
+        local offsetX, offsetY = RuleOffset(data, key, false)
+        local x, y, outset = (position.x or 0) * factor + offsetX / scale,
+            (position.y or 0) * factor + offsetY / scale, (slot.outset or 0) * factor
         if pcall(region.SetPoint, region, "TOPLEFT", parent, "TOPLEFT", x - outset, y + outset)
             and pcall(region.SetPoint, region, "BOTTOMRIGHT", parent, "BOTTOMRIGHT", x + outset, y - outset) then
             if region.SetScale then region:SetScale(scale) end
@@ -363,8 +393,10 @@ PS._CreatePlatePlacement = function(context)
         if onBar then
             local transform = Transforms(data.layout, data)[key]
             local scale = transform and transform.scale > 0 and transform.scale or 1
+            local offsetX, offsetY = RuleOffset(data, key, false)
             -- A layout pinning the bar to the combo points makes the client refuse: they keep their place.
-            if pcall(region.SetPoint, region, onBar[1], data.health, onBar[2], 0, onBar[3] / scale) then
+            if pcall(region.SetPoint, region, onBar[1], data.health, onBar[2],
+                offsetX / scale, onBar[3] + offsetY / scale) then
                 if region.SetScale then region:SetScale(scale) end
                 return
             end
@@ -606,6 +638,8 @@ PS._CreatePlatePlacement = function(context)
     function NameCast.Place(data)
         local cast, guild = data.cast, data.layout and data.layout.guild
         local above = data.name
+        local offset = data.ruleOffsets and data.ruleOffsets.cast
+        local offsetX, offsetY = offset and offset.x or 0, offset and offset.y or 0
         if type(guild) == "table" and guild.parent == "name" and not S.TurnedOff(guild) and data.guild:IsShown() then
             above = data.guild
         end
@@ -613,9 +647,9 @@ PS._CreatePlatePlacement = function(context)
         if cast.SetScale then cast:SetScale(1) end
         -- A layout could pin the name under the cast bar; the client refuses the loop, so the bar
         -- then sits under the plate's centre.
-        if not pcall(cast.SetPoint, cast, "TOP", above, "BOTTOM", 0, -NAME_CAST_GAP) then
+        if not pcall(cast.SetPoint, cast, "TOP", above, "BOTTOM", offsetX, -NAME_CAST_GAP + offsetY) then
             cast:ClearAllPoints()
-            cast:SetPoint("TOP", data.overlay, "CENTER", 0, -NAME_CAST_GAP)
+            cast:SetPoint("TOP", data.overlay, "CENTER", offsetX, -NAME_CAST_GAP + offsetY)
         end
     end
 
@@ -825,7 +859,8 @@ PS._CreatePlatePlacement = function(context)
 
     return {
         PartRegions = PartRegions, SafeSize = SafeSize, LineSize = LineSize, AnchorPart = AnchorPart,
-        HasStacks = HasStacks, Transforms = Transforms, RestoreParentFaded = RestoreParentFaded, RegionAlpha = RegionAlpha,
+        HasStacks = HasStacks, Transforms = Transforms, RuleOffset = RuleOffset, RestoreParentFaded = RestoreParentFaded,
+        RegionAlpha = RegionAlpha,
         ApplyParentVisibility = ApplyParentVisibility, UpdateValueAnchors = UpdateValueAnchors,
         ApplyComponentLayout = ApplyComponentLayout, StackStateChanged = StackStateChanged, ReflowStacks = ReflowStacks,
         NameCast = NameCast, CastLayout = CastLayout,

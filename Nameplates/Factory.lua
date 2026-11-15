@@ -138,6 +138,7 @@ PS._CreatePlateFactory = function(context)
         if overlay:GetParent() ~= root then overlay:SetParent(root) end
         overlay:ClearAllPoints()
         overlay:SetPoint("CENTER", root, "CENTER", 0, 0)
+        data.ruleOffsets = nil
         overlay:SetFrameLevel((root:GetFrameLevel() or 0) + 20)
         data.root = root
     end

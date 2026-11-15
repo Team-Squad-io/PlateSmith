@@ -176,8 +176,8 @@ end
 local function BuildTestPanel(canvas)
     -- It takes the pointer only over its own rectangle; drags elsewhere reach the preview.
     local testPanel = CreateFrame("Frame", nil, canvas)
-    -- Tall enough for four choices and twelve rows of boxes above Reset (Behind you and Loose share the last).
-    local HEIGHT = 456
+    -- Tall enough for four choices and thirteen rows of boxes above Reset (Behind you and Loose share a row).
+    local HEIGHT = 476
     testPanel:SetSize(300, HEIGHT)
     testPanel:SetFrameLevel(canvas:GetFrameLevel() + 30)
     testPanel:EnableMouse(true)
@@ -374,6 +374,7 @@ local function BuildTestPanel(canvas)
         -- column (slot; rows 20 px apart). unit.behind: the Behind you part and rules, beside it; Reset is under them.
         { "threat.loose", L["Loose"], slot = 24 },
         { "unit.behind", L["Behind you"], slot = 23 },
+        { "unit.incombat", L["Unit in combat"], slot = 25 },
     }
     -- slot: where the box goes, two to a row 20 px apart (a built-in flag may name its own).
     local function FlagBox(slot, flag, label, module)

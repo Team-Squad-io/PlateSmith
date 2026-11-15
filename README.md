@@ -16,7 +16,9 @@ other addon.
 - **Decoration sets**: **Target arrows** (shown only on your target) and a **Fill marker**, added in one step
 - **Totems, styled on their own**: the Enemies and Friendly NPCs tabs have a **Type** beside Design; with **Totems**
   open, what you change is for totems only, and **Display** shows a totem as its plate, **just its icon**, its icon
-  and name, its name only or nothing. The icon is a **Totem icon** part you move, size and pin like any other
+  and name, its name only or nothing. The icon is a **Totem icon** part you move, size and pin like any other part
+- **Pets, styled on their own**: the Enemies and Friendly NPCs tabs have a **Pets** type for hunter pets and warlock summons. Set their
+  scale, remove title or do anything else.
 - **Incoming heals and absorbs** on health bars (off until you turn them on), all heals or others' only
 - **Range**: a part (+ Add › Text) showing whether your spells reach the unit: a dot, the distance (**<5**, **<30**,
   **30+**) or both, out of range, in range or always, in your colours; from your spellbook, on friendly plates too
