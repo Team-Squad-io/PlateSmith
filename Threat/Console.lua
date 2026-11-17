@@ -88,6 +88,7 @@ local function NormalizeWindow(record, id)
     -- Tank mode: your current target is the first row whatever the order (on by default).
     record.targetFirst = record.targetFirst ~= false
     record.alpha = Bounded(ranges.alpha, record.alpha, 1)
+    record.layer = Geometry.LAYERS[record.layer] and record.layer or Geometry.DEFAULT_LAYER
     record.rowHeight = math.floor(Bounded(ranges.rowHeight, record.rowHeight, Themes.Get(theme).rowHeight) + 0.5)
     record.width = Bounded(ranges.width, record.width, DEFAULT_WIDTH)
     record.height = Bounded(ranges.height, record.height, DEFAULT_HEIGHT)
@@ -393,7 +394,7 @@ function ThreatConsole:RenameWindow(id, name)
     return true
 end
 
--- Validated writes for one window's options (mode, theme, locked, alpha, rowHeight, dockMeter,
+-- Validated writes for one window's options (mode, theme, locked, alpha, layer, rowHeight, dockMeter,
 -- dockSide, shown, targetFirst). Returns false for an unknown key or a rejected value.
 -- In combat a held Rescue window changes nothing but its saved Shown (its hide waits for combat end), and no
 -- window switches into or out of Rescue; Rescue's own options are refused then too.
@@ -424,6 +425,8 @@ function ThreatConsole:SetWindowOption(id, key, value)
         if value ~= 0 and value ~= 1 and value ~= 2 and value ~= 3 then return false end
     elseif key == "dockSide" then
         if not dockSides[value] then return false end
+    elseif key == "layer" then
+        if not Geometry.LAYERS[value] then return false end
     else
         return false
     end
@@ -452,7 +455,13 @@ function ThreatConsole:SetWindowOption(id, key, value)
             end
             record.rescueRestoreWidth, record.rescueRestoreHeight = nil, nil
         end
-        if key == "theme" then meter:ApplyTheme() else meter:Layout() end
+        if key == "theme" then
+            meter:ApplyTheme()
+        elseif key == "layer" then
+            meter:ApplyLayer()
+        else
+            meter:Layout()
+        end
         if key == "dockMeter" and value == 0 then meter:Place() end
         if entering then
             Rescue.Enter(meter)

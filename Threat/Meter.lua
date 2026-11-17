@@ -413,7 +413,8 @@ end
 local function CreateFrames(meter)
     local id = meter.config.id
     local frame = Window.Create("PlateSmithThreatWindow" .. id, {
-        width = meter.config.width, height = meter.config.height, strata = "DIALOG",
+        width = meter.config.width, height = meter.config.height,
+        strata = Geometry.LAYERS[meter.config.layer] or Geometry.LAYERS[Geometry.DEFAULT_LAYER],
         movable = false, closeButton = false, closeOnEscape = false,
         background = { 0, 0, 0, 0 }, border = { 0, 0, 0, 0 },
     })
@@ -602,10 +603,17 @@ local function HideAll(textures)
     for _, texture in ipairs(textures) do texture:Hide() end
 end
 
+-- Only when it changes: ApplyTheme runs this too, and a Rescue window's secure buttons make the frame protected.
+function Meter:ApplyLayer()
+    local strata = Geometry.LAYERS[self.config.layer] or Geometry.LAYERS[Geometry.DEFAULT_LAYER]
+    if self.frame:GetFrameStrata() ~= strata then self.frame:SetFrameStrata(strata) end
+end
+
 function Meter:ApplyTheme()
     local theme = Themes.Get(self.config.theme)
     self.theme = theme
     local frame = self.frame
+    self:ApplyLayer()
     if theme.kind == "backdrop" then
         frame:SetBackdrop({ bgFile = theme.bgFile or Themes.FLAT, edgeFile = theme.edgeFile or Themes.FLAT,
             edgeSize = theme.edgeSize or 1,
