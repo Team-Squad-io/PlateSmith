@@ -464,23 +464,58 @@ function PlateColours.UnitClassChannels(unit)
     return PlateColours.ClassChannels(type(PS.GetSettings) == "function" and PS.GetSettings() or nil, classFile, has)
 end
 
--- The game's colour for a level against yours (the Level's Colour › Difficulty, a colour rule's Set difficulty colour):
--- GetCreatureDifficultyColor, else GetQuestDifficultyColor (red, orange, yellow, green or grey), and red for a level the
--- game hides (-1, "??"); a { r, g, b } table (the client's own, shared: never written), or nil for a level that is not
--- readable, a client without either function or an answer that is not a readable colour, so the part keeps its normal
--- colour (fail closed). One answer for the plates and Studio's preview.
+-- The colour for a level against yours (the Level's Colour › Difficulty, a colour rule's Set difficulty colour): red,
+-- orange, yellow, green or grey, and red for a level the game hides (-1, "??"); a { r, g, b } table (the client's
+-- QuestDifficultyColors entry, shared: never written, else PlateColours.DIFFICULTY's), or nil for a level that is not
+-- readable, so the part keeps its normal colour (fail closed). One answer for the plates and Studio's preview.
+-- Worked out here by Classic's rules (PlateColours.DifficultyKey), not asked of the game: on Forever both
+-- GetCreatureDifficultyColor and GetQuestDifficultyColor grey mobs that still give XP (live 2026-11-16: at 46 the
+-- creature colour greyed 37-39; at 47 the quest colour greyed a 41; both gave XP, and a 36 at 46 did not, Classic's
+-- grey level). Green then means "still gives XP". Only while your own level is not readable are the game's functions
+-- asked (the quest colour, else the creature one).
 PlateColours.HIDDEN_LEVEL = { r = 1, g = 0.1, b = 0.1 }
+PlateColours.DIFFICULTY = { impossible = PlateColours.HIDDEN_LEVEL, verydifficult = { r = 1, g = 0.5, b = 0.25 },
+    difficult = { r = 1, g = 0.82, b = 0 }, standard = { r = 0.25, g = 0.75, b = 0.25 },
+    trivial = { r = 0.5, g = 0.5, b = 0.5 } }
+
+-- Classic's grey level for yours: a mob at or under it gives no XP (0 below level 6: nothing is grey).
+function PlateColours.GreyLevel(own)
+    if own <= 5 then return 0 end
+    if own <= 39 then return own - 5 - math.floor(own / 10) end
+    if own <= 59 then return own - 1 - math.floor(own / 5) end
+    return own - 9
+end
+
+-- Classic's colour for a level against yours, by QuestDifficultyColors' key: 5+ above impossible (red), 3-4 above
+-- verydifficult (orange), within 2 difficult (yellow), down to the grey level standard (green), then trivial (grey).
+function PlateColours.DifficultyKey(level, own)
+    local diff = level - own
+    if diff >= 5 then return "impossible" end
+    if diff >= 3 then return "verydifficult" end
+    if diff >= -2 then return "difficult" end
+    if level > PlateColours.GreyLevel(own) then return "standard" end
+    return "trivial"
+end
+
+-- The client's QuestDifficultyColors entry for key, else PlateColours.DIFFICULTY's.
+local function DifficultyColour(key)
+    local colours = rawget(_G, "QuestDifficultyColors")
+    local colour = type(colours) == "table" and colours[key]
+    local Number = PS.Secret.Number
+    if type(colour) == "table" and Number(colour.r) and Number(colour.g) and Number(colour.b) then return colour end
+    return PlateColours.DIFFICULTY[key]
+end
+
 function PlateColours.LevelDifficulty(level)
     if not PS.Secret.IsReadable(level) or type(level) ~= "number" then return nil end
-    if level < 0 then
-        local colours = rawget(_G, "QuestDifficultyColors")
-        local impossible = type(colours) == "table" and colours.impossible
-        if type(impossible) == "table" and type(impossible.r) == "number" then return impossible end
-        return PlateColours.HIDDEN_LEVEL
-    end
+    if level < 0 then return DifficultyColour("impossible") end
     if level == 0 then return nil end
-    local api = rawget(_G, "GetCreatureDifficultyColor")
-    if type(api) ~= "function" then api = rawget(_G, "GetQuestDifficultyColor") end
+    local read, own = pcall(UnitLevel, "player")
+    if read and PS.Secret.IsReadable(own) and type(own) == "number" and own > 0 then
+        return DifficultyColour(PlateColours.DifficultyKey(level, own))
+    end
+    local api = rawget(_G, "GetQuestDifficultyColor")
+    if type(api) ~= "function" then api = rawget(_G, "GetCreatureDifficultyColor") end
     if type(api) ~= "function" then return nil end
     local ok, colour = pcall(api, level)
     if not (ok and PS.Secret.IsReadable(colour) and type(colour) == "table") then return nil end

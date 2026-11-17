@@ -128,6 +128,13 @@ ProfilePresets.TOTEM_ICON = { id = "totemIcon", name = L["Totem icon"],
     parts = { { name = L["Totem icon"], parent = "name", attach = "top", x = 0, y = 2,
         slot = { kind = "icon", source = "static", image = S.TOTEMS.PICTURE, width = S.TOTEMS.ICON_SIZE,
             height = S.TOTEMS.ICON_SIZE } } } }
+-- Type › Pets' pet icon (1.4.2), alike: the pet's family icon (Schema's PETS.PICTURE) just above the name.
+ProfilePresets.PET_ICON = { id = "petIcon", name = L["Pet icon"],
+    parts = { { name = L["Pet icon"], parent = "name", attach = "top", x = 0, y = 2,
+        slot = { kind = "icon", source = "static", image = S.PETS.PICTURE, width = S.PETS.ICON_SIZE,
+            height = S.PETS.ICON_SIZE } } } }
+-- Each Display type's icon part (Studio's + Add › Shape, and Display › Icon on a layer without one).
+ProfilePresets.DISPLAY_ICONS = { totem = ProfilePresets.TOTEM_ICON, pet = ProfilePresets.PET_ICON }
 
 -- A decoration set by id (read only), or nil.
 function ProfilePresets.Decoration(id)

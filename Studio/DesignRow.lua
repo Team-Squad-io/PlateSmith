@@ -28,11 +28,19 @@ local DESIGN_WIDTH = 136
 local TYPE_TIPS = {
     object = L["All objects, or one type of object (herbs, ore, chests, quest objects, books...), as the game's own icon "
         .. "says. A type looks like All objects except what you change while it is open, in every place."],
-    enemy = L["All NPCs, or Totems: enemy shamans' totems. Totems look like All NPCs except what you change while they "
-        .. "are open (and their Display: icon, name or hidden), in every place."],
-    friendlyNPC = L["All NPCs, or Totems: your group's totems. Totems look like All NPCs except what you change while they "
-        .. "are open (and their Display: icon, name or hidden), in every place."],
+    enemy = L["All NPCs, Totems (enemy shamans' totems) or Pets (enemy players' pets: a hunter's beast, a warlock's "
+        .. "demon). Each looks like All NPCs except what you change while it is open (and its Display: icon, name or "
+        .. "hidden), in every place."],
+    friendlyNPC = L["All NPCs, Totems (your group's totems) or Pets (your pet and your group's). Each looks like All "
+        .. "NPCs except what you change while it is open (and its Display: icon, name or hidden), in every place."],
+    friendlyPlayer = L["Players only. Totems and pets are NPCs to the game, never on a player's plate: they have their "
+        .. "own Type on the Friendly NPCs and Enemies tabs. Pick one here to go there."],
+    enemyPlayer = L["Enemy players only. Totems and pets are NPCs to the game, never on a player's plate: they have "
+        .. "their own Type on the Enemies and Friendly NPCs tabs. Pick one here to go there."],
 }
+-- The Players tabs' Type: a pointer, not a choice. Totems and pets draw on the NPC tabs (Designs.TypesOf), so the
+-- menu opens those tabs' Type › Totems or Pets, the tab's own side first.
+local POINTER_TABS = { friendlyPlayer = { "friendlyNPC", "enemy" }, enemyPlayer = { "enemy", "friendlyNPC" } }
 
 local function Settings() return type(PS.GetSettings) == "function" and PS.GetSettings() or nil end
 
@@ -420,9 +428,10 @@ function Options:RefreshEditorPlayersGate(settings)
     end
 end
 
--- Studio's Type (Objects: All objects or one object type; Enemies and Friendly NPCs: All NPCs or Totems): the design
+-- Studio's Type (Objects: All objects or one object type; Enemies and Friendly NPCs: All NPCs, Totems or Pets): the design
 -- itself or one type, whose changes sit on the open design (Core/Designs.lua), each tab its own. On the Objects the
--- preview's sample becomes that type (Test values' Object), so its icon and Status text show; Totems preview a totem.
+-- preview's sample becomes that type (Test values' Object), so its icon and Status text show; Totems preview a totem,
+-- Pets a pet.
 function Options:SetEditorObjectType(objectType)
     local plateType = self.editorProfile
     if #Designs.TypesOf(plateType) == 0 then return false end
@@ -432,7 +441,7 @@ function Options:SetEditorObjectType(objectType)
     local sample = objectType and PS.ActionIcon.TYPE_SAMPLES[objectType]
     if sample and self.templateSamples then self.templateSamples["object.kind"] = sample end
     if self.editorTestObjectKind then self.editorTestObjectKind:Refresh() end
-    -- A totem's names-only view follows its Display, not the view chosen for the tab's other plates.
+    -- A totem's or a pet's names-only view follows its Display, not the view chosen for the tab's other plates.
     if Schema.TOTEMS.PLATES[plateType] then self.editorFriendlyView = nil end
     return self:SetEditorProfile(plateType)
 end
@@ -445,19 +454,40 @@ end
 local function ResetTypeText(self)
     return string.format(L["Reset to %s..."], self:EditorAllTypesLabel())
 end
+-- Type › Totems or Pets on plateType's tab (the Players tabs' pointer): its open design, unless Blizzard draws that
+-- one's friendly plates (then World).
+function Options:OpenEditorTypeOn(plateType, objectType)
+    if not Designs.IsType(plateType, objectType) or not self:SetEditorProfile(plateType) then return false end
+    if self:IsEditorBlizzardNames() and not self:OpenEditorDesign(plateType, "world") then return false end
+    return self:SetEditorObjectType(objectType)
+end
+
+local function PointerItems(self, tabs)
+    local items = { { text = L["All players"], checked = true, func = function() end }, { separator = true } }
+    for _, plateType in ipairs(tabs) do
+        for _, objectType in ipairs(Designs.TypesOf(plateType)) do
+            local text = string.format(L["%s › %s"], self:EditorPlateLabel(plateType), Designs.TYPE_LABELS[objectType])
+            items[#items + 1] = { text = text, func = function() self:OpenEditorTypeOn(plateType, objectType) end,
+                tooltip = { title = text, text = L["Opens that tab with this Type open."] } }
+        end
+    end
+    return items
+end
+
 local function ResetTypeHelp(self)
     return string.format(L["Everything changed for this type goes: it looks like %s again."], self:EditorAllTypesLabel())
 end
 
--- The Type menu: the design itself, then each type (one with changes says so), the open one checked; then the open
--- type's reset.
+-- The Type menu: the design itself, then each type (one with changes says so: custom), the open one checked; then the
+-- open type's reset. The Players tabs': the pointer (POINTER_TABS).
 function Options:EditorObjectTypeItems()
     local settings, open, plateType = Settings(), self:EditorObjectType(), self.editorProfile
+    if POINTER_TABS[plateType] then return PointerItems(self, POINTER_TABS[plateType]) end
     local items = { { text = self:EditorAllTypesLabel(), checked = open == nil,
         func = function() self:SetEditorObjectType(nil) end } }
     for _, objectType in ipairs(Designs.TypesOf(plateType)) do
         local label = Designs.TYPE_LABELS[objectType]
-        if settings and Designs.Record(settings, plateType, objectType) then label = string.format(L["%s · changed"], label) end
+        if settings and Designs.Record(settings, plateType, objectType) then label = string.format(L["%s · custom"], label) end
         items[#items + 1] = { text = label, checked = open == objectType,
             func = function() self:SetEditorObjectType(objectType) end }
     end
@@ -538,23 +568,34 @@ function Options:RefreshEditorDesignRow(settings)
     row.dropdown:SetShown(not players)
     -- The field names the place only; its menu and the chip say Blizzard draws it.
     row.dropdown:SetText(Designs.LABELS[self.editorDesign] or L["World"])
-    -- A tab with types (Objects; Enemies and Friendly NPCs: Totems): Type beside it (the design itself, or one type's
-    -- changes over the open design). The field is the same width on every tab (DESIGN_WIDTH), leaving Type's room.
-    local typed = not players and #Designs.TypesOf(self.editorProfile) > 0
+    -- A tab with types (Objects; Enemies and Friendly NPCs: Totems, Pets): Type beside it (the design itself, or one type's
+    -- changes over the open design). The field is the same width on every tab (DESIGN_WIDTH), leaving Type's room. The
+    -- Players tabs' Type is the pointer (POINTER_TABS): All players; on Enemy players after the chip (no Design field).
+    local pointer = POINTER_TABS[self.editorProfile] ~= nil
+    local typed = pointer or (not players and #Designs.TypesOf(self.editorProfile) > 0)
     row.typeLabel:SetShown(typed)
     row.typeDropdown:SetShown(typed)
     local objectType = self:EditorObjectType()
-    row.typeDropdown:SetText(objectType and Designs.TYPE_LABELS[objectType] or self:EditorAllTypesLabel())
+    row.typeDropdown:SetText(pointer and L["All players"]
+        or objectType and Designs.TYPE_LABELS[objectType] or self:EditorAllTypesLabel())
     row.typeTip[1] = TYPE_TIPS[self.editorProfile] or TYPE_TIPS.object
     PaintChip(self, settings)
     row.chip:ClearAllPoints()
-    if players then row.chip:SetPoint("LEFT", row, "LEFT", 0, 0)
-    elseif typed then row.chip:SetPoint("LEFT", row.typeDropdown, "RIGHT", 10, 0)
-    else row.chip:SetPoint("LEFT", row.dropdown, "RIGHT", 14, 0) end
+    row.typeLabel:ClearAllPoints()
+    if players then
+        row.chip:SetPoint("LEFT", row, "LEFT", 0, 0)
+        if row.chip:IsShown() then row.typeLabel:SetPoint("LEFT", row.chip, "RIGHT", 14, 0)
+        else row.typeLabel:SetPoint("LEFT", row, "LEFT", 0, 0) end
+    else
+        row.typeLabel:SetPoint("LEFT", row.dropdown, "RIGHT", 10, 0)
+        if typed then row.chip:SetPoint("LEFT", row.typeDropdown, "RIGHT", 10, 0)
+        else row.chip:SetPoint("LEFT", row.dropdown, "RIGHT", 14, 0) end
+    end
     -- Beside Type there is no room for the word before the eye: the dot alone (its tooltip says it whole; Type's menu
-    -- says which types are changed).
-    row.chip.text:SetShown(not typed)
-    if typed then row.chip:SetWidth(DOT_SIZE + 6) end
+    -- says which types are custom). Enemy players' chip comes first, word and all.
+    local dotOnly = typed and not players
+    row.chip.text:SetShown(not dotOnly)
+    if dotOnly then row.chip:SetWidth(DOT_SIZE + 6) end
     if self.RefreshPlateVisibilityEye then self:RefreshPlateVisibilityEye(settings) end
     self:RefreshEditorPlayersGate(settings)
 end

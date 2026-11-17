@@ -39,6 +39,7 @@ Template.tokens = {
     ["level"] = "number", ["name"] = "text", ["target"] = "text",
     ["unit.tagged"] = "flag", ["unit.elite"] = "flag", ["unit.rare"] = "flag", ["unit.boss"] = "flag",
     ["cast.active"] = "flag", ["you.combat"] = "flag", ["unit.target"] = "flag", ["unit.player"] = "flag",
+    ["unit.incombat"] = "flag",
     ["unit.focus"] = "flag", ["quest.needed"] = "flag", ["unit.friendly"] = "flag",
     ["level.smart"] = "text", ["level.diff"] = "signed", ["classification"] = "text", ["guild"] = "text",
     ["cast.name"] = "text", ["threat.hold"] = "text",
@@ -576,6 +577,9 @@ for _, name in ipairs({ "range.known", "range.band", "range", "unit.behind", "pv
     "unit.creature", "creature" }) do
     SINCE_132[name] = true
 end
+-- And 1.4.2's (unit.incombat, from PR #3 by ndzwdz): a version 4 code, which 1.4.0 and 1.4.1 refuse as "not a
+-- condition", as 1.3.2 refuses 1.4.0's.
+SINCE_132["unit.incombat"] = true
 local function ConditionUsesNewWords(text)
     local list = Tokenize(text)
     for _, piece in ipairs(list or {}) do

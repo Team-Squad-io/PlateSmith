@@ -26,10 +26,11 @@ local L = PS.L
 -- Types (plateProfiles.<plate type>.types.<type>, DESIGN.TYPES_OF): the same sparse shape, one layer per type over
 -- whichever design that plate type draws with where the player is (World or a context design), so a herb follows that
 -- place's Objects design except what Herbs change. The Objects' types (DESIGN.TYPES) come from the game's cursor icon
--- (ActionIcon.TYPE_OF); the Enemies' and Friendly NPCs' Totems (each tab its own layer) from the creature type
--- (Nameplates/Totems.lua); none known: the place's design alone. A type has a record only while it changes something
--- (an edit makes it, Reset or an edit back to the same drops it). Settings and the editing helpers address one as the
--- plate type's "<type>" design; For's fourth argument puts it over a place.
+-- (ActionIcon.TYPE_OF); the Enemies' and Friendly NPCs' Totems from the creature type (Nameplates/Totems.lua) and Pets
+-- from the unit's owner (Nameplates/Pets.lua), each tab its own layers; none known: the place's design alone. A type
+-- has a record only while it changes something (an edit makes it, Reset or an edit back to the same drops it).
+-- Settings and the editing helpers address one as the plate type's "<type>" design; For's fourth argument puts it over
+-- a place.
 local DESIGN = S.DESIGN
 local CLEAR = DESIGN.CLEAR
 local PLACEMENT = DESIGN.PLACEMENT
@@ -58,7 +59,7 @@ local NO_TYPES = {}
 function Designs.TypesOf(plateType) return DESIGN.TYPES_OF[plateType] or NO_TYPES end
 Designs.TYPE_LABELS = { herb = L["Herbs"], ore = L["Ore"], loot = L["Chests & loot"], corpse = L["Corpses"],
     quest = L["Quest objects"], book = L["Books & lore"], service = L["Talk & services"], other = L["Other"],
-    totem = L["Totems"] }
+    totem = L["Totems"], pet = L["Pets"] }
 Designs.ALL_TYPES = L["All objects"]
 Designs.ALL_LABELS = { object = Designs.ALL_TYPES, enemy = L["All NPCs"], friendlyNPC = L["All NPCs"] }
 -- The plate type with object types.
@@ -1132,7 +1133,7 @@ function Designs.Report(db)
         end
         report.designs[plateType] = table.concat(words, ", ")
     end
-    -- Types with a layer (designs.objectTypes: the Objects'; enemyTypes, friendlyNPCTypes: their Totems): what each
+    -- Types with a layer (designs.objectTypes: the Objects'; enemyTypes, friendlyNPCTypes: their Totems and Pets): what each
     -- changes, as overrides["<plate type>.<type>"].
     for _, plateType in ipairs(S.profileOrder) do
         local types = {}

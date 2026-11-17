@@ -21,12 +21,16 @@ Model.ABILITIES = {
     ["maul"] = { mod = 1.75 },
     ["swipe"] = { mod = 1.75 },
     ["primal bite"] = { mod = 3 },
-    ["lacerate"] = { mod = false },
+    ["lacerate"] = { mod = 3 },
     ["demoralizing roar"] = { flat = "demoralizingRoar" },
     ["faerie fire"] = { flat = "faerieFire" },
     ["faerie fire (feral)"] = { flat = "faerieFire" },
     ["enrage"] = { flat = "enrage" },
 }
+-- Lacerate: x3 on its damage (the hit and the bleed), measured on Forever (2026-11-15, level 43, Bear Form): a pull of
+-- Lacerate (one stack) and auto attacks only read the game's 7402 against 1414 x 2.15 for the swings, leaving 4362 for
+-- 662 Lacerate damage, x3.06 after the form's 2.15. Earlier pulls with other abilities too land at x3.1 to x3.9 (their
+-- remainders carry those abilities' errors); a flat threat per cast instead fits them worse (152 to 277 a cast).
 -- Enrage: not known (nil). Measured on Forever (2026-11-09, level 24, Bear Form): the cast itself adds no threat; what
 -- its rage over the next seconds adds could not be told apart from the abilities around it.
 Model.ENRAGE = nil

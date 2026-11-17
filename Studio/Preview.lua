@@ -350,18 +350,20 @@ function Options:ApplyEditorMarkFrame(profile)
     if edge then Mark.PlaceRing(edge, health, 1 + outset) end
 end
 
--- Type › Totems with a Display other than Plate: the sample totem as the plates draw one (Lifecycle's ApplyLayout,
--- TOTEMS.Layout, Totems.Choice): every part but the name and the totem icon parts (Icon: not the name; Name only, Hidden:
--- neither) faint, as a hidden part is, so it can still be selected and edited. Icon or Icon and name with no icon part,
--- or no sample icon found: the name, as the plates. The icon parts draw the sample's icon themselves (Media's unit
--- picture: Totems.SampleIcon).
+-- Type › Totems (or Pets) with a Display other than Plate: the sample totem (or pet) as the plates draw one
+-- (Lifecycle's ApplyLayout, TOTEMS.Layout, Totems.Choice): every part but the name and the type's icon parts (Icon: not
+-- the name; Name only, Hidden: neither) faint, as a hidden part is, so it can still be selected and edited. Icon or Icon
+-- and name with no icon part, or no sample icon found: the name, as the plates. The icon parts draw the sample's icon
+-- themselves (Media's unit picture: Totems.SampleIcon, Pets.SampleIcon).
 function Options:ApplyEditorTotemPreview()
-    local components, choice = self.editorComponents or {}, self:EditorTotemChoice()
+    local components, display = self.editorComponents or {}, self:EditorDisplay()
+    local choice = self:EditorDisplayChoice()
     if not choice then return end
     local icons
     if choice == "icon" or choice == "iconName" then
-        icons = PS.ProfileSchema.TOTEMS.IconKeys(self:EditorProfileSettings())
-        if not icons or not PS.Totems.SampleIcon() then choice, icons = "name", nil end
+        icons = display.IconKeys(self:EditorProfileSettings())
+        local picture = PS.Media.UNIT_PICTURES[display.TYPE]
+        if not icons or not (picture and picture.sample()) then choice, icons = "name", nil end
     end
     local kept = icons and icons.keys or {}
     for key, component in pairs(components) do

@@ -716,6 +716,7 @@ function ThreatConsole:ShowActivityTooltip(row)
     self:AddColouringLines(true)
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine(L["Left-click spotlights this exact visible unit."], 0.55, 0.8, 1)
+    GameTooltip:AddLine(L["Right-click: the group replay in the threat breakdown."], 0.55, 0.8, 1)
     GameTooltip:AddLine(L["Click its world plate to target it."], 0.62, 0.72, 0.82)
     GameTooltip:Show()
 end
@@ -752,7 +753,21 @@ function ThreatConsole:ShowMemberTooltip(row)
     self:AddColouringLines(true)
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine(L["Left-click spotlights the enemy being measured."], 0.55, 0.8, 1)
+    GameTooltip:AddLine(entry.isPlayer == true and L["Right-click: your threat in the threat breakdown."]
+        or L["Right-click: the group replay in the threat breakdown."], 0.55, 0.8, 1)
     GameTooltip:Show()
+end
+
+-- A row's right-click, as Details! opens a bar's breakdown: your own row opens Your threat, anyone else's the Group
+-- replay following them (their name, else unit token: the breakdown reads only plain text), an enemy's (tank mode)
+-- the Group replay; each on the newest pull (Threat/Breakdown.lua).
+function ThreatConsole:OpenRowBreakdown(row)
+    local breakdown = PS.ThreatBreakdown
+    if not (breakdown and breakdown.Open and row and row.kind) then return false end
+    local entry = type(row.entry) == "table" and row.entry or {}
+    local member = row.kind == "member"
+    if member and entry.isPlayer == true then return breakdown:Open("yours") end
+    return breakdown:Open("replay", member and entry.name or nil, member and entry.unit or nil)
 end
 
 function ThreatConsole:ShowRowTooltip(row)
@@ -1710,6 +1725,10 @@ function ThreatConsole:OnButton(meter, kind)
         self:SetWindowOption(config.id, "locked", not config.locked)
     elseif kind == "mode" then
         self:SetWindowOption(config.id, "mode", NEXT_MODE[config.mode] or "threat")
+    elseif kind == "breakdown" then
+        -- The same window as the menu's Threat breakdown... (Threat/Breakdown.lua); a second press closes it.
+        if PS.ThreatBreakdown then PS.ThreatBreakdown:Toggle() end
+        return
     elseif kind == "new-window" then
         -- At the limit the button already looks unavailable; nothing to report.
         if not self:CanCreateWindow() then return end

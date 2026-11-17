@@ -415,7 +415,15 @@ local function CreatePanelArt(frame, kind)
             if self.shade then self.shade:Layout(10, 10, w - 20, h - 20) end
         end
         self.rail:Layout(0, 0, w, h)
-        self.fill:SetShown(self.fill.kitLoaded)
+        self.fill:SetShown(self.fill.kitLoaded and not self.hidden)
+    end
+    -- Hides or shows all of it (the threat breakdown trades its dialog panel for the main frame's look).
+    function art:SetShown(shown)
+        self.hidden = not shown
+        self.fill:SetShown(shown and self.fill.kitLoaded)
+        if self.dimmer then self.dimmer:SetShown(shown and self.dimmer.kitLoaded) end
+        if self.shade then self.shade:SetShown(shown) end
+        self.overlay:SetShown(shown)
     end
     return art
 end
@@ -429,7 +437,12 @@ local SHELL_PARTS = {
     "rivetHeaderLeft", "rivetFooterLeft", "rivetFooterRight", "rivetCornerLeft", "rivetCornerRight",
     "rivetPlaqueLeft", "rivetPlaqueRight", "rivetPlaqueSmallLeft", "rivetPlaqueSmallRight", "rivetClose", "rivetCloseTop",
 }
+-- The right rail starts under the close corner's gem and is drawn over the close corner (under its rivet), so the
+-- corner's outer column runs on down into it as the top-left corner runs into the left rail; started below the corner's
+-- foot (159) it left the column ending in the open. Both Studio's frame and CreateFrameShell's.
+local RIGHT_RAIL = { top = 88, sublevel = 4 }
 local SHELL_LAYERS = {
+    right = { "ARTWORK", RIGHT_RAIL.sublevel },
     bodyFill = { "BACKGROUND", -3 }, headerFill = { "BACKGROUND", -2 }, footerFill = { "BACKGROUND", -2 },
     headerRail = { "BORDER", 2 }, footerRail = { "BORDER", 2 },
     plaque = { "ARTWORK", 4 }, logo = { "ARTWORK", 6 }, mountLeft = { "ARTWORK", 5 }, mountRight = { "ARTWORK", 5 },
@@ -479,7 +492,7 @@ function Options:LayoutEditorShell()
     }
     for part, spec in pairs(place) do Theme.Place(shell[part], spec[1], editor, spec[2], spec[3], spec[4], spec[5]) end
     Theme.Repeat(shell.left, "outer-edge-left", editor, 12, 167, H - 299, "y")
-    Theme.Repeat(shell.right, "outer-edge-right", editor, W - 34, 159, H - 291, "y")
+    Theme.Repeat(shell.right, "outer-edge-right", editor, W - 34, RIGHT_RAIL.top, H - 132 - RIGHT_RAIL.top, "y")
     Theme.Repeat(shell.topLeft, "outer-edge-top", editor, 108, 66, px - 32 - 108, "x")
     Theme.Repeat(shell.topRight, "outer-edge-top", editor, px + FRAME.plaque.width + 32, 66,
         W - 123 - (px + FRAME.plaque.width + 32), "x")
@@ -1463,7 +1476,11 @@ local function DressStudioDialog(frame)
     if frame.SetBackdrop then frame:SetBackdrop(nil) end
     local art = CreatePanelArt(frame, "dark")
     frame.studioArt = art
-    if frame.HookScript then frame:HookScript("OnSizeChanged", function() art:Layout() end) end
+    if frame.HookScript then
+        frame:HookScript("OnSizeChanged", function() art:Layout() end)
+        -- A size set while hidden may not have laid it out (the window resized, the art not).
+        frame:HookScript("OnShow", function() art.laidWidth = nil art:Layout() end)
+    end
     art:Layout()
     if frame.title then
         frame.title:SetFont(FONT, 19)
@@ -1601,6 +1618,94 @@ Options.studioChrome = {
     LABEL = LABEL,
     GOLD = GOLD,
 }
+
+-- Studio's painted outer frame without its plaque, logo and header, for a smaller window (the threat breakdown's
+-- Studio look): the corners, the close corner with the kit's close button in its recess, the rails, the side gems
+-- the header's bottom rail (Studio's headerRail and its left rivet: the close corner's foot lands on it, so the corner
+-- does not end in the open; the caller's panels start below it, 105 + 8 down in the window's units), Studio's footer
+-- rail (footerRail, 78 up from the window's bottom: where the bottom corners' inner curves start, so the caller's
+-- panels end above it) and the body fill.
+-- It uses LayoutEditorShell's measures on a canvas 10 px wider each side, 47 px taller above and
+-- 24 below, so the close corner's top and the corners' outer edges meet the window's own. Returns the shell:
+-- Layout() after a resize, SetShown(shown), and close (the button; the caller sets its click).
+function Options.studioChrome.CreateFrameShell(frame)
+    local shell = { textures = {} }
+    local parts = { "cornerTL", "cornerBL", "cornerBR", "closeBox", "left", "right", "top", "bottom", "bodyFill",
+        "gemLeft", "gemRight", "rivetCornerLeft", "rivetCornerRight", "rivetCloseTop", "rivetClose", "headerRail",
+        "rivetHeaderLeft", "footerRail" }
+    for _, part in ipairs(parts) do
+        local layer, sublevel = "ARTWORK", 1
+        if part == "bodyFill" then layer, sublevel = "BACKGROUND", -3
+        elseif part:find("^corner") or part == "closeBox" then sublevel = 3
+        elseif part == "right" then sublevel = RIGHT_RAIL.sublevel
+        elseif part:find("^gem") or part:find("^rivet") then layer = "OVERLAY" end
+        shell.textures[part] = frame:CreateTexture(nil, layer, nil, sublevel)
+    end
+    local close = CreateCloseButton(frame)
+    close.backing = close:CreateTexture(nil, "BACKGROUND")
+    Theme.Place(close.backing, "close-backing", close, 0, 0)
+    close:SetFrameLevel(frame:GetFrameLevel() + 25)
+    shell.close = close
+    -- width, height: the size OnSizeChanged gives (the frame's own may still be the old one while it resizes). force:
+    -- lay out even at the size laid last (a Show: a size set while hidden may never have laid it out).
+    function shell:Layout(width, height, force)
+        width, height = width or frame:GetWidth(), height or frame:GetHeight()
+        if not force and self.laidWidth == width and self.laidHeight == height then return end
+        self.laidWidth, self.laidHeight = width, height
+        local W, H, t = width + 20, height + 71, self.textures
+        local function Place(part, name, x, y) Theme.Place(t[part], name, frame, x - 10, y - 47) end
+        local function Run(part, name, x, y, extent, axis)
+            Theme.Repeat(t[part], name, frame, x - 10, y - 47, extent, axis)
+        end
+        Place("cornerTL", "outer-corner-tl", 12, 55)
+        Place("cornerBL", "outer-corner-bl", 12, H - 132)
+        Place("cornerBR", "outer-corner-br", W - 114, H - 132)
+        Place("closeBox", "close-box", W - 123, 47)
+        Place("rivetCornerLeft", "rivet-corner", 18, H - 54)
+        Place("rivetCornerRight", "rivet-corner", W - 44, H - 54)
+        -- The close corner's two rivets, where Studio has them (beside its top, under its recess).
+        Place("rivetCloseTop", "rivet-small", W - 107, 57)
+        Place("rivetClose", "rivet-close", W - 49, 129)
+        Place("rivetHeaderLeft", "rivet-small", 10, 153)
+        Run("headerRail", "header-edge-bottom", 36, 152, W - 72, "x")
+        Run("footerRail", "footer-edge-top", 36, H - 102, W - 72, "x")
+        local gemY = math.floor(47 + (height - 59) / 2 + 0.5)
+        Place("gemLeft", "side-gem-left", 7, gemY)
+        Place("gemRight", "side-gem-right", W - 39, gemY)
+        Run("left", "outer-edge-left", 12, 167, H - 299, "y")
+        Run("right", "outer-edge-right", W - 34, RIGHT_RAIL.top, H - 132 - RIGHT_RAIL.top, "y")
+        Run("top", "outer-edge-top", 108, 66, W - 123 - 108, "x")
+        Run("bottom", "outer-edge-bottom", 116, H - 51, W - 230, "x")
+        Theme.Fill(t.bodyFill, "outer-fill", frame, 24, 37, W - 68, H - 135, 1)
+        close:ClearAllPoints()
+        close:SetPoint("TOPLEFT", frame, "TOPLEFT", W - 75 - 10, -(69 - 47))
+        self:SetShown(self.shown ~= false)
+    end
+    function shell:SetShown(shown)
+        self.shown = shown and true or false
+        for _, texture in pairs(self.textures) do texture:SetShown(self.shown and texture.kitLoaded == true) end
+        close:SetShown(self.shown)
+    end
+    return shell
+end
+
+-- The scale Studio draws at: its chosen size (Settings › Studio size), made smaller only when Studio would not fit the
+-- screen (FitVisualEditorToScreen). A window dressed in Studio's kit (the threat breakdown) takes it, so its frame, art
+-- and text match Studio's size on screen.
+function Options.studioChrome.WindowScale()
+    local editor = Options.editor
+    if editor and editor.GetScale then
+        local scale = editor:GetScale()
+        if type(scale) == "number" and scale > 0 then return scale end
+    end
+    local scale = Options:GetStudioScale()
+    local screenWidth = UIParent and UIParent.GetWidth and UIParent:GetWidth()
+    local screenHeight = UIParent and UIParent.GetHeight and UIParent:GetHeight()
+    if screenWidth and screenHeight and screenWidth > 0 and screenHeight > 0 then
+        scale = math.min(scale, (screenWidth - 40) / 1440, (screenHeight - 40) / 900)
+    end
+    return math.max(0.5, scale)
+end
 
 -- A Studio checkbox with the kit's art and a light label (the preview's Snap, the What's new window's opt-out).
 function Options.studioChrome.KitCheckbox(parent, text, onClick)

@@ -149,6 +149,7 @@ PS._CreateTemplateReaders = function(context)
         ["you.combat"] = function() return Call(UnitAffectingCombat, "player") end,
         ["unit.target"] = function(_, unit) return Call(UnitIsUnit, unit, "target") end,
         ["unit.player"] = function(_, unit) return Call(UnitIsPlayer, unit) end,
+        ["unit.incombat"] = function(_, unit) return Call(UnitAffectingCombat, unit) end,
         ["unit.focus"] = function(_, unit) return Call(UnitIsUnit, unit, "focus") end,
         -- The mark's letters after the level (the Elite / rare mark's Level suffix draws the same letters).
         ["level.smart"] = function(_, unit, read)
@@ -320,6 +321,8 @@ PS._CreateTemplateReaders = function(context)
         ["object.id"] = false, ["unit.id"] = false, ["object.quest"] = "quest",
         -- A unit's creature type is fixed for it.
         ["unit.creature"] = false, ["creature"] = false,
+        -- Its combat follows UNIT_FLAGS (Lifecycle's changes.UnitFlags marks "combat").
+        ["unit.incombat"] = "combat",
         -- A kept line, a skill change or Cultivation's marks "object" (ObjectStatus' Follow and FollowHerbs).
         ["object.skill"] = "object", ["object.cangather"] = "object", ["object.cancultivate"] = "object",
     }

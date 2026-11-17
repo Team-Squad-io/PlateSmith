@@ -106,20 +106,26 @@ end
 PS.Media.RegisterUnitPicture("totem", { label = PS.L["This totem's icon"], read = UnitTotemIcon, sample = Totems.SampleIcon,
     size = { TOTEMS.ICON_SIZE, TOTEMS.ICON_SIZE }, coords = { 0.08, 0.92, 0.08, 0.92 }, only = Totems.TYPE })
 
--- What a plate laid out now draws for a totem: nil (not drawn with the Totems layer, or its Display is Plate),
--- "hidden", "name", "icon" or "iconName", and for the last two its icon parts (TOTEMS.IconKeys of layout). With no
--- icon found, or no icon part, Icon and Icon and name show the name rather than nothing. drawn: PlateSmith draws this
--- plate (its own, shown).
+-- Each Display type's icon for a unit (Schema's TYPE_DISPLAYS; Nameplates/Pets.lua adds the pet's): type key ->
+-- function(unit) -> texture or nil.
+Totems.DISPLAY_ICONS = { totem = function(unit) return Totems.Icon(unit) end }
+
+-- What a plate laid out now draws for a totem or a pet (Lifecycle's ApplyLayout, data.totem): nil (not drawn with a
+-- Totems or Pets layer, or its Display is Plate), "hidden", "name", "icon" or "iconName", and for the last two its icon
+-- parts (the type's IconKeys of layout). With no icon found, or no icon part, Icon and Icon and name show the name
+-- rather than nothing. drawn: PlateSmith draws this plate (its own, shown).
 function Totems.Choice(data, drawn, layout)
-    if not drawn or data.objectType ~= Totems.TYPE then return nil end
-    local choice = TOTEMS.Choice(data.profile)
+    local display = drawn and S.TYPE_DISPLAYS[data.objectType]
+    if not display or not display.PLATES[data.profileKey] then return nil end
+    local choice = display.Choice(data.profile)
     if choice ~= "icon" and choice ~= "iconName" then return choice end
-    local icons = TOTEMS.IconKeys(data.profile, layout)
-    if not icons or not Totems.Icon(data.unit) then return "name" end
+    local icons, icon = display.IconKeys(data.profile, layout), Totems.DISPLAY_ICONS[display.TYPE]
+    if not icons or not (icon and icon(data.unit)) then return "name" end
     return choice, icons
 end
 
--- The plate side: a laid-out plate's unit pictures drawn for its unit. ApplyValueKind draws them when the plate's
+-- The plate side: a laid-out plate's unit pictures (a totem's or a pet's icon part) drawn for its unit. ApplyValueKind
+-- draws them when the plate's
 -- appearance is applied; a plate kept prepared for a new unit (the same layout) is not applied again, so each layout
 -- draws them again here (each part's picture missing, so hidden, while its unit has none).
 PS._CreatePlateTotems = function(context)

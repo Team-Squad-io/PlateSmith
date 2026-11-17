@@ -591,6 +591,8 @@ PS._CreatePlateObjectStatus = function(context)
                 Cooldowns(listening and HerbsUp())
             elseif not listening then
                 Unregister(event)
+            elseif Cultivation.PLAIN_EVENTS[event] then
+                PS._RegisterEvent(events, event, "platesmith.object-status")
             elseif not (type(events.RegisterUnitEvent) == "function"
                 and pcall(events.RegisterUnitEvent, events, event, "player")) then
                 PS._RegisterEvent(events, event, "platesmith.object-status")
@@ -598,7 +600,7 @@ PS._CreatePlateObjectStatus = function(context)
         end
     end
 
-    events:SetScript("OnEvent", function(_, event, unit, _, third, fourth)
+    events:SetScript("OnEvent", function(_, event, unit, second, third, fourth)
         if event == Cultivation.KNOWN_EVENT then
             Cultivation.Forget()
             Listen()
@@ -623,6 +625,10 @@ PS._CreatePlateObjectStatus = function(context)
             return
         elseif event == "UNIT_SPELLCAST_CHANNEL_UPDATE" then
             if Cultivation.Mine(unit, third) then Cultivation.ChannelUpdated() end
+            return
+        elseif event == "UI_ERROR_MESSAGE" then
+            -- message type, message: the game refused a Cultivation cast as too high level (Cultivation.Refused).
+            if Cultivation.Refused(second) then CultivationChanged(true) end
             return
         elseif event == "PLAYER_LEVEL_UP" then
             -- The new level comes first; UnitLevel may still say the old one.

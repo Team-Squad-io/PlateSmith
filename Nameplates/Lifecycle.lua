@@ -2160,17 +2160,19 @@ local function ApplyLayout(data)
     data.design = PS.PlateContext.DesignFor(data.profileKey)
     -- An object draws with its type's layer over that design (Designs' object types), the type from the game's cursor
     -- icon (ActionIcon.TYPE_OF); unknown, or no type read: All objects. A totem on the Enemies or Friendly NPCs draws
-    -- with that tab's Totems layer (Totems.TypeFor; unknown: All NPCs).
+    -- with that tab's Totems layer (Totems.TypeFor), else a player's pet with its Pets layer (Pets.TypeFor); unknown:
+    -- All NPCs.
     if object then data.objectType = rounds.actionIcon.TypeFor(data)
-    else data.objectType = PS.Totems.TypeFor(db, data) end
+    else data.objectType = PS.Totems.TypeFor(db, data) or PS.Pets.TypeFor(db, data) end
     data.profile = PS.Designs.For(db, data.profileKey, data.design, data.objectType) or db.plateProfiles.enemy
     -- An object is the Objects plate type's names-only plate (its one layout), or Blizzard's own while
     -- Draw object plates says so (objectPlates: drawn as a friendly type's Blizzard plates, "off").
     local showAs
     if object then showAs = db.objectPlates == "blizzard" and "off" or "names"
     else showAs = data.friendly and S.FRIENDLY.Mode(db, data.profileKey) end
-    -- A totem's Display (its Totems layer's: Totems.Choice), where PlateSmith draws the plate. Hidden draws none;
-    -- on Blizzard's restricted friendly plates that only leaves out PlateSmith's opt-in text (Blizzard's stay as they are).
+    -- A totem's or a pet's Display (its Totems or Pets layer's: Totems.Choice), where PlateSmith draws the plate.
+    -- Hidden draws none; on Blizzard's restricted friendly plates that only leaves out PlateSmith's opt-in text
+    -- (Blizzard's stay as they are).
     -- Its name, icon parts, or both draw over the layer's plate layout (whatever Show as says: its custom parts draw
     -- there, never on a names-only plate), every other part turned off.
     local totem, totemIcons = PS.Totems.Choice(data, data.own and not object and data.friendly ~= nil and showAs ~= "off"
@@ -2209,7 +2211,7 @@ local function ApplyLayout(data)
     -- An object type may hide its plates (its Hide these plates: plateHidden).
     -- So may Where plates show's Friendly players choice, for a player outside the group (rounds.WhoHides).
     data.whoHidden = rounds.WhoHides(data, showAs, restrictedFriendly)
-    -- And a totem's Totems choice, Hidden.
+    -- And a totem's or a pet's Display, Hidden.
     local hidden = (object and showAs ~= "off" and data.profile.plateHidden == true) or data.whoHidden == true
         or totem == "hidden"
     local undrawn = unknown or (restrictedFriendly and not data.restrictedOverlayEnabled) or showAs == "off" or hidden
@@ -3340,10 +3342,12 @@ function rounds.DeathCheck(data)
     return true
 end
 
--- UNIT_FLAGS: tapped and PvP state. Rules and stacks follow only a change.
+-- UNIT_FLAGS: tapped, PvP and combat state. Rules and stacks follow only a PvP change; what reads unit.incombat
+-- ("combat": TemplateReaders) reads it again.
 function changes.UnitFlags(data)
     if rounds.DeathCheck(data) then return end
     UpdateTagged(data)
+    MarkValues(data, "combat")
     if UpdatePvPIcon(data) then
         MarkRules(data)
         MarkStacks(data)

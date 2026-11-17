@@ -91,8 +91,9 @@ styleFields[#styleFields + 1] = NAME_COLOUR.KEY
 -- has one; absent, they are off.
 local HEALS = S.HEALS
 for _, key in ipairs(HEALS.KEYS) do styleFields[#styleFields + 1] = key end
--- Totems' Display (Schema's TOTEMS, 1.4.0): the Totems layers' own option, so it travels in npcTypes only.
-local TOTEMS = S.TOTEMS
+-- Totems' and Pets' Display (Schema's TYPE_DISPLAYS: totemDisplay 1.4.0, petDisplay 1.4.2): each type layer's own
+-- option, so it travels in npcTypes only. A reader before 1.4.2 skips the Pets layer as an unknown field.
+local DISPLAY_KEYS = S.DISPLAY_KEYS
 -- The options that were general settings until 1.3.2 (Schema's DESIGN.FROM_GENERAL: the aura rows' Source, each
 -- part's Colour by threat, Grey when tagged by others): a design's own now, imported with Styles. The document's
 -- settings.<key> is the Enemies' World value, which every World (and the full dungeon design) without its own takes,
@@ -440,10 +441,10 @@ local function CheckHeal(key, raw, keyPath)
     if key == "absorbs" then return CheckBoolean(raw, keyPath) or nil end
     return CheckColour(raw, keyPath)
 end
--- A Totems layer's Display (Schema's TOTEMS), checked; Plate ("plate") comes back nil (absent).
-local function CheckTotems(raw, keyPath)
+-- A Totems or Pets layer's Display (Schema's TYPE_DISPLAYS), checked; Plate ("plate") comes back nil (absent).
+local function CheckDisplay(key, raw, keyPath)
     if raw == "plate" then return nil end
-    return CheckEnum(raw, keyPath, TOTEMS.CHOICES)
+    return CheckEnum(raw, keyPath, DISPLAY_KEYS[key].CHOICES)
 end
 local auraLayoutFields = Set("count", "columns", "size", "spacing", "growX", "growY", "showDuration", "timeSize", "timeFont",
     "timeOutline", "timeShadow", "timePosition", "timeFontSize", "timedOnly")
@@ -652,8 +653,8 @@ end
 -- A context design's own profile options (Designs: options), each checked as a profile's is;
 -- castOnNames (false: no cast bar on names-only plates there) and "-" (optional sizes cleared, so
 -- they follow the health bar there) are a design's own.
--- plateHidden: an object type's Hide these plates (objectTypes); totemDisplay: a Totems layer's Display (npcTypes;
--- NormalizeDesign drops it elsewhere).
+-- plateHidden: an object type's Hide these plates (objectTypes); totemDisplay, petDisplay: a Totems or Pets layer's
+-- Display (npcTypes; NormalizeDesign drops it elsewhere).
 local optionFields = Set("healthTexture", "healthColourMode", "healthColour", "castColours", "castOnNames", "plateHidden", CLEAR)
 for key in pairs(profileNumbers) do optionFields[key] = true end
 for key in pairs(S.optionalProfileRanges) do optionFields[key] = true end
@@ -664,7 +665,7 @@ for _, key in ipairs(HIGHLIGHT.KEYS) do optionFields[key], clearableOptions[key]
 for _, key in ipairs(CLASS_COLOUR.KEYS) do optionFields[key], clearableOptions[key] = true, true end
 optionFields[NAME_COLOUR.KEY], clearableOptions[NAME_COLOUR.KEY] = true, true
 for _, key in ipairs(HEALS.KEYS) do optionFields[key], clearableOptions[key] = true, true end
-optionFields[TOTEMS.KEY] = true
+for key in pairs(DISPLAY_KEYS) do optionFields[key] = true end
 
 local function CheckOptions(value, path)
     CheckObject(value, path, optionFields)
@@ -704,8 +705,8 @@ local function CheckOptions(value, path)
             options[key] = CheckColour(raw, keyPath)
         elseif HEALS.SET[key] then
             options[key] = CheckHeal(key, raw, keyPath)
-        elseif TOTEMS.SET[key] then
-            options[key] = CheckTotems(raw, keyPath)
+        elseif DISPLAY_KEYS[key] then
+            options[key] = CheckDisplay(key, raw, keyPath)
         end
     end
     return options
@@ -875,7 +876,7 @@ local flavors = Set("forever", "retail")
 local documentFields = Set("format", "version", "readableFrom", "addon", "client", "flavor", "settings", "profiles",
     "dungeonEnemy", "contexts", "enemyPlayers", "objectTypes", "npcTypes", "modules")
 -- The plate types with types of their own besides the Objects (DESIGN.TYPES_OF: the Enemies' and Friendly NPCs'
--- Totems), carried as npcTypes.<plate type>.<type> (version 4, new in 1.4.0), in profile order.
+-- Totems and Pets), carried as npcTypes.<plate type>.<type> (version 4, new in 1.4.0), in profile order.
 local NPC_TYPED, NPC_TYPED_ORDER = {}, {}
 for _, plateType in ipairs(profileOrder) do
     if DESIGN.TYPES_OF[plateType] and plateType ~= "object" then
@@ -1096,7 +1097,8 @@ local function BuildCandidate(document)
             PS.Designs.SetType(candidate.plateProfiles.object, objectType, CheckDesign(record, path, "object", true))
         end
     end
-    -- The Enemies' and Friendly NPCs' types (version 4, new in 1.4.0: their Totems), each a sparse layer as above.
+    -- The Enemies' and Friendly NPCs' types (version 4, new in 1.4.0: their Totems; 1.4.2: their Pets), each a sparse
+    -- layer as above.
     if document.npcTypes ~= nil then
         CheckObject(document.npcTypes, "npcTypes", NPC_TYPED)
         for plateType, map in pairs(document.npcTypes) do
@@ -1106,7 +1108,8 @@ local function BuildCandidate(document)
                 local path = typePath .. "." .. key
                 CheckObject(record, path)
                 if record.full ~= nil then Reject(path .. ".full", "is not allowed here") end
-                PS.Designs.SetType(candidate.plateProfiles[plateType], key, CheckDesign(record, path, plateType, true), plateType)
+                PS.Designs.SetType(candidate.plateProfiles[plateType], key, CheckDesign(record, path, plateType, key),
+                    plateType)
             end
         end
     end
@@ -1510,7 +1513,7 @@ local function BuildDocument(db, live, withoutBody)
             newer = true
         end
     end
-    -- The Enemies' and Friendly NPCs' types with a layer (their Totems; version 4 only, none: left out).
+    -- The Enemies' and Friendly NPCs' types with a layer (their Totems and Pets; version 4 only, none: left out).
     local npcTypes
     for _, plateType in ipairs(NPC_TYPED_ORDER) do
         for _, key in ipairs(DESIGN.TYPES_OF[plateType]) do
@@ -1883,7 +1886,8 @@ local function ApplySections(db, parsed, selection, Selected, live)
             end
         end
         object.types = next(types) ~= nil and types or nil
-        -- The Enemies' and Friendly NPCs' types (Totems) likewise, per type carried; a look's never replace yours whole.
+        -- The Enemies' and Friendly NPCs' types (Totems, Pets) likewise, per type carried; a look's never replace yours
+        -- whole.
         local carriedNpc = type(document.npcTypes) == "table" and document.npcTypes or {}
         for _, plateType in ipairs(NPC_TYPED_ORDER) do
             local world, theirTypes = profiles[plateType], type(carriedNpc[plateType]) == "table" and carriedNpc[plateType] or {}

@@ -8,6 +8,35 @@ local _, PS = ...
 local L = PS.L
 
 PS.ReleaseNotes = {
+    ["1.4.2"] = {
+        sections = {
+            {
+                title = L["New"],
+                items = {
+                    L["Pets get a look of their own: Type › Pets, beside Totems."],
+                    L["Threat windows: a bar-chart button opens the threat breakdown."],
+                    L["Right-click a threat row: the breakdown, following that player."],
+                    L["Group replay: your casts on the graph, and everyone's damage."],
+                    L["Packs pulled under 5 seconds apart join into one pull."],
+                },
+            },
+            {
+                title = L["Changed"],
+                items = {
+                    L["Threat breakdown keeps your pulls after a reload; Keep holds one."],
+                    L["Pulls are named by the enemy you targeted, or by the zone."],
+                },
+            },
+            {
+                title = L["Fixed"],
+                items = {
+                    L["Level colours grey only mobs that give no XP."],
+                    L["Threat breakdown counts Lacerate at x3."],
+                    L["Cultivate says when a herb is above your level."],
+                },
+            },
+        },
+    },
     ["1.4.1"] = {
         sections = {
             {

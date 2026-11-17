@@ -1995,7 +1995,7 @@ local function IsProfileOption(key)
     return profileRanges[key] ~= nil or optionalProfileRanges[key] ~= nil or key == "healthTexture"
         or key == "healthColourMode" or key == "castColours" or castOptions[key] ~= nil or HIGHLIGHT.SET[key] == true
         or key == "plateHidden" or CLASS_COLOUR.SET[key] == true or NAME_COLOUR.SET[key] == true
-        or PS.ProfileSchema.HEALS.SET[key] == true or PS.ProfileSchema.TOTEMS.SET[key] == true
+        or PS.ProfileSchema.HEALS.SET[key] == true or PS.ProfileSchema.DISPLAY_KEYS[key] ~= nil
 end
 
 -- One profile option made valid for profile (fallback: its defaults). NormalizeProfile checks
@@ -2005,7 +2005,7 @@ local function ProfileOptionValue(profile, key, value, fallback)
     if CLASS_COLOUR.SET[key] then return CLASS_COLOUR.Value(value) end
     if NAME_COLOUR.SET[key] then return NAME_COLOUR.Value(value) end
     if PS.ProfileSchema.HEALS.SET[key] then return PS.ProfileSchema.HEALS.Value(key, value) end
-    if PS.ProfileSchema.TOTEMS.SET[key] then return PS.ProfileSchema.TOTEMS.Value(value) end
+    if PS.ProfileSchema.DISPLAY_KEYS[key] then return PS.ProfileSchema.DISPLAY_KEYS[key].Value(value) end
     if key == "plateHidden" then return value == true or nil end
     local range = profileRanges[key]
     if range then return Bounded(range, value, fallback[key]) end
@@ -2109,8 +2109,8 @@ local function NormalizeProfile(profile, fallback, legacy, fresh, claimed)
     for _, key in ipairs(CLASS_COLOUR.KEYS) do profile[key] = CLASS_COLOUR.Value(profile[key]) end
     profile.nameColour = NAME_COLOUR.Value(profile.nameColour)
     for _, key in ipairs(PS.ProfileSchema.HEALS.KEYS) do profile[key] = PS.ProfileSchema.HEALS.Value(key, profile[key]) end
-    -- A Totems layer's own option (NormalizeDesign keeps it there), never a whole design's.
-    profile.totemDisplay = nil
+    -- A Totems or Pets layer's own option (NormalizeDesign keeps it there), never a whole design's.
+    for key in pairs(PS.ProfileSchema.DISPLAY_KEYS) do profile[key] = nil end
     profile.plateHidden = profile.plateHidden == true or nil
     profile.healthColour = NormalizeColour(profile.healthColour, fallback.healthColour)
     profile.castColours = NormalizeCastColours(profile.castColours, fallback.castColours)
@@ -2216,9 +2216,10 @@ for _, key in ipairs(DESIGN.FROM_GENERAL) do
     DESIGN.DRAWN_ON[key] = key:find("Source$") and { enemy = true, friendlyPlayer = true, friendlyNPC = true } or { enemy = true }
 end
 -- Each plate type's types (plateProfiles.<type>.types.<key>, the same sparse layers): the Objects' above, and on the
--- Enemies and Friendly NPCs Totems (a totem by its creature type: Nameplates/Totems.lua), each tab its own layer.
+-- Enemies and Friendly NPCs Totems (a totem by its creature type: Nameplates/Totems.lua) and Pets (a player's pet:
+-- Nameplates/Pets.lua, 1.4.2), each tab its own layers.
 -- TYPE_SETS per plate type; ANY_TYPE every type key (none is a context's or "players"); TYPE_SET the Objects'.
-DESIGN.TYPES_OF = { object = DESIGN.TYPES, enemy = { "totem" }, friendlyNPC = { "totem" } }
+DESIGN.TYPES_OF = { object = DESIGN.TYPES, enemy = { "totem", "pet" }, friendlyNPC = { "totem", "pet" } }
 DESIGN.TYPE_SETS, DESIGN.ANY_TYPE = {}, {}
 for plateType, list in pairs(DESIGN.TYPES_OF) do
     local set = {}
@@ -2249,7 +2250,7 @@ function DESIGN.OptionValue(key, value, fallback)
     if CLASS_COLOUR.SET[key] then return CLASS_COLOUR.Value(value) end
     if NAME_COLOUR.SET[key] then return NAME_COLOUR.Value(value) end
     if PS.ProfileSchema.HEALS.SET[key] then return PS.ProfileSchema.HEALS.Value(key, value) end
-    if PS.ProfileSchema.TOTEMS.SET[key] then return PS.ProfileSchema.TOTEMS.Value(value) end
+    if PS.ProfileSchema.DISPLAY_KEYS[key] then return PS.ProfileSchema.DISPLAY_KEYS[key].Value(value) end
     if key == "plateHidden" then return value == true or nil end
     local range = profileRanges[key] or optionalProfileRanges[key]
     if range then
@@ -2320,7 +2321,8 @@ end
 
 -- A sparse design made valid, as a new table: every area checked with the profile's own
 -- validators, what is invalid dropped, counts bounded. nil when design is not a table. typed: a type's layer
--- (DESIGN.TYPES_OF), the only design a Totems choice (Schema's TOTEMS) is kept in, and only the Totems layer's.
+-- (DESIGN.TYPES_OF; true, or its type key), the only design a Display (Schema's TYPE_DISPLAYS) is kept in, and only
+-- its own type's (totemDisplay in the Totems layer, petDisplay in the Pets layer).
 local function NormalizeDesign(design, plateType, typed)
     if type(design) ~= "table" then return nil end
     local fallback = profileDefaults[plateType] or profileDefaults.enemy
@@ -2328,7 +2330,8 @@ local function NormalizeDesign(design, plateType, typed)
     local result = {}
     local options, cleared = {}, {}
     local saved = type(design.options) == "table" and design.options or {}
-    local totems = typed == true and PS.ProfileSchema.TOTEMS.PLATES[plateType] == true
+    local display = typed and PS.ProfileSchema.TYPE_DISPLAYS[typed]
+    local displayKey = display and display.PLATES[plateType] == true and display.KEY or nil
     for key, value in pairs(saved) do
         if key == "castOnNames" then
             -- Only false means anything: names-only plates here draw no cast bar.
@@ -2336,11 +2339,11 @@ local function NormalizeDesign(design, plateType, typed)
         elseif key == "healthColour" then
             if type(value) == "table" then options.healthColour = NormalizeColour(value, fallback.healthColour) end
         elseif type(key) == "string" and key ~= CLEAR and IsProfileOption(key)
-            and (totems or not PS.ProfileSchema.TOTEMS.SET[key]) then
+            and (key == displayKey or not PS.ProfileSchema.DISPLAY_KEYS[key]) then
             options[key] = DESIGN.OptionValue(key, value, fallback)
         end
     end
-    -- (A Totems choice never clears: what its layer sits on has none.)
+    -- (A Display never clears: what its layer sits on has none.)
     for key, flag in pairs(type(saved[CLEAR]) == "table" and saved[CLEAR] or {}) do
         -- Only an option that may be absent (a bar width that follows the health bar's) clears.
         if flag == true and (optionalProfileRanges[key] or HIGHLIGHT.SET[key] or CLASS_COLOUR.SET[key]
@@ -2447,7 +2450,8 @@ local function NormalizeProfiles(profiles, legacy, fresh, claimed)
     -- The Enemy players layer (Designs.lua): a sparse design over the Enemies'; an empty one stays
     -- (made in Studio, it changes nothing yet).
     profiles.enemy.players = NormalizeDesign(profiles.enemy.players, "enemy")
-    -- Types (DESIGN.TYPES_OF: the Objects' object types, the Enemies' and Friendly NPCs' Totems): sparse layers over
+    -- Types (DESIGN.TYPES_OF: the Objects' object types, the Enemies' and Friendly NPCs' Totems and Pets): sparse layers
+    -- over
     -- the plate type's designs; an empty one goes (no type has a record until it changes something). A table under an
     -- unknown key (a newer version's type) is kept as it is.
     for plateType, set in pairs(DESIGN.TYPE_SETS) do
@@ -2456,7 +2460,7 @@ local function NormalizeProfiles(profiles, legacy, fresh, claimed)
         if type(types) == "table" then
             for key, record in pairs(types) do
                 if set[key] then
-                    local design = NormalizeDesign(record, plateType, true)
+                    local design = NormalizeDesign(record, plateType, key)
                     types[key] = design and next(design) ~= nil and design or nil
                 elseif type(key) ~= "string" or type(record) ~= "table" then
                     types[key] = nil
@@ -3992,11 +3996,14 @@ function PS.ProfileSchema.HIDDEN_AURAS.Normalize(list)
     return #result > 0 and result or nil
 end
 
--- Totems (Type › Totems on the Enemies and Friendly NPCs; Nameplates/Totems.lua): how a totem's plate draws, the Totems
--- layer's own option (DESIGN.TYPES_OF; Settings and NormalizeDesign keep it nowhere else), absent while it draws as the
--- layer's plate (Plate). icon: only the totem's icon parts (image parts showing PICTURE, Media's unit:totem);
--- iconName: those and the name; name: the name alone; hidden: no plate.
+-- Display (Type › Totems and Type › Pets on the Enemies and Friendly NPCs; Nameplates/Totems.lua, Nameplates/Pets.lua):
+-- how a totem's or a pet's plate draws, its type layer's own option (DESIGN.TYPES_OF; Settings and NormalizeDesign keep
+-- it nowhere else), absent while it draws as the layer's plate (Plate). icon: only the type's icon parts (image parts
+-- showing its PICTURE, Media's unit:totem or unit:pet); iconName: those and the name; name: the name alone; hidden: no
+-- plate. TOTEMS (1.4.0) and PETS (1.4.2) differ only in key and picture; TYPE_DISPLAYS by type key, DISPLAY_KEYS by
+-- option key.
 PS.ProfileSchema.TOTEMS = {
+    TYPE = "totem",
     KEY = "totemDisplay",
     SET = { totemDisplay = true },
     CHOICES = { icon = true, iconName = true, name = true, hidden = true },
@@ -4006,20 +4013,32 @@ PS.ProfileSchema.TOTEMS = {
     PICTURE = "unit:totem",
     ICON_SIZE = 24,
 }
--- The totem icon parts of profile's layout (nil: profile.layout): { keys = { [key] = true }, id = "value3,value7" },
--- or nil with none (an image showing PICTURE whose entry the layout has and has not removed). Worked out on each call
--- (a plate's layout, Studio's choice and preview; never per frame): World's slots are edited in place, so a cache by
--- table could go stale.
-function PS.ProfileSchema.TOTEMS.IconKeys(profile, layout)
+-- Pets: a player's pet is an NPC too (an enemy hunter's wolf is the Enemies', your group's pets Friendly NPCs).
+PS.ProfileSchema.PETS = {
+    TYPE = "pet",
+    KEY = "petDisplay",
+    SET = { petDisplay = true },
+    CHOICES = PS.ProfileSchema.TOTEMS.CHOICES,
+    PLATES = PS.ProfileSchema.TOTEMS.PLATES,
+    PICTURE = "unit:pet",
+    ICON_SIZE = 24,
+}
+PS.ProfileSchema.TYPE_DISPLAYS = { totem = PS.ProfileSchema.TOTEMS, pet = PS.ProfileSchema.PETS }
+PS.ProfileSchema.DISPLAY_KEYS = { totemDisplay = PS.ProfileSchema.TOTEMS, petDisplay = PS.ProfileSchema.PETS }
+-- The Display's icon parts of profile's layout (nil: profile.layout): { keys = { [key] = true }, id = "value3,value7" },
+-- or nil with none (an image showing its PICTURE whose entry the layout has and has not removed). Worked out on each
+-- call (a plate's layout, Studio's choice and preview; never per frame): World's slots are edited in place, so a cache
+-- by table could go stale.
+PS.ProfileSchema.DISPLAY = {}
+function PS.ProfileSchema.DISPLAY.IconKeys(display, profile, layout)
     if type(profile) ~= "table" or type(profile.valueSlots) ~= "table" then return nil end
     layout = layout or profile.layout
     if type(layout) ~= "table" then return nil end
-    local TOTEMS = PS.ProfileSchema.TOTEMS
     local keys, list = {}, {}
     for index = 1, PS.ProfileSchema.VALUE_SLOT_COUNT do
         local key = "value" .. index
         local slot, position = profile.valueSlots[key], layout[key]
-        if type(slot) == "table" and slot.kind == "icon" and slot.image == TOTEMS.PICTURE and type(position) == "table"
+        if type(slot) == "table" and slot.kind == "icon" and slot.image == display.PICTURE and type(position) == "table"
             and not position.removed then
             keys[key], list[#list + 1] = true, key
         end
@@ -4027,16 +4046,19 @@ function PS.ProfileSchema.TOTEMS.IconKeys(profile, layout)
     if #list == 0 then return nil end
     return { keys = keys, id = table.concat(list, ",") }
 end
-function PS.ProfileSchema.TOTEMS.Value(value)
-    return PS.ProfileSchema.TOTEMS.CHOICES[value] and value or nil
+-- Each Display's own functions (no loop: the main chunk is at Lua 5.1's local limit).
+function PS.ProfileSchema.DISPLAY.Build(display)
+    function display.IconKeys(profile, layout) return PS.ProfileSchema.DISPLAY.IconKeys(display, profile, layout) end
+    function display.Value(value) return display.CHOICES[value] and value or nil end
+    -- What a design draws for the type: its choice, or nil for Plate.
+    function display.Choice(profile) return type(profile) == "table" and display.Value(profile[display.KEY]) or nil end
+    -- Whether profile holds a choice.
+    function display.Has(profile) return display.Choice(profile) ~= nil end
 end
--- What a design draws for totems: its choice, or nil for Plate.
-function PS.ProfileSchema.TOTEMS.Choice(profile)
-    return type(profile) == "table" and PS.ProfileSchema.TOTEMS.Value(profile.totemDisplay) or nil
-end
--- Whether profile holds a choice (a Blueprint carrying one is version 4).
-function PS.ProfileSchema.TOTEMS.Has(profile) return PS.ProfileSchema.TOTEMS.Choice(profile) ~= nil end
--- A totem's layout: layout with every part but the name turned off (keepName false: the name too) and the icon parts
+PS.ProfileSchema.DISPLAY.Build(PS.ProfileSchema.TOTEMS)
+PS.ProfileSchema.DISPLAY.Build(PS.ProfileSchema.PETS)
+-- A totem's (or a pet's: PETS.Layout is the same) layout: layout with every part but the name turned off (keepName
+-- false: the name too) and the icon parts
 -- (icons: IconKeys' result; nil: those too), groups as they are, so a part pinned to a hidden part takes its place
 -- (PinTarget: an icon pinned to the name sits where the name was). Kept per layout table (a plate's layout is
 -- replaced when it changes, never edited), so a plate keeps its prepared layout; read only. (Fields, not main chunk
@@ -4068,3 +4090,4 @@ function PS.ProfileSchema.TOTEMS.Layout(layout, keepName, icons)
     byLayout[id] = result
     return result
 end
+PS.ProfileSchema.PETS.Layout = PS.ProfileSchema.TOTEMS.Layout

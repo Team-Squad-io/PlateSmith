@@ -164,7 +164,7 @@ local function CreatePlateRow(content)
         L["Target highlight: how your target's plate of this type is lit (Edge or Soft glow)."],
         L["Quick layout: place parts by position (top, bottom, left, right, centre)."],
         L["Players and Friendly NPCs: Friendly plates, how and where they show."],
-        L["Enemies and Friendly NPCs, with Type › Totems: how a totem's plate draws."],
+        L["Enemies and Friendly NPCs, with Type › Totems or Pets: how a totem's or a pet's plate draws."],
         L["Objects: copy a look's Objects style, and the way to the object settings."] })
     Paint(row, "normal")
     return row
@@ -359,7 +359,9 @@ local function BuildTestPanel(canvas)
     local flags = {
         { "unit.tagged", L["Tagged"] }, { "cast.active", L["Casting"] }, { "cast.interruptible", L["Interruptible"] },
         { "cast.interruptready", L["Interrupt ready"] },
-        { "you.combat", L["In combat"] }, { "pvp.flagged", L["PvP flagged"] }, { "unit.target", L["Your target"] },
+        -- In combat is the unit's too (unit.incombat): the sample is the one you fight.
+        { "you.combat", L["In combat"], also = "unit.incombat" }, { "pvp.flagged", L["PvP flagged"] },
+        { "unit.target", L["Your target"] },
         { "quest.needed", L["Quest unit"] }, { "unit.friendly", L["Friendly"] }, { "unit.hostile", L["Hostile"] },
         { "unit.player", L["Player"] },
         { "role.tank", L["You tank"] }, { "threat.holding", L["Holding threat"] }, { "threat.losing", L["Losing threat"] },
@@ -376,15 +378,17 @@ local function BuildTestPanel(canvas)
         { "unit.behind", L["Behind you"], slot = 23 },
     }
     -- slot: where the box goes, two to a row 20 px apart (a built-in flag may name its own).
-    local function FlagBox(slot, flag, label, module)
+    -- also: a second flag the box sets with it.
+    local function FlagBox(slot, flag, label, module, also)
         local column, row = (slot - 1) % 2, math.floor((slot - 1) / 2)
         local checkbox = PS.UI.Controls.Checkbox(testPanel, {
             label = label, x = 12 + column * 144, y = -174 - row * 20, labelTemplate = "GameFontHighlightSmall",
-            tooltip = { title = label, lines = { string.format(L["Rules and custom text read this as %s."], flag),
-                module and L["From another addon."] or nil } },
+            tooltip = { title = label, lines = { string.format(L["Rules and custom text read this as %s."],
+                also and string.format(L["%s and %s"], flag, also) or flag), module and L["From another addon."] or nil } },
             get = function() return samples[flag] == true end,
             set = function(on)
                 samples[flag] = on and true or false
+                if also then samples[also] = samples[flag] end
                 -- In range and the Range choice say the same: out of range is the out band, back in range is near.
                 if flag == "unit.inrange" then
                     local band = samples["range.band"]
@@ -401,7 +405,7 @@ local function BuildTestPanel(canvas)
     local lastSlot = 0
     for index, entry in ipairs(flags) do
         local slot = entry.slot or index
-        local box = FlagBox(slot, entry[1], entry[2])
+        local box = FlagBox(slot, entry[1], entry[2], nil, entry.also)
         if entry[1] == "unit.inrange" then inRangeBox = box end
         lastSlot = math.max(lastSlot, slot)
     end

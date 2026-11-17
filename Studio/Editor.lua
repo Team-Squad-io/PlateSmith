@@ -11,12 +11,14 @@ local editorDefinitions = catalog.editorDefinitions
 local VALUE_SLOT_COUNT = catalog.VALUE_SLOT_COUNT
 local editorProfiles = {
     -- With Type › Totems open (typeSampleNames): a totem, an enemy shaman's or your group's; its icon from its name as
-    -- the plates find it, else its Data/Totems.lua key's spell (sampleTotem).
+    -- the plates find it, else its Data/Totems.lua key's spell (sampleTotem). With Type › Pets open: a pet, an enemy
+    -- hunter's wolf or your group's imp; its icon its family's (samplePetFamily: the client's family ID).
     { key = "enemy", label = L["Enemies"], sampleName = L["Training Raider"],
-        typeSampleNames = { totem = L["Searing Totem"] }, sampleTotem = "Searing" },
+        typeSampleNames = { totem = L["Searing Totem"], pet = L["Wolf"] }, sampleTotem = "Searing", samplePetFamily = 1 },
     { key = "friendlyPlayer", label = L["Players"], sampleName = L["Your Character"] },
     { key = "friendlyNPC", label = L["Friendly NPCs"], sampleName = L["Innkeeper Allison"],
-        typeSampleNames = { totem = L["Mana Spring Totem"] }, sampleTotem = "Mana Spring" },
+        typeSampleNames = { totem = L["Mana Spring Totem"], pet = L["Imp"] }, sampleTotem = "Mana Spring",
+        samplePetFamily = 23 },
     { key = "enemyPlayer", label = L["Enemy players"], sampleName = L["Arena Challenger"] },
     -- Objects: a book on the ground; with Test values' Quest unit, a quest object (questSampleName).
     { key = "object", label = L["Objects"], sampleName = L["Arathor and the Troll Wars"],
@@ -31,6 +33,15 @@ PS.Totems.SampleSource = function()
     for _, definition in ipairs(editorProfiles) do
         if definition.key == Options.editorProfile and definition.sampleTotem then
             return { name = definition.typeSampleNames.totem, key = definition.sampleTotem }
+        end
+    end
+    return nil
+end
+-- A pet icon part's picture in the preview (Pets.SampleIcon): the open tab's sample pet.
+PS.Pets.SampleSource = function()
+    for _, definition in ipairs(editorProfiles) do
+        if definition.key == Options.editorProfile and definition.samplePetFamily then
+            return { family = definition.samplePetFamily }
         end
     end
     return nil
@@ -112,17 +123,23 @@ function Options:EditorShowAs(plateType)
 end
 
 function Options:EditorLiveFriendlyView()
-    -- A totem shown as its name or icon draws over the layer's plate layout, whatever Show as says (Lifecycle's
-    -- ApplyLayout), so its icon parts can draw.
-    local totem = self:EditorTotemChoice()
-    if totem and totem ~= "hidden" then return "full" end
+    -- A totem or a pet shown as its name or icon draws over the layer's plate layout, whatever Show as says
+    -- (Lifecycle's ApplyLayout), so its icon parts can draw.
+    local display = self:EditorDisplayChoice()
+    if display and display ~= "hidden" then return "full" end
     return self:EditorShowAs() == "names" and "names" or "full"
 end
 
--- With Type › Totems open, its Display as the plates read it (Schema's TOTEMS.Choice): nil for Plate.
-function Options:EditorTotemChoice()
-    if not self:IsEditorTotem() then return nil end
-    return Schema.TOTEMS.Choice(self:EditorProfileSettings())
+-- With Type › Totems or Type › Pets open on the Enemies or Friendly NPCs, that type's Display (Schema's TOTEMS or
+-- PETS), else nil.
+function Options:EditorDisplay()
+    local display = Schema.TYPE_DISPLAYS[self:EditorObjectType() or ""]
+    return display and display.PLATES[self.editorProfile] and display or nil
+end
+-- With Type › Totems or Type › Pets open, its Display as the plates read it (the type's Choice): nil for Plate.
+function Options:EditorDisplayChoice()
+    local display = self:EditorDisplay()
+    return display and display.Choice(self:EditorProfileSettings()) or nil
 end
 
 -- Plate settings › Friendly plates › Show as for the open tab: the preview's Editing switch and its
@@ -161,7 +178,7 @@ end
 
 -- The edit target every PS.Set* and PS.Get* call in Studio passes (Core/Settings.lua): the plate
 -- type for its World design, else "<type>@<design>"; on a tab with types (Objects; Enemies and Friendly NPCs:
--- Totems) with a Type chosen (EditorObjectType, Core/Designs.lua's types), that type's layer over the design:
+-- Totems, Pets) with a Type chosen (EditorObjectType, Core/Designs.lua's types), that type's layer over the design:
 -- "/<type>" after it.
 function Options:EditorTarget()
     local design, target = self.editorDesign, self.editorProfile
@@ -177,7 +194,7 @@ function Options:EditorObjectType()
     return open ~= nil and PS.Designs.IsType(self.editorProfile, open) and open or nil
 end
 
--- The open type is the open tab's Totems (Type › Totems on the Enemies and Friendly NPCs).
+-- The open type is the open tab's Totems (Type › Totems on the Enemies and Friendly NPCs); Pets: EditorObjectType.
 function Options:IsEditorTotem()
     return self:EditorObjectType() == "totem"
 end
@@ -976,11 +993,16 @@ function Options:EditorAddMenuEntries()
             tooltip = { title = L["Image"], text = L["A picture: one of PlateSmith's, a game atlas, shared media or your own "
                 .. "files (Settings › My media). Pin it to a bar's fill to ride the value."] } },
     }
-    -- Type › Totems open: the totem's own icon, an image pinned over the name (ProfilePresets.TOTEM_ICON).
+    -- Type › Totems open: the totem's own icon, an image pinned over the name (ProfilePresets.TOTEM_ICON); Type › Pets:
+    -- the pet's family icon (PET_ICON).
     if self:IsEditorTotem() then
         shapes[#shapes + 1] = { text = L["Totem icon"], func = function() self:AddEditorDecorations(PS.ProfilePresets.TOTEM_ICON) end,
             tag = newTag, tooltip = { title = L["Totem icon"], text = L["Each totem's own spell icon, an image you move, size "
                 .. "and pin like any part. Display › Icon shows only it."] } }
+    elseif self:EditorObjectType() == "pet" then
+        shapes[#shapes + 1] = { text = L["Pet icon"], func = function() self:AddEditorDecorations(PS.ProfilePresets.PET_ICON) end,
+            tag = newTag, tooltip = { title = L["Pet icon"], text = L["Each pet's family icon (a wolf's, an imp's), an image "
+                .. "you move, size and pin like any part. Display › Icon shows only it."] } }
     end
     for _, shape in ipairs(shapes) do shape.disabled = not free end
     TotemOff(shapes[2], "powerPercent")
@@ -1017,13 +1039,14 @@ function Options:AddEditorDecorations(id)
     return keys
 end
 
--- Plate settings › Totems › Display › Icon, or Icon and name, on a Totems layer without a totem icon part
--- (Schema's TOTEMS.IconKeys): one added (ProfilePresets.TOTEM_ICON) on the plate layout a totem draws over, so the
+-- Plate settings › Totems (or Pets) › Display › Icon, or Icon and name, on a layer without the type's icon part (its
+-- IconKeys): one added (ProfilePresets.DISPLAY_ICONS: Totem icon, Pet icon) on the plate layout it draws over, so the
 -- choice shows something. true with one there; false when none could be added (too few free parts: said in chat).
-function Options:EnsureEditorTotemIcon()
-    if not self:IsEditorTotem() then return false end
-    if Schema.TOTEMS.IconKeys(self:EditorProfileSettings()) then return true end
-    local keys, reason = PS.AddDecorations(self:EditorTarget(), "full", PS.ProfilePresets.TOTEM_ICON)
+function Options:EnsureEditorDisplayIcon()
+    local display = self:EditorDisplay()
+    if not display then return false end
+    if display.IconKeys(self:EditorProfileSettings()) then return true end
+    local keys, reason = PS.AddDecorations(self:EditorTarget(), "full", PS.ProfilePresets.DISPLAY_ICONS[display.TYPE])
     if not keys then
         if reason then PS.Chat.Print(reason) end
         return false

@@ -60,9 +60,9 @@ PS._CreatePlateSettings = function(context)
     -- Returns the plate type and the context (nil: World), or nil when target is not one: an
     -- unknown name must not fall back to editing the enemy profile. Friendly plates' "dungeon" is
     -- their Dungeons & raids design, Blizzard's: World's dungeonNamesLayout.
-    -- A type's layer (Designs.TypesOf: an object type, the Enemies' or Friendly NPCs' Totems) is "<plate type>/<type>"
-    -- or "<plate type>@<context>/<type>" ("object/herb", "enemy@pvp/totem"): edited as that layer over that place's
-    -- design (the third result), its differences stored against that place's design.
+    -- A type's layer (Designs.TypesOf: an object type, the Enemies' or Friendly NPCs' Totems or Pets) is
+    -- "<plate type>/<type>" or "<plate type>@<context>/<type>" ("object/herb", "enemy@pvp/pet"): edited as that layer
+    -- over that place's design (the third result), its differences stored against that place's design.
     local function ResolveProfileKey(target)
         if target == nil then return "enemy" end
         if target == "enemyDungeon" then return "enemy", "dungeon" end
@@ -172,9 +172,11 @@ PS._CreatePlateSettings = function(context)
         return Mutate(db, plateType, design, mutate, glow, objectType)
     end
 
-    -- Totems' Display (Schema's TOTEMS) is the Enemies' and Friendly NPCs' Totems layer's own, never a design's.
-    local function TotemsOffered(plateType, objectType)
-        return S.TOTEMS.PLATES[plateType] == true and objectType == "totem"
+    -- A Display (Schema's TYPE_DISPLAYS: totemDisplay, petDisplay) is the Enemies' and Friendly NPCs' Totems or Pets
+    -- layer's own, never a design's: key is offered only on its own type's layer. Other keys always are.
+    local function DisplayOffered(plateType, objectType, key)
+        local display = S.DISPLAY_KEYS[key]
+        return not display or (display.PLATES[plateType] == true and objectType == display.TYPE)
     end
 
     -- key may be a table of options ({ [key] = value }, profile options only): all are written in one edit, so
@@ -189,7 +191,7 @@ PS._CreatePlateSettings = function(context)
             return MutateProfile(target, function(profile, db, plateType, design, objectType)
                 local fallback = ProfileFallback(db, plateType, design)
                 for name in pairs(key) do
-                    if S.TOTEMS.SET[name] and not TotemsOffered(plateType, objectType) then return false end
+                    if not DisplayOffered(plateType, objectType, name) then return false end
                 end
                 for name, option in pairs(key) do
                     profile[name] = S.ProfileOptionValue(profile, name, option, fallback)
@@ -207,9 +209,10 @@ PS._CreatePlateSettings = function(context)
         end
         if not S.IsProfileOption(key) then return false end
         return MutateProfile(target, function(profile, db, plateType, design, objectType)
-            -- Hiding a whole plate is an object type's own (Studio's Type: Hide these plates); Totems hide with Display.
+            -- Hiding a whole plate is an object type's own (Studio's Type: Hide these plates); Totems and Pets hide
+            -- with Display.
             if key == "plateHidden" and not (objectType and plateType == Designs.TYPED) then return false end
-            if S.TOTEMS.SET[key] and not TotemsOffered(plateType, objectType) then return false end
+            if not DisplayOffered(plateType, objectType, key) then return false end
             profile[key] = S.ProfileOptionValue(profile, key, value, ProfileFallback(db, plateType, design))
             if plateType == "enemy" and not design and not objectType and S.ENEMY_ALIASES[key] then db[key] = profile[key] end
         end, S.glowSettings[key] == true)
@@ -1264,7 +1267,7 @@ PS._CreatePlateSettings = function(context)
             if not db then return nil end
             return db.plateProfiles.enemy, Designs.Record(db, "enemy", Designs.PLAYERS), db, true
         end
-        -- A type's layer ("object", "<type>"; "enemy" or "friendlyNPC", "totem"): reset (all or one area), never added,
+        -- A type's layer ("object", "<type>"; "enemy" or "friendlyNPC", "totem" or "pet"): reset (all or one area), never added,
         -- copied or slimmed (an edit makes it); the fifth result names it.
         if Designs.IsType(plateType, design) then
             if not db then return nil end

@@ -1841,7 +1841,7 @@ local function BuildValueContext(page)
                 return value ~= "lsm" or PS.Media.HasSharedMedia()
             end,
             disabledTip = function(value)
-                if value == "unit" then return L["Only under Type › Totems, on the Enemies and Friendly NPCs."] end
+                if value == "unit" then return L["Only under Type › Totems or Type › Pets, on the Enemies and Friendly NPCs."] end
                 return L["Shared media comes with many addons (LibSharedMedia); none is installed."]
             end,
             get = PictureFrom,
@@ -3901,7 +3901,8 @@ end
 
 -- Plate settings' Totems, shown while Type › Totems is open on the Enemies or Friendly NPCs: how a totem's plate draws
 -- (Schema's TOTEMS, the Totems layer's own option, absent while Plate; Nameplates/Totems.lua draws it). Its row, for
--- Settings search before it is built (Options:EditorTotemRows), and its choices.
+-- Settings search before it is built (Options:EditorTotemRows), and its choices. Plate settings' Pets (1.4.2) is the
+-- same section for Type › Pets (Schema's PETS; PET_ROWS, Options:EditorPetRows).
 local TOTEM_SECTION = {
     ROWS = { { id = "totemDisplay", label = L["Display"], keywords = L["totem totems shaman icon mana spring grounding windfury"],
         help = L["How a shaman totem's plate draws. Plate: this Totems design's plate (everything you change while Totems "
@@ -3912,41 +3913,63 @@ local TOTEM_SECTION = {
     CHOICES = { { value = "plate", label = L["Plate"] }, { value = "icon", label = L["Icon"] },
         { value = "iconName", label = L["Icon and name"] }, { value = "name", label = L["Name only"] },
         { value = "hidden", label = L["Hidden"] } },
+    PET_ROWS = { { id = "petDisplay", label = L["Display"],
+        keywords = L["pet pets hunter warlock minion summon demon beast imp voidwalker succubus felhunter wolf"],
+        help = L["How a player's pet draws: a hunter's beast, a warlock's demon, yours or another player's. Plate: this "
+            .. "Pets design's plate (everything you change while Pets is open). Icon: only its Pet icon, a part you move "
+            .. "and size like any other (added if there is none). Icon and name: the icon and its name. Name only: its "
+            .. "name, no bars or level. Hidden: no plate. A pet whose family has no known icon shows a plain paw. In "
+            .. "dungeons & raids Blizzard draws friendly plates, so there only PlateSmith's own text changes, as its "
+            .. "name."] } },
 }
 
-function Options:EditorTotemRows()
-    local rows, built = {}, self.editorTotemRowFrames or {}
-    for index, spec in ipairs(TOTEM_SECTION.ROWS) do
-        rows[index] = { id = spec.id, label = spec.label, help = spec.help, keywords = spec.keywords, frame = built[spec.id],
-            section = self.editorTotemSection }
+-- A Display section's rows for Settings search: specs (ROWS, PET_ROWS), the frames built and the section.
+function TOTEM_SECTION.Rows(specs, built, section)
+    local rows = {}
+    for index, spec in ipairs(specs) do
+        rows[index] = { id = spec.id, label = spec.label, help = spec.help, keywords = spec.keywords,
+            frame = (built or {})[spec.id], section = section }
     end
     return rows
 end
+function Options:EditorTotemRows()
+    return TOTEM_SECTION.Rows(TOTEM_SECTION.ROWS, self.editorTotemRowFrames, self.editorTotemSection)
+end
+function Options:EditorPetRows()
+    return TOTEM_SECTION.Rows(TOTEM_SECTION.PET_ROWS, self.editorPetRowFrames, self.editorPetSection)
+end
 
-function TOTEM_SECTION.Build(context)
-    local function Shown() return Options:IsEditorTotem() end
-    local function Chosen() return ProfileValue("totemDisplay")() or "plate" end
-    local section = K.Section(context, L["TOTEMS"], { summary = function()
+-- kind: "totem" (Totems) or "pet" (Pets), each shown while its Type is open.
+function TOTEM_SECTION.Build(context, kind)
+    local pet = kind == "pet"
+    local spec = (pet and TOTEM_SECTION.PET_ROWS or TOTEM_SECTION.ROWS)[1]
+    local key = spec.id
+    local function Shown() return Options:EditorObjectType() == kind end
+    local function Chosen() return ProfileValue(key)() or "plate" end
+    local section = K.Section(context, pet and L["PETS"] or L["TOTEMS"], { summary = function()
         for _, choice in ipairs(TOTEM_SECTION.CHOICES) do
             if choice.value == Chosen() then return choice.label end
         end
         return ""
     end })
     K.Add(context, section, Shown)
-    Options.editorTotemSection = section
-    local spec = TOTEM_SECTION.ROWS[1]
+    if pet then Options.editorPetSection = section else Options.editorTotemSection = section end
     local row, choice = K.DropdownRow(section, spec.label, { choices = TOTEM_SECTION.CHOICES,
-        name = WidgetName("editor_totemDisplay", "Dropdown"), get = Chosen,
+        name = WidgetName("editor_" .. key, "Dropdown"), get = Chosen,
         set = function(value)
-            -- Icon choices draw the layer's totem icon parts: one is added where there is none.
-            if value == "icon" or value == "iconName" then Options:EnsureEditorTotemIcon() end
-            SetProfileValue("totemDisplay")(value ~= "plate" and value or nil)
+            -- Icon choices draw the layer's icon parts (Totem icon, Pet icon): one is added where there is none.
+            if value == "icon" or value == "iconName" then Options:EnsureEditorDisplayIcon() end
+            SetProfileValue(key)(value ~= "plate" and value or nil)
         end })
     Register(choice)
-    Mark(row, Area.Option("totemDisplay"))
+    Mark(row, Area.Option(key))
     K.Add(section, row)
     if not K.AttachHelp(row, spec.help) then K.Add(section, K.Help(section, spec.help)) end
-    Options.editorTotemDisplay, Options.editorTotemRowFrames = choice, { totemDisplay = row }
+    if pet then
+        Options.editorPetDisplay, Options.editorPetRowFrames = choice, { petDisplay = row }
+    else
+        Options.editorTotemDisplay, Options.editorTotemRowFrames = choice, { totemDisplay = row }
+    end
 end
 
 -- The plate's own scale, per plate type: Studio's Plate settings row (the tree's top). Sizes belong to
@@ -3956,11 +3979,12 @@ end
 local function BuildPlateContext(page)
     CreateContext(page, "plate", function(context)
         BuildFriendlySection(context)
-        TOTEM_SECTION.Build(context)
+        TOTEM_SECTION.Build(context, "totem")
+        TOTEM_SECTION.Build(context, "pet")
         BuildObjectsSection(context)
         OBJECT_LOOKS.Build(context)
         -- An object type open (Objects › Type): it may hide its plates altogether (plateHidden, the type's own; Totems
-        -- hide with their Display).
+        -- and Pets hide with their Display).
         local typeSection = K.Section(context, L["THIS TYPE"])
         K.Add(context, typeSection, function() return Options:IsEditorObject() and Options:EditorObjectType() ~= nil end)
         local hideRow, hide = K.CheckRow(typeSection, L["Plates"], { text = L["Hide these plates"],
@@ -5664,7 +5688,8 @@ local function BuildSettingsPages(settingsContent)
             { "helpColumns", L["The three columns"], L["The tree lists this plate type's parts and groups. The preview shows "
                 .. "the plate; drag parts there. The inspector on the right edits what is selected: a part, a group or "
                 .. "Plate settings (the plate's scale, the target highlight and Quick layout; also Friendly plates on "
-                .. "Players and Friendly NPCs, Totems while Type › Totems is open, and the object settings on Objects)."] },
+                .. "Players and Friendly NPCs, Totems or Pets while that Type is open, and the object settings on "
+                .. "Objects)."] },
             { "helpPlacement", L["Placement"], L["A part's parent in the tree is what it is anchored to: it moves with it and "
                 .. "hides while it is hidden. In the inspector, Anchor to picks the parent and Stick to pins the part to one "
                 .. "of its edges (Level is pinned left of the name, so it follows the name's width) or leaves it Free."] },

@@ -19,10 +19,11 @@ local BUTTON_SIZE = 16
 local SCROLL_WIDTH = 6
 -- Title room kept for the window's name before the summary beside it is shown.
 local TITLE_NAME_WIDTH, SUMMARY_MIN_WIDTH = 80, 50
-local BUTTONS = { "close", "menu", "lock", "mode", "new-window" }
+local BUTTONS = { "close", "menu", "lock", "mode", "breakdown", "new-window" }
 local BUTTON_TIPS = {
     close = L["Hide this window"], menu = L["Window menu"], lock = L["Lock or unlock"],
-    mode = L["Switch mode: threat meter, tank, rescue"], ["new-window"] = L["New window"],
+    mode = L["Switch mode: threat meter, tank, rescue"], breakdown = L["Threat breakdown"],
+    ["new-window"] = L["New window"],
 }
 local STATE_ICONS = { TANK = "icon-tank", LOSING = "icon-tank", LOOSE = "icon-loose", IDLE = "icon-idle", YOU = "icon-you" }
 -- The hold state spelt out in the STATE column (the service's tokens are never shown raw). UNKNOWN:
@@ -357,7 +358,8 @@ local function CreateRow(meter)
         owner.meter.console:HideRowTooltip(owner)
     end)
     row:SetScript("OnMouseUp", function(owner, button)
-        if button == "LeftButton" then owner.meter.console:HighlightRow(owner) end
+        if button == "LeftButton" then owner.meter.console:HighlightRow(owner)
+        elseif button == "RightButton" then owner.meter.console:OpenRowBreakdown(owner) end
     end)
     -- Blank until the next render fills it.
     row:Hide()

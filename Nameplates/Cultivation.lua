@@ -21,7 +21,9 @@ Cultivation.LIMIT = 32
 -- SPELL_UPDATE_COOLDOWN, which comes with every global cooldown, only while a herb plate is up too).
 Cultivation.KNOWN_EVENT = "SPELLS_CHANGED"
 Cultivation.EVENTS = { "SPELL_UPDATE_COOLDOWN", "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_SUCCEEDED",
-    "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_CHANNEL_UPDATE", "UNIT_SPELLCAST_CHANNEL_STOP" }
+    "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_CHANNEL_UPDATE", "UNIT_SPELLCAST_CHANNEL_STOP", "UI_ERROR_MESSAGE" }
+-- Of those, the ones that are not unit events (registered for every unit's sake, never filtered to the player).
+Cultivation.PLAIN_EVENTS = { UI_ERROR_MESSAGE = true }
 -- A herb needs this much Herbalism per level of yours: a herb of skill 150 needs level 30, one of 300 level 60.
 Cultivation.SKILL_PER_LEVEL = 5
 -- The units whose game object a cast is aimed at, in order: the interaction target, then the hovered object.
@@ -98,9 +100,8 @@ function Cultivation.Mine(unit, spell)
     return IsReadable(unit) and unit == "player" and IsReadable(spell) and spell == Cultivation.SPELL
 end
 
--- A cast of it started (UNIT_SPELLCAST_SENT): the herb it is aimed at, kept for its success.
-local pending
-function Cultivation.Aim() pending = AimedGUID() end
+-- A cast of it started (UNIT_SPELLCAST_SENT, Aim below): the herb it is aimed at, kept for its success; aimedAt: when.
+local pending, aimedAt
 
 -- Cultivation is channelled on Forever: UNIT_SPELLCAST_SUCCEEDED comes as the channel starts, before
 -- UNIT_SPELLCAST_CHANNEL_START (so the channel may not be readable yet), and the herb is marked only when the channel
@@ -122,6 +123,42 @@ local function ChannelEnds()
 end
 
 local function Now() return type(GetTime) == "function" and Number(GetTime()) or nil end
+
+function Cultivation.Aim() pending, aimedAt = AimedGUID(), Now() end
+
+-- Herbs the game refused to cultivate as too high for you (its SPELL_FAILED_HIGHLEVEL, "Target is too high level",
+-- within REFUSED_WINDOW seconds of a cast aimed at one): object ID -> your level then. Such a herb, every node of it,
+-- shows "Cultivate at a higher level" until you level past that; this catches a herb whose skill neither the data nor
+-- its tooltip gave (then LevelFor cannot say). This session's only.
+local refused = {}
+Cultivation._refused = refused
+Cultivation.REFUSED_WINDOW = 2
+
+-- The game's error (UI_ERROR_MESSAGE's message): true when it refused the cast just aimed as too high level.
+function Cultivation.Refused(message)
+    local text = rawget(_G, "SPELL_FAILED_HIGHLEVEL")
+    if not (IsReadable(message) and type(message) == "string" and type(text) == "string" and message == text) then
+        return false
+    end
+    local now = Now()
+    if not (pending and aimedAt and now and now - aimedAt <= Cultivation.REFUSED_WINDOW) then return false end
+    local kind, id = Secret.GUIDEntry(pending)
+    local level = Cultivation.Level()
+    pending = nil
+    if kind ~= "GameObject" or id == nil or not level then return false end
+    refused[id] = level
+    return true
+end
+
+-- Whether the game refused the herb guid (its object) at your level or higher: true, else nil.
+local function RefusedHere(guid)
+    if type(guid) ~= "string" then return nil end
+    local kind, id = Secret.GUIDEntry(guid)
+    local at = kind == "GameObject" and refused[id] or nil
+    local level = Cultivation.Level()
+    if at and (level == nil or level <= at) then return true end
+    return nil
+end
 
 -- Whether a finished cast went through, by the spell's own cooldown: false when it is known not to be cooling down
 -- (a cancelled or failed cast starts none), else true (cooling down, or unknown: then the channel's end time decides).
@@ -226,7 +263,7 @@ function Cultivation.Can(herb, guid, skill)
     local knows = Cultivation.Known()
     if knows == false or herb == false then return false end
     if knows == nil or herb == nil then return nil end
-    if TooLow(skill) == true then return false end
+    if TooLow(skill) == true or RefusedHere(guid) then return false end
     if Cultivation.Cultivated(guid) then return false end
     local remaining = Cultivation.Remaining()
     if remaining == nil then return nil end
@@ -241,6 +278,7 @@ function Cultivation.Status(herb, guid, skill)
     if TooLow(skill) == true then
         return string.format(L["Cultivate at level %d"], Cultivation.LevelFor(skill)), "cannot"
     end
+    if RefusedHere(guid) then return L["Cultivate at a higher level"], "cannot" end
     if Cultivation.Cultivated(guid) then return L["Cultivated"], "plain" end
     local remaining = Cultivation.Remaining()
     if remaining == nil then return nil end

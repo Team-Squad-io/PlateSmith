@@ -33,7 +33,7 @@ local TEMPLATE_SAMPLES = {
     ["threat.percent"] = 82, ["threat.lead"] = 1400, ["threat.raw"] = 60000, ["threat.leadpercent"] = 82,
     ["level"] = 14, ["name"] = L["Training Raider"], ["target"] = L["Target Name"],
     ["unit.tagged"] = false, ["unit.elite"] = true, ["unit.rare"] = false, ["unit.boss"] = false, ["cast.active"] = true,
-    ["you.combat"] = true, ["unit.target"] = true, ["unit.player"] = false,
+    ["you.combat"] = true, ["unit.target"] = true, ["unit.player"] = false, ["unit.incombat"] = true,
     ["unit.focus"] = false, ["quest.needed"] = true, ["unit.friendly"] = false, ["level.smart"] = "14+", ["level.diff"] = -3,
     ["classification"] = L["Elite"], ["guild"] = L["Guild Name"], ["cast.name"] = L["Fireball"], ["threat.hold"] = L["TANK"],
     ["unit.hostile"] = true, ["unit.neutral"] = false, ["cast.interruptible"] = true, ["cast.interruptready"] = true,
@@ -1108,14 +1108,15 @@ local function ChoiceFields(value, field, kind, slot)
     return { [field] = value }
 end
 -- The picture sources Studio's picker offers (From), in order: PlateSmith's kit (with modules' live icons), a game
--- atlas typed by name, shared media (while LibSharedMedia is installed), My media, and under Type › Totems the totem's
--- own icon (Media's unit pictures, each offered only under its Type).
+-- atlas typed by name, shared media (while LibSharedMedia is installed), My media, and under Type › Totems or Pets the
+-- unit's own icon (Media's unit pictures, each offered only under its Type).
 local PICTURE_SOURCES = {
     { value = "kit", label = L["Kit"], tooltip = L["PlateSmith's pictures, and other addons' icons."] },
     { value = "atlas", label = L["Atlas"], tooltip = L["A game atlas, by its name."] },
     { value = "lsm", label = L["Shared"], tooltip = L["Shared media from other addons (LibSharedMedia)."] },
     { value = "media", label = L["Mine"], tooltip = L["Your own files (Settings › My media)."] },
-    { value = "unit", label = L["Totem"], tooltip = L["Each totem's own icon, found for the totem the plate is for."] },
+    { value = "unit", label = L["Unit"], tooltip = L["The unit's own icon, found for the unit the plate is for: each "
+        .. "totem's under Type › Totems, each pet's family icon under Type › Pets."] },
 }
 -- The unit pictures offered with the open Type (Media's UNIT_PICTURES' only).
 local function UnitPictureChoices()

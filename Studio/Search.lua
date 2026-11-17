@@ -393,10 +393,14 @@ local function PartEntries()
         Add({ place = "friendlyRow", id = row.id, label = row.label, help = row.help, plateType = row.plateType,
             path = Path(where, L["Plate settings"], row.id ~= "section" and L["Friendly plates"] or nil) })
     end
-    -- Totems' Display (Enemies and Friendly NPCs › Type › Totems › Plate settings), from any tab.
+    -- Totems' and Pets' Display (Enemies and Friendly NPCs › Type › Totems or Pets › Plate settings), from any tab.
     for _, row in ipairs(Options.EditorTotemRows and Options:EditorTotemRows() or {}) do
-        Add({ place = "totemRow", id = row.id, label = row.label, help = row.help, keywords = row.keywords,
+        Add({ place = "totemRow", kind = "totem", id = row.id, label = row.label, help = row.help, keywords = row.keywords,
             path = Path(L["Type"], L["Totems"]) })
+    end
+    for _, row in ipairs(Options.EditorPetRows and Options:EditorPetRows() or {}) do
+        Add({ place = "totemRow", kind = "pet", id = row.id, label = row.label, help = row.help, keywords = row.keywords,
+            path = Path(L["Type"], L["Pets"]) })
     end
     -- Blizzard's name rows on Players › Dungeons & raids (names only, class colours, its font) while another
     -- view is open. With the overlay test on, that tab shows the overlay's parts instead.
@@ -710,6 +714,7 @@ local PLATE_SECTIONS = {
     target = function() return Options.editorTargetHighlightSection, Options:EditorTargetHighlightRows() end,
     friendly = function() return Options.editorFriendlySection, Options:EditorFriendlyRows() end,
     totems = function() return Options.editorTotemSection, Options:EditorTotemRows() end,
+    pets = function() return Options.editorPetSection, Options:EditorPetRows() end,
     objectLooks = function() return Options.editorObjectLookSection, Options:EditorObjectLookRows() end,
 }
 
@@ -745,9 +750,10 @@ function Search.RevealFriendlyPlates(id, plateType)
     return Search.RevealPlateRow("friendly", "id", id)
 end
 
--- Type › Totems' Plate settings: on the open Enemies or Friendly NPCs tab (at World where Blizzard draws its friendly
--- plates), else the Enemies' World design; Type › Totems opened there.
-function Search.RevealTotems(id)
+-- Type › Totems' Plate settings (kind "pet": Type › Pets'): on the open Enemies or Friendly NPCs tab (at World where
+-- Blizzard draws its friendly plates), else the Enemies' World design; that Type opened there.
+function Search.RevealTotems(id, kind)
+    kind = kind == "pet" and "pet" or "totem"
     if not (Options.editor and Options.editor:IsShown()) and not (PS.OpenVisualEditor and PS.OpenVisualEditor()) then
         return false
     end
@@ -757,8 +763,8 @@ function Search.RevealTotems(id)
     elseif Options:IsEditorBlizzardNames() then
         Options:OpenEditorDesign(open, "world")
     end
-    if not Options:IsEditorTotem() and not Options:SetEditorObjectType("totem") then return false end
-    return Search.RevealPlateRow("totems", "id", id)
+    if Options:EditorObjectType() ~= kind and not Options:SetEditorObjectType(kind) then return false end
+    return Search.RevealPlateRow(kind == "pet" and "pets" or "totems", "id", id)
 end
 
 -- A part deleted from the plate: put back as + Add does (Options:AddEditorComponent), then shown in the tree.
@@ -798,7 +804,7 @@ function Search.Pick(entry)
     elseif entry.place == "friendlyRow" then
         return Search.RevealFriendlyPlates(entry.id, entry.plateType)
     elseif entry.place == "totemRow" then
-        return Search.RevealTotems(entry.id)
+        return Search.RevealTotems(entry.id, entry.kind)
     elseif entry.place == "blizzard" then
         return RevealBlizzardSetting(entry)
     else

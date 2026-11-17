@@ -2,6 +2,81 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## 1.4.2
+
+### New
+
+- **Pets.** The Enemies and Friendly NPCs tabs' **Type** now has **Pets** beside Totems: a layer of its own for
+  players' pets (a hunter's beast, a warlock's demon; enemy players' on the Enemies, yours and your group's on
+  Friendly NPCs). Change anything while Pets is open and only pets get it. Its **Display** works as Totems' does:
+  Plate, Icon, Icon and name, Name only or Hidden. The **Pet icon** part (+ Add › Shape › Pet icon) shows each pet's
+  family icon, or a plain paw when the game doesn't name one. Thanks to ndzwdz for the idea and the first version
+  (PR #3).
+- **New rule word: `unit.incombat`**, true while the unit is in combat with anyone (not just you). Studio's **In
+  combat** test box sets it too. Also from ndzwdz's PR #3. Rules using it need 1.4.2: older versions refuse a code with
+  it.
+- **Your casts in the group replay.** Each of your casts is a gold mark along the graph, and your last few up to the
+  moment show under the controls, so you can see what moved your threat line.
+- **Damage and threat in the group replay.** Each group member's damage for the pull, from the game's damage meter
+  once combat ends, beside the most threat they reached on your target. The game hides the meter during a fight, so
+  it is the pull's total, not second by second.
+- **Threat breakdown button on the threat window.** A bar-chart button in each threat window's title opens the
+  threat breakdown, and a second press closes it (it was only in the title's menu). Right-click a row, as in
+  Details!: your own row opens Your threat, anyone else's the Group replay following them (their bars marked in gold,
+  their line on the graph bold over the others), on the newest pull. Click a member's bar in the replay to follow
+  them, or again to stop.
+- **Chain pulls join up in the threat breakdown.** When combat drops for under 5 seconds between packs, the two are
+  now one pull (casts, damage, the group replay and its graph carried on), instead of a list of short pulls each
+  missing the rest.
+- **Pull names in instances.** Instances hide every mob's name from addons, so those pulls read "Pull in <zone>".
+  The breakdown now takes the game damage meter's name for the fight when it gives one.
+
+### Changed
+
+- **Type on the Players tabs.** Totems and pets are NPCs to the game, so they never get a player's plate. The Players
+  and Enemy players tabs now show **Type: All players**, and its menu takes you straight to Enemies or Friendly NPCs ›
+  Totems or Pets.
+- **Type menu says "custom".** A type you have changed reads "Totems · custom" (was "· changed").
+- **Threat breakdown keeps your pulls.** Pulls are now saved for each character, so they are still there after a
+  reload or the next login: your newest 30, the newest 15 with their group replay. **Keep** under the list holds a pull
+  (a boss, say), replay and all, until you press it again (up to 20 kept, marked "Kept"); **Delete** removes one. The
+  list scrolls, and each pull shows where and when it was under its name.
+- **Threat breakdown names your pulls.** The game hides creature names in combat, so pulls showed as just "Pull":
+  now a pull is named by the enemy you targeted just before it, or by the corpse you are still targeting after it.
+- **Threat breakdown's tabs** (Your threat, Group replay) sit in the window's title bar, so the pull starts at the
+  top of its panel.
+
+### Fixed
+
+- **Level difficulty colours grey only mobs that give no XP.** The Level's Difficulty colour now follows Classic's
+  rules: red 5+ levels above you, orange 3-4 above, yellow within 2, green down to the last level that gives XP, grey
+  below. The game's own colours on Forever greyed mobs that still gave XP (at 46 a 37 to 39, at 47 a 41). At 47 now:
+  37 and under grey, 38 to 44 green.
+- **Threat breakdown knows Lacerate.** Lacerate now counts at x3 (on top of Bear Form), measured on a pull of only
+  Lacerate and auto attacks. It was counted as x1 and shown in red, so bear pulls read about a quarter low.
+- **The close corner joins the right edge.** On Studio, the frame's right edge now runs straight down from under the
+  close corner's gem, as the left edge runs out of its corner, instead of the corner stopping at its rivet with the
+  edge starting below it.
+- **Threat breakdown no longer misreads a pull where the mob cut your threat.** Some mobs knock you back or drop
+  your threat mid-fight, so the game's figure is only the most you held at one time. The estimate covers the whole
+  pull, so comparing the two gave figures like "164% of it". The breakdown now counts each cut and says so instead of
+  comparing. Pulls you already have are checked from their group replay.
+- **/pstest opens on the first try, and Esc no longer errors after using it** (developer tester: its window shared
+  its global name with the tester itself).
+- **Threat breakdown matches Studio's size.** The window now draws at Studio's scale (your Studio size, fitted to the
+  screen), so its frame, buttons and text are the same size as Settings'. It opens the same size on screen as before.
+- **Threat breakdown shows the stats you had for that pull.** They are recorded as the pull ends, so changing gear or
+  form later no longer changes an old pull's stat sheet. Pulls saved before this show none.
+- **Threat breakdown skips empty pulls.** A pull the meter read with no estimate, none of your damage and no threat
+  (a mob someone else killed, say) is no longer saved, unless you keep it.
+- **Threat breakdown in Cat Form.** A Cat Form pull no longer shows rage (cats run on energy) or Bear Form's Paw and
+  Swipe; its stats show plain attack power. A spell power of 0 no longer shows a Thorns line.
+- **Threat breakdown's Keep and Delete** are the same size, and the numbers on the long bars have a shadow so they
+  read over the gold. A pull with no name read is named by its zone ("Pull in Uldaman").
+- **Cultivation on herbs whose skill isn't known.** A herb PlateSmith has no Herbalism level for (Arthas' Tears, for
+  one) said **Cultivate ready** even when you were too low to cultivate it. Once the game turns down a Cultivation on
+  it ("Target is too high level"), every node of that herb now says **Cultivate at a higher level** until you level up.
+
 ## 1.4.1
 
 ### New
