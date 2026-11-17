@@ -2,6 +2,15 @@
 
 Each release lists what players will notice. CurseForge shows this file as the release notes.
 
+## UNRELEASED
+
+### Changed
+
+- **Threat windows no longer cover the game's panels.** They drew over almost everything (bags, map, character
+  sheet, talents). They now sit in a middle layer, as other meters do, so those panels open over them. Each window's
+  new **Layer** (Settings › Threat, under Background opacity) picks Low, Medium (the default) or High, to keep a
+  window above the panels or under your action bars too.
+
 ## 1.4.2
 
 ### New

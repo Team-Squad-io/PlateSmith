@@ -20,6 +20,10 @@ Geometry.GAP_COLUMN_WIDTH = 200
 -- each within WINDOW_RANGES (the narrowest still fits its title and the GAP and THREAT columns).
 Geometry.MAX_WINDOWS = 5
 Geometry.WINDOW_RANGES = { width = { 240, 900 }, height = { 40, 1200 }, rowHeight = { 12, 30 }, alpha = { 0, 1 } }
+-- A window's layer: the frame strata it draws in. Medium by default, so the game's own panels (bags, map,
+-- character sheet) open over it, as they do over other meters.
+Geometry.LAYERS = { low = "LOW", medium = "MEDIUM", high = "HIGH" }
+Geometry.DEFAULT_LAYER = "medium"
 
 function Geometry.Rect(left, top, width, height)
     return { left = left, bottom = top - height, right = left + width, top = top }

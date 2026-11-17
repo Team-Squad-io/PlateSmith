@@ -93,7 +93,7 @@ local function WindowChoices()
 end
 
 -- What the controls show while there is no window (all deleted).
-local EMPTY = { mode = "tank", theme = "forge", rowHeight = 18, alpha = 1, dockMeter = 0, dockSide = "right",
+local EMPTY = { mode = "tank", theme = "forge", rowHeight = 18, alpha = 1, layer = "medium", dockMeter = 0, dockSide = "right",
     locked = false, shown = false, targetFirst = true, rescueLayout = "auto", rescueFilter = "everyone",
     rescueInRaids = true, rescueSound = false, rescueSoundKey = "raidWarning", rescueSoundGap = 3, rescueFlash = false,
     rescueCooldown = false }
@@ -113,6 +113,14 @@ local function Set(key)
         Options:Refresh()
         return ok
     end
+end
+
+local function LayerChoices()
+    return {
+        { value = "low", label = L["Low"] },
+        { value = "medium", label = L["Medium"] },
+        { value = "high", label = L["High"] },
+    }
 end
 
 local function ThemeChoices()
@@ -473,6 +481,14 @@ local function BuildWindows(module)
     })
     Register(alpha)
     kit.Add(section, alphaRow)
+    local layerRow, layer = kit.DropdownRow(section, L["Layer"], {
+        name = WidgetName("threatWindows_layer", "Dropdown"), choices = LayerChoices, get = Get("layer"), set = Set("layer"),
+    })
+    Register(layer)
+    kit.Add(section, layerRow)
+    kit.Add(section, kit.ControlHelp(section, L["What the window draws over. Medium: the game's panels (bags, map, "
+        .. "character sheet) open over it. High: it stays over most of them. Low: under action bars and most "
+        .. "other addons too."]))
     local dockRow, dock = kit.DropdownRow(section, L["Follow damage meter"], {
         name = WidgetName("threatWindows_dock", "Dropdown"), choices = DockChoices, get = DockValue, set = SetDock,
     })
